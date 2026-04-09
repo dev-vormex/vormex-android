@@ -12,13 +12,13 @@ val releaseStoreFilePath = secret("VORMEX_RELEASE_STORE_FILE")
 val releaseStorePassword = secret("VORMEX_RELEASE_STORE_PASSWORD")
 val releaseKeyAlias = secret("VORMEX_RELEASE_KEY_ALIAS")
 val releaseKeyPassword = secret("VORMEX_RELEASE_KEY_PASSWORD")
-val releaseApiBaseUrl = secret("VORMEX_RELEASE_API_BASE_URL") ?: "https://vormex-backend.onrender.com/api"
-val releaseSocketBaseUrl = secret("VORMEX_RELEASE_SOCKET_BASE_URL") ?: "https://vormex-backend.onrender.com"
-// Physical devices can reach the host machine through adb reverse on localhost.
-val localDebugApiBaseUrl = "http://127.0.0.1:5000/api"
-val localDebugSocketBaseUrl = "http://127.0.0.1:5000"
-val debugApiBaseUrl = secret("VORMEX_DEBUG_API_BASE_URL") ?: localDebugApiBaseUrl
-val debugSocketBaseUrl = secret("VORMEX_DEBUG_SOCKET_BASE_URL") ?: localDebugSocketBaseUrl
+val hostedApiBaseUrl = "https://vormex-backend.onrender.com/api"
+val hostedSocketBaseUrl = "https://vormex-backend.onrender.com"
+val releaseApiBaseUrl = secret("VORMEX_RELEASE_API_BASE_URL") ?: hostedApiBaseUrl
+val releaseSocketBaseUrl = secret("VORMEX_RELEASE_SOCKET_BASE_URL") ?: hostedSocketBaseUrl
+// Debug builds default to the hosted backend too. Override VORMEX_DEBUG_* for adb reverse/local backend work.
+val debugApiBaseUrl = secret("VORMEX_DEBUG_API_BASE_URL") ?: hostedApiBaseUrl
+val debugSocketBaseUrl = secret("VORMEX_DEBUG_SOCKET_BASE_URL") ?: hostedSocketBaseUrl
 val hasReleaseSigning = listOf(
     releaseStoreFilePath,
     releaseStorePassword,
@@ -53,7 +53,7 @@ android {
         androidResources.localeFilters += arrayOf("en")
         buildConfigField("String", "API_BASE_URL", "\"$releaseApiBaseUrl\"")
         buildConfigField("String", "SOCKET_BASE_URL", "\"$releaseSocketBaseUrl\"")
-        // Release must not allow HTTP; debug needs cleartext for local dev (e.g. adb reverse to localhost).
+        // Release must not allow HTTP; debug still permits cleartext when explicitly pointed at a local backend.
         manifestPlaceholders["usesCleartextTraffic"] = "false"
     }
 

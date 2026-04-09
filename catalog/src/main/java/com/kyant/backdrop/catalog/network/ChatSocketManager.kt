@@ -23,9 +23,10 @@ import java.net.URI
  * - chat:message_reaction
  * 
  * Configuration:
+ * - Default: uses BuildConfig.SOCKET_BASE_URL, which now points debug/release to the hosted backend
  * - For local dev with `adb reverse tcp:5000 tcp:5000`: use "http://localhost:5000"
  * - For Android emulator: use "http://10.0.2.2:5000"
- * - For production: use your production WebSocket URL (e.g., "https://api.vormex.com")
+ * - Override with VORMEX_DEBUG_SOCKET_BASE_URL when you want a debug build to target a local backend
  */
 object ChatSocketManager {
     private const val TAG = "ChatSocket"
