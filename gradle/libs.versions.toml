@@ -4,8 +4,10 @@ kotlin = "2.3.10"
 coil = "2.6.0"
 media3 = "1.5.1"
 navigation = "2.8.5"
-firebase = "33.7.0"
+firebase = "34.7.0"
 splashscreen = "1.0.1"
+mlkitGenAi = "1.0.0-beta1"
+mlkitPrompt = "1.0.0-alpha1"
 
 activity = "1.12.4"
 core = "1.17.0"
@@ -106,6 +108,16 @@ osmdroid-android = { group = "org.osmdroid", name = "osmdroid-android", version.
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebase" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 firebase-analytics = { group = "com.google.firebase", name = "firebase-analytics" }
+firebase-ai = { group = "com.google.firebase", name = "firebase-ai" }
+firebase-config = { group = "com.google.firebase", name = "firebase-config" }
+firebase-appcheck-playintegrity = { group = "com.google.firebase", name = "firebase-appcheck-playintegrity" }
+firebase-appcheck-debug = { group = "com.google.firebase", name = "firebase-appcheck-debug" }
+
+# ML Kit GenAI / Gemini Nano
+mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitPrompt" }
+mlkit-genai-proofreading = { group = "com.google.mlkit", name = "genai-proofreading", version.ref = "mlkitGenAi" }
+mlkit-genai-rewriting = { group = "com.google.mlkit", name = "genai-rewriting", version.ref = "mlkitGenAi" }
+mlkit-genai-summarization = { group = "com.google.mlkit", name = "genai-summarization", version.ref = "mlkitGenAi" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

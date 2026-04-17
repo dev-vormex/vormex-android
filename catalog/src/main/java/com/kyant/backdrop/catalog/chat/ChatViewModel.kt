@@ -8,9 +8,13 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.kyant.backdrop.catalog.ai.VormexAiGateway
+import com.kyant.backdrop.catalog.ai.VormexAiOperationKind
+import com.kyant.backdrop.catalog.ai.VormexAiPrepareResult
+import com.kyant.backdrop.catalog.ai.VormexAiSuggestionsResult
+import com.kyant.backdrop.catalog.ai.VormexAiSurface
 import com.kyant.backdrop.catalog.chat.cache.CachedMessagesSnapshot
 import com.kyant.backdrop.catalog.chat.cache.ChatCacheRepository
-import com.kyant.backdrop.catalog.network.AgentApiService
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.ChatSocketManager
 import com.kyant.backdrop.catalog.network.models.Conversation
@@ -35,6 +39,8 @@ import java.util.Locale
 import java.util.TimeZone
 
 private const val TAG = "ChatViewModel"
+private const val OUTGOING_TYPING_STOP_DELAY_MS = 3_000L
+private const val OUTGOING_TYPING_HEARTBEAT_MS = 1_500L
 
 enum class ChatThreadReadyState {
     CACHED_READY,
@@ -61,6 +67,10 @@ data class ChatUiState(
     val messageRequestsCount: Int = 0,
     val aiSuggestions: List<String> = emptyList(),
     val isLoadingAiSuggestions: Boolean = false,
+    val isPreparingAiSuggestions: Boolean = false,
+    val aiStatusMessage: String? = null,
+    val aiNeedsPreparation: Boolean = false,
+    val aiCanUseCloudFallback: Boolean = false,
     val socketConnected: Boolean = false,
     val replyToMessage: Message? = null,
     val isUploadingAttachment: Boolean = false,
@@ -73,6 +83,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val chatCacheRepository = ChatCacheRepository(context)
+    private val aiGateway = VormexAiGateway(context)
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -88,6 +99,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     private val conversationsCacheTtlMs: Long = 90_000L
     private var isOutgoingTyping = false
     private var outgoingTypingConversationId: String? = null
+    private var lastOutgoingTypingSentAt: Long = 0L
 
     private data class CachedConversationMessages(
         val messages: List<Message>,
@@ -1040,15 +1052,23 @@ class ChatViewModel(private val context: Context) : ViewModel() {
             return
         }
 
-        if (!isOutgoingTyping || outgoingTypingConversationId != conversationId) {
+        val now = System.currentTimeMillis()
+        val shouldSendHeartbeat =
+            !isOutgoingTyping ||
+                outgoingTypingConversationId != conversationId ||
+                (now - lastOutgoingTypingSentAt) >= OUTGOING_TYPING_HEARTBEAT_MS
+
+        if (shouldSendHeartbeat) {
             ChatSocketManager.sendTyping(conversationId, true)
-            isOutgoingTyping = true
-            outgoingTypingConversationId = conversationId
+            lastOutgoingTypingSentAt = now
         }
+
+        isOutgoingTyping = true
+        outgoingTypingConversationId = conversationId
 
         outgoingTypingStopJob?.cancel()
         outgoingTypingStopJob = viewModelScope.launch {
-            delay(2_000)
+            delay(OUTGOING_TYPING_STOP_DELAY_MS)
             if (_uiState.value.selectedConversation?.id == conversationId) {
                 stopOutgoingTyping(conversationId)
             }
@@ -1311,10 +1331,20 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     }
 
     fun loadAiSuggestions() {
+        loadAiSuggestions(explicitCloudFallback = false)
+    }
+
+    fun loadAiSuggestions(explicitCloudFallback: Boolean) {
         val lastMessage = _uiState.value.messages.lastOrNull { it.senderId != _uiState.value.currentUserId }
-        val conversationId = _uiState.value.selectedConversation?.id
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingAiSuggestions = true) }
+            _uiState.update {
+                it.copy(
+                    isLoadingAiSuggestions = true,
+                    aiStatusMessage = null,
+                    aiNeedsPreparation = false,
+                    aiCanUseCloudFallback = false
+                )
+            }
             val messageText = lastMessage?.content
             if (messageText.isNullOrBlank()) {
                 _uiState.update {
@@ -1326,30 +1356,110 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 return@launch
             }
 
-            AgentApiService.getSmartReplies(
-                context = context,
-                lastMessage = messageText,
-                conversationId = conversationId
-            ).onSuccess { replies ->
-                _uiState.update {
-                    it.copy(
-                        aiSuggestions = replies.ifEmpty { generateMockSuggestions(messageText) },
-                        isLoadingAiSuggestions = false
-                    )
+            when (val result = aiGateway.smartReplies(
+                lastIncomingMessage = messageText,
+                surface = VormexAiSurface.CHAT,
+                allowCloudFallback = explicitCloudFallback
+            )) {
+                is VormexAiSuggestionsResult.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            aiSuggestions = result.suggestions,
+                            isLoadingAiSuggestions = false,
+                            aiStatusMessage = null,
+                            aiNeedsPreparation = false,
+                            aiCanUseCloudFallback = false
+                        )
+                    }
                 }
-            }.onFailure {
-                _uiState.update {
-                    it.copy(
-                        aiSuggestions = generateMockSuggestions(messageText),
-                        isLoadingAiSuggestions = false
-                    )
+                is VormexAiSuggestionsResult.NeedsDownload -> {
+                    val availability = aiGateway.availability(VormexAiSurface.CHAT)
+                    _uiState.update {
+                        it.copy(
+                            aiSuggestions = emptyList(),
+                            isLoadingAiSuggestions = false,
+                            aiStatusMessage = result.message,
+                            aiNeedsPreparation = true,
+                            aiCanUseCloudFallback = availability.cloudAllowed
+                        )
+                    }
+                }
+                is VormexAiSuggestionsResult.Blocked -> {
+                    _uiState.update {
+                        it.copy(
+                            aiSuggestions = emptyList(),
+                            isLoadingAiSuggestions = false,
+                            aiStatusMessage = result.message,
+                            aiNeedsPreparation = false,
+                            aiCanUseCloudFallback = result.canUseCloudFallback
+                        )
+                    }
+                }
+                is VormexAiSuggestionsResult.Failure -> {
+                    val availability = aiGateway.availability(VormexAiSurface.CHAT)
+                    _uiState.update {
+                        it.copy(
+                            aiSuggestions = emptyList(),
+                            isLoadingAiSuggestions = false,
+                            aiStatusMessage = result.message,
+                            aiNeedsPreparation = false,
+                            aiCanUseCloudFallback = !explicitCloudFallback && availability.cloudAllowed
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun prepareAiSuggestions() {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isPreparingAiSuggestions = true,
+                    aiStatusMessage = "Preparing on-device AI…",
+                    aiNeedsPreparation = false,
+                    aiCanUseCloudFallback = false
+                )
+            }
+            when (val result = aiGateway.prepareOnDevice(
+                surface = VormexAiSurface.CHAT,
+                operation = VormexAiOperationKind.SMART_REPLIES
+            )) {
+                is VormexAiPrepareResult.Ready -> {
+                    _uiState.update {
+                        it.copy(
+                            isPreparingAiSuggestions = false,
+                            aiStatusMessage = "On-device AI is ready.",
+                            aiNeedsPreparation = false,
+                            aiCanUseCloudFallback = false
+                        )
+                    }
+                    loadAiSuggestions(explicitCloudFallback = false)
+                }
+                is VormexAiPrepareResult.Failure -> {
+                    val availability = aiGateway.availability(VormexAiSurface.CHAT)
+                    _uiState.update {
+                        it.copy(
+                            isPreparingAiSuggestions = false,
+                            aiStatusMessage = result.message,
+                            aiNeedsPreparation = true,
+                            aiCanUseCloudFallback = availability.cloudAllowed
+                        )
+                    }
                 }
             }
         }
     }
 
     fun clearAiSuggestions() {
-        _uiState.update { it.copy(aiSuggestions = emptyList()) }
+        _uiState.update {
+            it.copy(
+                aiSuggestions = emptyList(),
+                aiStatusMessage = null,
+                aiNeedsPreparation = false,
+                aiCanUseCloudFallback = false
+            )
+        }
     }
 
     fun useAiSuggestion(suggestion: String) {
@@ -1605,6 +1715,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
 
         isOutgoingTyping = false
         outgoingTypingConversationId = null
+        lastOutgoingTypingSentAt = 0L
     }
 
     private fun resolveThreadReadyState(

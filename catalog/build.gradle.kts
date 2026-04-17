@@ -200,6 +200,13 @@ dependencies {
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
     implementation(libs.firebase.analytics)
+    implementation(libs.firebase.ai)
+    implementation(libs.firebase.config)
+    implementation(libs.firebase.appcheck.playintegrity)
+    implementation(libs.firebase.appcheck.debug)
+
+    // Gemini Nano / on-device GenAI
+    implementation(libs.mlkit.genai.prompt)
 
     testImplementation("junit:junit:4.13.2")
 }

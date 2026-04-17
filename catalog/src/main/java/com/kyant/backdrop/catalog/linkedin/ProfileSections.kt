@@ -44,6 +44,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,6 +73,13 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.catalog.R
+import com.kyant.backdrop.catalog.ai.VormexAiChipAction
+import com.kyant.backdrop.catalog.ai.VormexAiChipRow
+import com.kyant.backdrop.catalog.ai.VormexAiGateway
+import com.kyant.backdrop.catalog.ai.VormexAiRewriteStyle
+import com.kyant.backdrop.catalog.ai.VormexAiStatusCard
+import com.kyant.backdrop.catalog.ai.VormexAiSurface
+import com.kyant.backdrop.catalog.ai.VormexAiTextResult
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -82,6 +90,7 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.TimeZone
+import kotlinx.coroutines.launch
 import kotlin.math.absoluteValue
 import kotlin.math.cos
 import kotlin.math.ln
@@ -107,7 +116,7 @@ private fun SectionCard(
             .fillMaxWidth()
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { RoundedRectangle(20f.dp) },
+                shape = { profileCardBackdropShape() },
                 effects = {
                     vibrancy()
                     blur(12f.dp.toPx())
@@ -177,6 +186,31 @@ fun AboutSection(
     onToggleOpenToWork: (Boolean) -> Unit
 ) {
     var showFullBio by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val aiGateway = remember { VormexAiGateway(context.applicationContext) }
+    val aiScope = rememberCoroutineScope()
+    var aiStatus by remember { mutableStateOf<String?>(null) }
+    var aiBusyLabel by remember { mutableStateOf<String?>(null) }
+
+    fun runBioAi(label: String, block: suspend () -> VormexAiTextResult) {
+        aiScope.launch {
+            aiBusyLabel = "$label…"
+            aiStatus = null
+            when (val result = block()) {
+                is VormexAiTextResult.Success -> {
+                    onBioChange(result.text)
+                    aiStatus = when (result.source) {
+                        com.kyant.backdrop.catalog.ai.VormexAiSource.LOCAL -> "$label updated on-device."
+                        com.kyant.backdrop.catalog.ai.VormexAiSource.CLOUD -> "$label updated with cloud AI."
+                    }
+                }
+                is VormexAiTextResult.NeedsDownload -> aiStatus = result.message
+                is VormexAiTextResult.Blocked -> aiStatus = result.message
+                is VormexAiTextResult.Failure -> aiStatus = result.message
+            }
+            aiBusyLabel = null
+        }
+    }
     
     SectionCard(
         title = "About",
@@ -202,6 +236,88 @@ fun AboutSection(
                             .padding(12.dp)
                             .height(100.dp)
                     )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    VormexAiChipRow(
+                        actions = listOf(
+                            VormexAiChipAction(
+                                label = "Professional",
+                                enabled = editedBio.isNotBlank(),
+                                onClick = {
+                                    runBioAi("Professional rewrite") {
+                                        aiGateway.rewrite(
+                                            text = editedBio,
+                                            style = VormexAiRewriteStyle.PROFESSIONAL,
+                                            surface = VormexAiSurface.PROFILE,
+                                            allowCloudFallback = true
+                                        )
+                                    }
+                                }
+                            ),
+                            VormexAiChipAction(
+                                label = "Shorter",
+                                enabled = editedBio.isNotBlank(),
+                                onClick = {
+                                    runBioAi("Shorter rewrite") {
+                                        aiGateway.rewrite(
+                                            text = editedBio,
+                                            style = VormexAiRewriteStyle.SHORTER,
+                                            surface = VormexAiSurface.PROFILE,
+                                            allowCloudFallback = true
+                                        )
+                                    }
+                                }
+                            ),
+                            VormexAiChipAction(
+                                label = "Clearer",
+                                enabled = editedBio.isNotBlank(),
+                                onClick = {
+                                    runBioAi("Clearer rewrite") {
+                                        aiGateway.rewrite(
+                                            text = editedBio,
+                                            style = VormexAiRewriteStyle.CLEARER,
+                                            surface = VormexAiSurface.PROFILE,
+                                            allowCloudFallback = true
+                                        )
+                                    }
+                                }
+                            ),
+                            VormexAiChipAction(
+                                label = "Proofread",
+                                enabled = editedBio.isNotBlank(),
+                                onClick = {
+                                    runBioAi("Proofread") {
+                                        aiGateway.proofread(
+                                            text = editedBio,
+                                            surface = VormexAiSurface.PROFILE,
+                                            allowCloudFallback = true
+                                        )
+                                    }
+                                }
+                            )
+                        ),
+                        contentColor = contentColor,
+                        accentColor = accentColor
+                    )
+
+                    aiBusyLabel?.let { busy ->
+                        Spacer(Modifier.height(10.dp))
+                        VormexAiStatusCard(
+                            message = busy,
+                            contentColor = contentColor,
+                            accentColor = accentColor
+                        )
+                    }
+
+                    aiStatus?.let { status ->
+                        Spacer(Modifier.height(10.dp))
+                        VormexAiStatusCard(
+                            message = status,
+                            contentColor = contentColor,
+                            accentColor = accentColor
+                        )
+                    }
                     
                     Spacer(Modifier.height(8.dp))
                     
@@ -485,7 +601,7 @@ fun GitHubSection(
                     Box(
                         Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(ProfileCardShape)
                             .background(contentColor.copy(alpha = 0.05f))
                             .padding(14.dp)
                     ) {
@@ -601,7 +717,7 @@ fun GitHubSection(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(ProfileCardShape)
                     .background(contentColor.copy(alpha = 0.05f))
                     .padding(24.dp),
                 contentAlignment = Alignment.Center
@@ -672,7 +788,7 @@ private fun GitHubMetricCard(
                 alpha = 0.4f + (0.6f * revealProgress)
                 translationY = (1f - revealProgress) * 28f
             }
-            .clip(RoundedCornerShape(14.dp))
+            .clip(ProfileCardShape)
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
@@ -776,7 +892,7 @@ private fun GitHubContributionGraph(
                 alpha = 0.68f + (0.32f * graphRevealProgress)
                 translationY = (1f - graphRevealProgress) * 18f
             }
-            .clip(RoundedCornerShape(16.dp))
+            .clip(ProfileCardShape)
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
@@ -1268,7 +1384,7 @@ private fun GitHubOrbitInfoChip(
 ) {
     Box(
         modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(ProfileCardShape)
             .background(contentColor.copy(alpha = 0.05f))
             .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
@@ -1307,7 +1423,7 @@ private fun GitHubGraphInfoChip(
 ) {
     Box(
         modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(ProfileCardShape)
             .background(contentColor.copy(alpha = 0.05f))
             .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
@@ -1659,7 +1775,7 @@ private fun GitHubRepositoryCard(
     Box(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(ProfileCardShape)
             .background(contentColor.copy(alpha = 0.05f))
             .clickable(onClick = onOpen)
             .padding(12.dp)
@@ -2001,7 +2117,7 @@ fun ActivityCalendarSection(
                     Modifier
                         .fillMaxWidth()
                         .height(100.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(ProfileCardShape)
                         .background(contentColor.copy(alpha = 0.05f)),
                     contentAlignment = Alignment.Center
                 ) {
@@ -2543,7 +2659,7 @@ private fun ProjectCard(
         modifier
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { RoundedRectangle(24f.dp) },
+                shape = { profileCardBackdropShape() },
                 effects = {
                     vibrancy()
                     blur(16f.dp.toPx())
@@ -2552,8 +2668,8 @@ private fun ProjectCard(
                     drawRect(Color.White.copy(alpha = 0.08f))
                 }
             )
-            .border(1.dp, cardBorder, RoundedCornerShape(24.dp))
-            .clip(RoundedCornerShape(24.dp))
+            .border(1.dp, cardBorder, ProfileCardShape)
+            .clip(ProfileCardShape)
             .clickable(onClick = onView)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -3620,7 +3736,7 @@ private fun CertificateCard(
             .fillMaxWidth()
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { RoundedRectangle(12f.dp) },
+                shape = { profileCardBackdropShape() },
                 effects = {
                     vibrancy()
                     blur(16f.dp.toPx())
@@ -3629,7 +3745,7 @@ private fun CertificateCard(
                     drawRect(Color.White.copy(alpha = 0.06f))
                 }
             )
-            .clip(RoundedCornerShape(12.dp))
+            .clip(ProfileCardShape)
             .clickable(onClick = onView)
             .padding(12.dp)
     ) {
@@ -3900,7 +4016,7 @@ private fun AchievementCard(
             .fillMaxWidth()
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { RoundedRectangle(12f.dp) },
+                shape = { profileCardBackdropShape() },
                 effects = {
                     vibrancy()
                     blur(16f.dp.toPx())
@@ -3909,7 +4025,7 @@ private fun AchievementCard(
                     drawRect(Color.White.copy(alpha = 0.06f))
                 }
             )
-            .clip(RoundedCornerShape(12.dp))
+            .clip(ProfileCardShape)
             .clickable(onClick = onView)
             .padding(12.dp)
     ) {
@@ -4205,7 +4321,7 @@ private fun FeedItemCard(
     Box(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(ProfileCardShape)
             .background(contentColor.copy(alpha = 0.05f))
             .clickable(enabled = canOpen) { onOpenItem(item) }
             .padding(12.dp)

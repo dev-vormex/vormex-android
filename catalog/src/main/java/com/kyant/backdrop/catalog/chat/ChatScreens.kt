@@ -111,6 +111,13 @@ import com.airbnb.lottie.compose.rememberLottieComposition
 import coil.compose.AsyncImage
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.catalog.R
+import com.kyant.backdrop.catalog.ai.VormexAiChipAction
+import com.kyant.backdrop.catalog.ai.VormexAiChipRow
+import com.kyant.backdrop.catalog.ai.VormexAiGateway
+import com.kyant.backdrop.catalog.ai.VormexAiRewriteStyle
+import com.kyant.backdrop.catalog.ai.VormexAiStatusCard
+import com.kyant.backdrop.catalog.ai.VormexAiSurface
+import com.kyant.backdrop.catalog.ai.VormexAiTextResult
 import com.kyant.backdrop.catalog.data.ChatMutePreferences
 import com.kyant.backdrop.catalog.linkedin.FullScreenVideoPlayer
 import com.kyant.backdrop.catalog.linkedin.VideoPlayer
@@ -564,6 +571,7 @@ private fun ChatThreadScreen(
 ) {
     val context = LocalContext.current
     val reportScope = rememberCoroutineScope()
+    val composerAiScope = rememberCoroutineScope()
     val uiState by viewModel.uiState.collectAsState()
     val conv = uiState.selectedConversation ?: return
     var inputText by remember(conv.id) { mutableStateOf("") }
@@ -600,6 +608,39 @@ private fun ChatThreadScreen(
     }
     val threadContentColor = if (selectedWallpaper != null) Color.White else contentColor
     val attachmentScope = rememberCoroutineScope()
+    val aiGateway = remember { VormexAiGateway(context.applicationContext) }
+    var composerAiStatus by remember(conv.id) { mutableStateOf<String?>(null) }
+    var composerAiBusyLabel by remember(conv.id) { mutableStateOf<String?>(null) }
+
+    fun applyComposerAiResult(label: String, result: VormexAiTextResult, onSuccess: (String) -> Unit) {
+        composerAiBusyLabel = null
+        when (result) {
+            is VormexAiTextResult.Success -> {
+                onSuccess(result.text)
+                composerAiStatus = when (result.source) {
+                    com.kyant.backdrop.catalog.ai.VormexAiSource.LOCAL -> "$label updated on-device."
+                    com.kyant.backdrop.catalog.ai.VormexAiSource.CLOUD -> "$label updated with cloud AI."
+                }
+            }
+            is VormexAiTextResult.NeedsDownload -> {
+                composerAiStatus = result.message
+            }
+            is VormexAiTextResult.Blocked -> {
+                composerAiStatus = result.message
+            }
+            is VormexAiTextResult.Failure -> {
+                composerAiStatus = result.message
+            }
+        }
+    }
+
+    fun runComposerAi(label: String, block: suspend () -> VormexAiTextResult, onSuccess: (String) -> Unit) {
+        composerAiScope.launch {
+            composerAiBusyLabel = "$label…"
+            composerAiStatus = null
+            applyComposerAiResult(label, block(), onSuccess)
+        }
+    }
 
     val voicePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
@@ -708,7 +749,7 @@ private fun ChatThreadScreen(
         val lastMsg = uiState.messages.lastOrNull()
         // Only load suggestions if the last message is from the other person
         if (lastMsg != null && lastMsg.senderId != uiState.currentUserId) {
-            viewModel.loadAiSuggestions()
+            viewModel.loadAiSuggestions(explicitCloudFallback = false)
         }
     }
 
@@ -1058,6 +1099,41 @@ private fun ChatThreadScreen(
                         viewModel.sendTyping(true)
                     }
                 )
+            } else if (
+                inputText.isEmpty() &&
+                !showEmptyThread &&
+                (
+                    uiState.isLoadingAiSuggestions ||
+                        uiState.isPreparingAiSuggestions ||
+                        !uiState.aiStatusMessage.isNullOrBlank()
+                    )
+            ) {
+                VormexAiStatusCard(
+                    message = when {
+                        uiState.isPreparingAiSuggestions -> "Preparing on-device AI for smart replies…"
+                        uiState.isLoadingAiSuggestions -> "Generating smart replies…"
+                        else -> uiState.aiStatusMessage ?: ""
+                    },
+                    contentColor = threadContentColor,
+                    accentColor = accentColor,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    primaryAction = if (uiState.aiNeedsPreparation && !uiState.isPreparingAiSuggestions) {
+                        VormexAiChipAction(
+                            label = "Prepare on-device AI",
+                            onClick = viewModel::prepareAiSuggestions
+                        )
+                    } else {
+                        null
+                    },
+                    secondaryAction = if (uiState.aiCanUseCloudFallback && !uiState.isLoadingAiSuggestions) {
+                        VormexAiChipAction(
+                            label = "Use cloud smart replies",
+                            onClick = { viewModel.loadAiSuggestions(explicitCloudFallback = true) }
+                        )
+                    } else {
+                        null
+                    }
+                )
             }
 
             val sendCurrentMessage = {
@@ -1117,9 +1193,153 @@ private fun ChatThreadScreen(
                     Spacer(Modifier.height(8.dp))
                 }
                 if (uiState.typingUserId != null) {
-                    VormexTypingPresence(
+                    VormexTypingPresence()
+                }
+                val threadSummaryInput = remember(uiState.messages, uiState.currentUserId) {
+                    buildChatSummaryInput(uiState.messages, uiState.currentUserId)
+                }
+                val composerAiActions = buildList {
+                    add(
+                        VormexAiChipAction(
+                            label = "Friendly",
+                            enabled = inputText.isNotBlank(),
+                            onClick = {
+                                runComposerAi(
+                                    label = "Friendly rewrite",
+                                    block = {
+                                        aiGateway.rewrite(
+                                            text = inputText,
+                                            style = VormexAiRewriteStyle.FRIENDLY,
+                                            surface = VormexAiSurface.CHAT,
+                                            allowCloudFallback = true
+                                        )
+                                    },
+                                    onSuccess = {
+                                        inputText = it
+                                        viewModel.sendTyping(it.isNotEmpty())
+                                        viewModel.clearAiSuggestions()
+                                    }
+                                )
+                            }
+                        )
+                    )
+                    add(
+                        VormexAiChipAction(
+                            label = "Professional",
+                            enabled = inputText.isNotBlank(),
+                            onClick = {
+                                runComposerAi(
+                                    label = "Professional rewrite",
+                                    block = {
+                                        aiGateway.rewrite(
+                                            text = inputText,
+                                            style = VormexAiRewriteStyle.PROFESSIONAL,
+                                            surface = VormexAiSurface.CHAT,
+                                            allowCloudFallback = true
+                                        )
+                                    },
+                                    onSuccess = {
+                                        inputText = it
+                                        viewModel.sendTyping(it.isNotEmpty())
+                                        viewModel.clearAiSuggestions()
+                                    }
+                                )
+                            }
+                        )
+                    )
+                    add(
+                        VormexAiChipAction(
+                            label = "Shorter",
+                            enabled = inputText.isNotBlank(),
+                            onClick = {
+                                runComposerAi(
+                                    label = "Shorter rewrite",
+                                    block = {
+                                        aiGateway.rewrite(
+                                            text = inputText,
+                                            style = VormexAiRewriteStyle.SHORTER,
+                                            surface = VormexAiSurface.CHAT,
+                                            allowCloudFallback = true
+                                        )
+                                    },
+                                    onSuccess = {
+                                        inputText = it
+                                        viewModel.sendTyping(it.isNotEmpty())
+                                        viewModel.clearAiSuggestions()
+                                    }
+                                )
+                            }
+                        )
+                    )
+                    add(
+                        VormexAiChipAction(
+                            label = "Proofread",
+                            enabled = inputText.isNotBlank(),
+                            onClick = {
+                                runComposerAi(
+                                    label = "Proofread",
+                                    block = {
+                                        aiGateway.proofread(
+                                            text = inputText,
+                                            surface = VormexAiSurface.CHAT,
+                                            allowCloudFallback = true
+                                        )
+                                    },
+                                    onSuccess = {
+                                        inputText = it
+                                        viewModel.sendTyping(it.isNotEmpty())
+                                        viewModel.clearAiSuggestions()
+                                    }
+                                )
+                            }
+                        )
+                    )
+                    add(
+                        VormexAiChipAction(
+                            label = "Summarize thread",
+                            enabled = threadSummaryInput.isNotBlank(),
+                            onClick = {
+                                runComposerAi(
+                                    label = "Thread summary",
+                                    block = {
+                                        aiGateway.summarize(
+                                            text = threadSummaryInput,
+                                            surface = VormexAiSurface.CHAT,
+                                            allowCloudFallback = true
+                                        )
+                                    },
+                                    onSuccess = { summary ->
+                                        inputText = summary
+                                        viewModel.sendTyping(summary.isNotEmpty())
+                                        viewModel.clearAiSuggestions()
+                                    }
+                                )
+                            }
+                        )
+                    )
+                }
+                if (composerAiActions.isNotEmpty()) {
+                    VormexAiChipRow(
+                        actions = composerAiActions,
                         contentColor = threadContentColor,
-                        accentColor = accentColor
+                        accentColor = accentColor,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
+                composerAiBusyLabel?.let { label ->
+                    ChatSyncStatusPill(
+                        text = label,
+                        contentColor = threadContentColor,
+                        accentColor = accentColor,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
+                composerAiStatus?.let { message ->
+                    VormexAiStatusCard(
+                        message = message,
+                        contentColor = threadContentColor,
+                        accentColor = accentColor,
+                        modifier = Modifier.padding(bottom = 8.dp)
                     )
                 }
                 Row(
@@ -1346,6 +1566,19 @@ private fun ChatThreadScreen(
     } // End of Box
 }
 
+private fun buildChatSummaryInput(
+    messages: List<Message>,
+    currentUserId: String?
+): String {
+    return messages
+        .takeLast(12)
+        .joinToString(separator = "\n") { message ->
+            val speaker = if (message.senderId == currentUserId) "You" else "Them"
+            "$speaker: ${message.content}"
+        }
+        .trim()
+}
+
 @Composable
 private fun ChatConversationOpeningState(
     contentColor: Color,
@@ -1367,50 +1600,31 @@ private fun ChatConversationOpeningState(
  */
 @Composable
 private fun VormexTypingPresence(
-    contentColor: Color,
-    accentColor: Color
 ) {
-    val transition = rememberInfiniteTransition(label = "vormex_typing")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1400, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "typing_phase"
+    val composition by rememberLottieComposition(
+        LottieCompositionSpec.RawRes(R.raw.hands_typing_on_keyboard)
     )
+    val progress by animateLottieCompositionAsState(
+        composition = composition,
+        iterations = LottieConstants.IterateForever
+    )
+
+    if (composition == null) return
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        repeat(3) { i ->
-            val alpha = 0.35f + 0.55f * (
-                sin(phase * 2.0 * PI + i * 0.8).toFloat() * 0.5f + 0.5f
-                ).coerceIn(0f, 1f)
-            Box(
-                Modifier
-                    .padding(end = 4.dp)
-                    .size(6.dp)
-                    .clip(CircleShape)
-                    .background(accentColor.copy(alpha = alpha))
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        BasicText(
-            text = buildAnnotatedString {
-                withStyle(SpanStyle(color = accentColor.copy(alpha = 0.92f), fontWeight = FontWeight.SemiBold)) {
-                    append("Vormex")
-                }
-                append(" ")
-                withStyle(SpanStyle(color = contentColor.copy(alpha = 0.62f), fontSize = 12.sp)) {
-                    append("shaping a reply")
-                }
-                append("…")
-            },
-            style = TextStyle(fontSize = 13.sp)
+        LottieAnimation(
+            composition = composition,
+            progress = { progress },
+            modifier = Modifier
+                .width(92.dp)
+                .aspectRatio(1080f / 568f),
+            contentScale = ContentScale.Fit,
+            clipToCompositionBounds = true
         )
     }
 }

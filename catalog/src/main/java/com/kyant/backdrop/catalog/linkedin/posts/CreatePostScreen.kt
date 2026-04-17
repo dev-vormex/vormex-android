@@ -66,12 +66,20 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.catalog.ai.VormexAiChipAction
+import com.kyant.backdrop.catalog.ai.VormexAiChipRow
+import com.kyant.backdrop.catalog.ai.VormexAiGateway
+import com.kyant.backdrop.catalog.ai.VormexAiRewriteStyle
+import com.kyant.backdrop.catalog.ai.VormexAiStatusCard
+import com.kyant.backdrop.catalog.ai.VormexAiSurface
+import com.kyant.backdrop.catalog.ai.VormexAiTextResult
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.shapes.RoundedRectangle
+import kotlinx.coroutines.launch
 
 // ==================== UI Styling Constants ====================
 private val PostButtonGradient = Brush.linearGradient(
@@ -188,6 +196,8 @@ fun CreatePostScreen(
     onPostCreated: () -> Unit
 ) {
     val context = LocalContext.current
+    val aiGateway = remember { VormexAiGateway(context.applicationContext) }
+    val aiScope = rememberCoroutineScope()
     
     // State
     var selectedPostType by remember { mutableStateOf(PostType.TEXT) }
@@ -195,6 +205,8 @@ fun CreatePostScreen(
     var visibility by remember { mutableStateOf("PUBLIC") }
     var showVisibilityDropdown by remember { mutableStateOf(false) }
     var showColorPicker by remember { mutableStateOf(false) }
+    var aiStatus by remember { mutableStateOf<String?>(null) }
+    var aiBusyLabel by remember { mutableStateOf<String?>(null) }
     
     // Image state
     var imageUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
@@ -385,6 +397,34 @@ fun CreatePostScreen(
         PostType.CELEBRATION -> selectedCelebrationType != null
         else -> false
     }
+
+    val applyPostAiText: (String, String) -> Unit = { label, value ->
+        textFieldValue = TextFieldValue(
+            text = value,
+            selection = TextRange(value.length)
+        )
+        aiStatus = label
+    }
+
+    fun runPostAi(label: String, block: suspend () -> VormexAiTextResult) {
+        aiScope.launch {
+            aiBusyLabel = "$label…"
+            aiStatus = null
+            when (val result = block()) {
+                is VormexAiTextResult.Success -> {
+                    val status = when (result.source) {
+                        com.kyant.backdrop.catalog.ai.VormexAiSource.LOCAL -> "$label updated on-device."
+                        com.kyant.backdrop.catalog.ai.VormexAiSource.CLOUD -> "$label updated with cloud AI."
+                    }
+                    applyPostAiText(status, result.text)
+                }
+                is VormexAiTextResult.NeedsDownload -> aiStatus = result.message
+                is VormexAiTextResult.Blocked -> aiStatus = result.message
+                is VormexAiTextResult.Failure -> aiStatus = result.message
+            }
+            aiBusyLabel = null
+        }
+    }
     
     // Clear form after successful post
     LaunchedEffect(isCreating) {
@@ -460,6 +500,84 @@ fun CreatePostScreen(
                     contentColor = contentColor,
                     accentColor = accentColor
                 )
+
+                VormexAiChipRow(
+                    actions = listOf(
+                        VormexAiChipAction(
+                            label = "Professional",
+                            enabled = textFieldValue.text.isNotBlank(),
+                            onClick = {
+                                runPostAi("Professional rewrite") {
+                                    aiGateway.rewrite(
+                                        text = textFieldValue.text,
+                                        style = VormexAiRewriteStyle.PROFESSIONAL,
+                                        surface = VormexAiSurface.POST,
+                                        allowCloudFallback = true
+                                    )
+                                }
+                            }
+                        ),
+                        VormexAiChipAction(
+                            label = "Shorter",
+                            enabled = textFieldValue.text.isNotBlank(),
+                            onClick = {
+                                runPostAi("Shorter rewrite") {
+                                    aiGateway.rewrite(
+                                        text = textFieldValue.text,
+                                        style = VormexAiRewriteStyle.SHORTER,
+                                        surface = VormexAiSurface.POST,
+                                        allowCloudFallback = true
+                                    )
+                                }
+                            }
+                        ),
+                        VormexAiChipAction(
+                            label = "Clearer",
+                            enabled = textFieldValue.text.isNotBlank(),
+                            onClick = {
+                                runPostAi("Clearer rewrite") {
+                                    aiGateway.rewrite(
+                                        text = textFieldValue.text,
+                                        style = VormexAiRewriteStyle.CLEARER,
+                                        surface = VormexAiSurface.POST,
+                                        allowCloudFallback = true
+                                    )
+                                }
+                            }
+                        ),
+                        VormexAiChipAction(
+                            label = "Proofread",
+                            enabled = textFieldValue.text.isNotBlank(),
+                            onClick = {
+                                runPostAi("Proofread") {
+                                    aiGateway.proofread(
+                                        text = textFieldValue.text,
+                                        surface = VormexAiSurface.POST,
+                                        allowCloudFallback = true
+                                    )
+                                }
+                            }
+                        )
+                    ),
+                    contentColor = contentColor,
+                    accentColor = accentColor
+                )
+
+                aiBusyLabel?.let { busy ->
+                    VormexAiStatusCard(
+                        message = busy,
+                        contentColor = contentColor,
+                        accentColor = accentColor
+                    )
+                }
+
+                aiStatus?.let { status ->
+                    VormexAiStatusCard(
+                        message = status,
+                        contentColor = contentColor,
+                        accentColor = accentColor
+                    )
+                }
 
                 ContentTextArea(
                     textFieldValue = textFieldValue,

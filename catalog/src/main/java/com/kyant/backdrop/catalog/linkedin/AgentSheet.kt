@@ -39,6 +39,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,9 +55,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.catalog.ai.VormexAiChipAction
+import com.kyant.backdrop.catalog.ai.VormexAiChipRow
+import com.kyant.backdrop.catalog.ai.VormexAiGateway
+import com.kyant.backdrop.catalog.ai.VormexAiRewriteStyle
+import com.kyant.backdrop.catalog.ai.VormexAiStatusCard
+import com.kyant.backdrop.catalog.ai.VormexAiSurface
+import com.kyant.backdrop.catalog.ai.VormexAiTextResult
 import com.kyant.backdrop.catalog.components.LiquidToggle
 import com.kyant.backdrop.catalog.network.models.AgentGoal
 import com.kyant.backdrop.catalog.network.models.AgentPendingAction
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -83,8 +92,32 @@ fun AgentSheetContent(
     var draft by rememberSaveable { mutableStateOf("") }
     var showGoalDialog by remember { mutableStateOf(false) }
     var selectedApproval by remember { mutableStateOf<AgentPendingAction?>(null) }
+    val aiGateway = remember { VormexAiGateway(context.applicationContext) }
+    val aiScope = rememberCoroutineScope()
+    var aiStatus by remember { mutableStateOf<String?>(null) }
+    var aiBusyLabel by remember { mutableStateOf<String?>(null) }
     val openingVoiceGreeting = remember(userDisplayName) {
         buildOpeningVoiceGreetingPrompt(userDisplayName)
+    }
+
+    fun runDraftAi(label: String, block: suspend () -> VormexAiTextResult) {
+        aiScope.launch {
+            aiBusyLabel = "$label…"
+            aiStatus = null
+            when (val result = block()) {
+                is VormexAiTextResult.Success -> {
+                    draft = result.text
+                    aiStatus = when (result.source) {
+                        com.kyant.backdrop.catalog.ai.VormexAiSource.LOCAL -> "$label updated on-device."
+                        com.kyant.backdrop.catalog.ai.VormexAiSource.CLOUD -> "$label updated with cloud AI."
+                    }
+                }
+                is VormexAiTextResult.NeedsDownload -> aiStatus = result.message
+                is VormexAiTextResult.Blocked -> aiStatus = result.message
+                is VormexAiTextResult.Failure -> aiStatus = result.message
+            }
+            aiBusyLabel = null
+        }
     }
 
     val recordPermissionLauncher = rememberLauncherForActivityResult(
@@ -378,6 +411,71 @@ fun AgentSheetContent(
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                VormexAiChipRow(
+                    actions = listOf(
+                        VormexAiChipAction(
+                            label = "Clarify",
+                            enabled = draft.isNotBlank(),
+                            onClick = {
+                                runDraftAi("Clarify draft") {
+                                    aiGateway.rewrite(
+                                        text = draft,
+                                        style = VormexAiRewriteStyle.CLEARER,
+                                        surface = VormexAiSurface.AGENT,
+                                        allowCloudFallback = true
+                                    )
+                                }
+                            }
+                        ),
+                        VormexAiChipAction(
+                            label = "Summarize",
+                            enabled = draft.isNotBlank(),
+                            onClick = {
+                                runDraftAi("Summarize draft") {
+                                    aiGateway.summarize(
+                                        text = draft,
+                                        surface = VormexAiSurface.AGENT,
+                                        allowCloudFallback = true,
+                                        asBullets = false
+                                    )
+                                }
+                            }
+                        ),
+                        VormexAiChipAction(
+                            label = "Professional",
+                            enabled = draft.isNotBlank(),
+                            onClick = {
+                                runDraftAi("Professional rewrite") {
+                                    aiGateway.rewrite(
+                                        text = draft,
+                                        style = VormexAiRewriteStyle.PROFESSIONAL,
+                                        surface = VormexAiSurface.AGENT,
+                                        allowCloudFallback = true
+                                    )
+                                }
+                            }
+                        )
+                    ),
+                    contentColor = contentColor,
+                    accentColor = accentColor
+                )
+
+                aiBusyLabel?.let { busy ->
+                    VormexAiStatusCard(
+                        message = busy,
+                        contentColor = contentColor,
+                        accentColor = accentColor
+                    )
+                }
+
+                aiStatus?.let { status ->
+                    VormexAiStatusCard(
+                        message = status,
+                        contentColor = contentColor,
+                        accentColor = accentColor
+                    )
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()

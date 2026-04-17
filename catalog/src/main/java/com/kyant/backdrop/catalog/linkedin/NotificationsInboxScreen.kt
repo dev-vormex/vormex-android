@@ -1,6 +1,5 @@
 package com.kyant.backdrop.catalog.linkedin
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,7 +9,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -34,9 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -81,7 +77,15 @@ private data class NotificationSection(
     val id: String,
     val title: String,
     val subtitle: String,
-    val notifications: List<Notification>
+    val notifications: List<NotificationFeedItem>
+)
+
+private data class NotificationFeedItem(
+    val id: String,
+    val notification: Notification,
+    val notificationIds: List<String>,
+    val displayName: String,
+    val actionText: String
 )
 
 private data class NotificationDestination(
@@ -113,18 +117,7 @@ fun NotificationsInboxScreen(
     val uiState by viewModel.uiState.collectAsState()
     val refreshState = rememberPullToRefreshState()
 
-    val sections = buildNotificationSections(uiState.notifications, uiState.unreadOnly)
-    val peopleCount = uiState.notifications.count {
-        val destination = resolveNotificationDestination(it)
-        destination.kind == NotificationDestinationKind.Profile || it.actor != null
-    }
-    val contentCount = uiState.notifications.count {
-        when (resolveNotificationDestination(it).kind) {
-            NotificationDestinationKind.Post,
-            NotificationDestinationKind.Reel -> true
-            else -> false
-        }
-    }
+    val sections = buildNotificationSections(uiState.notifications)
 
     LaunchedEffect(uiState.unreadCount) {
         onUnreadCountChanged(uiState.unreadCount)
@@ -144,17 +137,7 @@ fun NotificationsInboxScreen(
                 onBack = onNavigateBack
             )
 
-            NotificationsToolbar(
-                unreadCount = uiState.unreadCount,
-                unreadOnly = uiState.unreadOnly,
-                isMarkingAllRead = uiState.isMarkingAllRead,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onToggleUnreadOnly = viewModel::toggleUnreadOnly,
-                onMarkAllRead = viewModel::markAllAsRead
-            )
-
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
 
             PullToRefreshBox(
                 isRefreshing = uiState.isRefreshing,
@@ -176,7 +159,6 @@ fun NotificationsInboxScreen(
                         EmptyNotificationsState(
                             backdrop = backdrop,
                             contentColor = contentColor,
-                            unreadOnly = uiState.unreadOnly,
                             error = uiState.error,
                             onRetry = { viewModel.refresh(showLoader = true) }
                         )
@@ -185,7 +167,7 @@ fun NotificationsInboxScreen(
                     else -> {
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             item {
                                 if (uiState.error != null) {
@@ -210,16 +192,18 @@ fun NotificationsInboxScreen(
                                     )
                                 }
 
-                                items(section.notifications, key = { it.id }) { notification ->
+                                items(
+                                    items = section.notifications,
+                                    key = { item -> "${section.id}_${item.id}" }
+                                ) { item ->
                                     NotificationInboxCard(
-                                        notification = notification,
-                                        backdrop = backdrop,
+                                        feedItem = item,
                                         contentColor = contentColor,
                                         accentColor = accentColor,
                                         onClick = {
-                                            viewModel.markAsRead(notification.id)
+                                            viewModel.markAsRead(item.notificationIds)
                                             routeNotification(
-                                                notification = notification,
+                                                notification = item.notification,
                                                 onOpenProfile = onOpenProfile,
                                                 onOpenPost = onOpenPost,
                                                 onOpenReel = onOpenReel,
@@ -239,63 +223,6 @@ fun NotificationsInboxScreen(
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun NotificationsToolbar(
-    unreadCount: Int,
-    unreadOnly: Boolean,
-    isMarkingAllRead: Boolean,
-    contentColor: Color,
-    accentColor: Color,
-    onToggleUnreadOnly: () -> Unit,
-    onMarkAllRead: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 2.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            NotificationMetaPill(
-                text = if (unreadCount > 0) "$unreadCount unread" else "All read",
-                background = accentColor.copy(alpha = 0.14f),
-                borderColor = accentColor.copy(alpha = 0.22f),
-                textColor = accentColor
-            )
-            if (unreadOnly) {
-                NotificationMetaPill(
-                    text = "Unread only",
-                    background = Color.White.copy(alpha = 0.08f),
-                    borderColor = Color.White.copy(alpha = 0.12f),
-                    textColor = contentColor.copy(alpha = 0.74f)
-                )
-            }
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            InboxActionPill(
-                label = if (unreadOnly) "Unread only" else "Show unread",
-                active = unreadOnly,
-                accentColor = accentColor,
-                contentColor = contentColor,
-                onClick = onToggleUnreadOnly
-            )
-            InboxActionPill(
-                label = if (isMarkingAllRead) "Marking..." else "Mark all read",
-                active = false,
-                accentColor = accentColor,
-                contentColor = contentColor,
-                enabled = unreadCount > 0 && !isMarkingAllRead,
-                onClick = onMarkAllRead
-            )
         }
     }
 }
@@ -380,210 +307,124 @@ private fun NotificationSectionHeader(
 
 @Composable
 private fun NotificationInboxCard(
-    notification: Notification,
-    backdrop: LayerBackdrop,
+    feedItem: NotificationFeedItem,
     contentColor: Color,
     accentColor: Color,
     onClick: () -> Unit
 ) {
+    val notification = feedItem.notification
     val tone = notificationTone(notification.type, accentColor)
-    val displayTitle = notificationDisplayTitle(notification.title)
-    val displayBody = notificationDisplayBody(notification.body)
-    val usesVormexBranding = notificationUsesVormexBranding(notification)
-
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = { RoundedRectangle(18.dp) },
-                effects = {
-                    vibrancy()
-                    blur(10f.dp.toPx())
-                    lens(4f.dp.toPx(), 8f.dp.toPx())
-                },
-                onDrawSurface = {
-                    drawRect(
-                        if (notification.isRead) {
-                            Color.White.copy(alpha = 0.08f)
-                        } else {
-                            tone.copy(alpha = 0.1f)
-                        }
-                    )
-                }
-            )
-            .border(
-                width = 1.dp,
-                color = if (notification.isRead) {
-                    Color.White.copy(alpha = 0.08f)
-                } else {
-                    tone.copy(alpha = 0.26f)
-                },
-                shape = RoundedCornerShape(18.dp)
-            )
             .clickable(onClick = onClick)
-            .padding(12.dp)
+            .padding(vertical = 12.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .fillMaxHeight()
-                .width(3.dp)
-                .clip(RoundedCornerShape(999.dp))
-                .background(if (notification.isRead) Color.White.copy(alpha = 0.16f) else tone)
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Top
+            NotificationAvatar(
+                notification = notification,
+                displayName = feedItem.displayName,
+                tone = tone
+            )
+
+            Spacer(Modifier.width(10.dp))
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                NotificationAvatar(
-                    notification = notification,
-                    tone = tone
-                )
-
-                Spacer(Modifier.width(10.dp))
-
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (!usesVormexBranding) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            NotificationMetaPill(
-                                text = notificationTypeLabel(notification.type),
-                                background = tone.copy(alpha = 0.16f),
-                                borderColor = tone.copy(alpha = 0.24f),
-                                textColor = tone
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (!usesVormexBranding) {
-                            NotificationTypeIcon(
-                                type = notification.type,
-                                tint = tone,
-                                size = 14.dp
-                            )
-                        }
-                        BasicText(
-                            text = displayTitle,
-                            style = TextStyle(
-                                color = contentColor,
-                                fontSize = 13.sp,
-                                fontWeight = if (notification.isRead) FontWeight.SemiBold else FontWeight.Bold,
-                                lineHeight = 17.sp
-                            ),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    BasicText(
+                        text = feedItem.displayName,
+                        style = TextStyle(
+                            color = contentColor,
+                            fontSize = 13.sp,
+                            fontWeight = if (notification.isRead) FontWeight.Medium else FontWeight.SemiBold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
 
-                Spacer(Modifier.width(8.dp))
-
                 BasicText(
-                    text = relativeTimestamp(notification.createdAt),
+                    text = feedItem.actionText,
                     style = TextStyle(
-                        color = contentColor.copy(alpha = 0.44f),
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                )
-            }
-
-            if (displayBody.isNotBlank()) {
-                BasicText(
-                    text = displayBody,
-                    style = TextStyle(
-                        color = contentColor.copy(alpha = 0.74f),
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp
+                        color = contentColor.copy(alpha = 0.7f),
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
                     ),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
+
+            Spacer(Modifier.width(12.dp))
+
+            BasicText(
+                text = relativeTimestamp(notification.createdAt),
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.44f),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            )
         }
+
+        Spacer(Modifier.height(12.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 50.dp)
+                .height(1.dp)
+                .background(contentColor.copy(alpha = 0.08f))
+        )
     }
 }
 
 @Composable
 private fun NotificationAvatar(
     notification: Notification,
+    displayName: String,
     tone: Color
 ) {
-    if (notificationUsesVormexBranding(notification)) {
-        Box(
-            modifier = Modifier
-                .size(42.dp)
-                .clip(CircleShape)
-                .background(Color.White)
-                .border(1.dp, tone.copy(alpha = 0.24f), CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            Image(
-                painter = painterResource(com.kyant.backdrop.catalog.R.drawable.vormex_logo),
-                contentDescription = "Vormex",
-                modifier = Modifier.size(28.dp)
-            )
-        }
-    } else if (notification.actor?.profileImage != null) {
+    val profileImage = notification.actor?.profileImage
+
+    if (!profileImage.isNullOrBlank()) {
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
-                .data(notification.actor.profileImage)
+                .data(profileImage)
                 .crossfade(true)
                 .build(),
             contentDescription = null,
             modifier = Modifier
-                .size(42.dp)
+                .size(38.dp)
                 .clip(CircleShape)
-                .border(1.dp, tone.copy(alpha = 0.22f), CircleShape)
         )
     } else {
         Box(
             modifier = Modifier
-                .size(42.dp)
+                .size(38.dp)
                 .clip(CircleShape)
-                .background(tone.copy(alpha = 0.16f))
-                .border(1.dp, tone.copy(alpha = 0.24f), CircleShape),
+                .background(tone.copy(alpha = 0.18f)),
             contentAlignment = Alignment.Center
         ) {
-            NotificationTypeIcon(
-                type = notification.type,
-                tint = tone,
-                size = 18.dp
+            BasicText(
+                text = avatarInitials(displayName),
+                style = TextStyle(
+                    color = tone,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
             )
         }
     }
-}
-
-@Composable
-private fun NotificationTypeIcon(
-    type: String,
-    tint: Color,
-    size: androidx.compose.ui.unit.Dp
-) {
-    Image(
-        painter = painterResource(notificationIconRes(type)),
-        contentDescription = notificationTypeLabel(type),
-        modifier = Modifier.size(size),
-        colorFilter = ColorFilter.tint(tint)
-    )
 }
 
 @Composable
@@ -682,7 +523,6 @@ private fun NotificationsInlineError(
 private fun EmptyNotificationsState(
     backdrop: LayerBackdrop,
     contentColor: Color,
-    unreadOnly: Boolean,
     error: String?,
     onRetry: () -> Unit
 ) {
@@ -715,7 +555,7 @@ private fun EmptyNotificationsState(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 BasicText(
-                    text = if (error != null) "Notification inbox hit a snag" else if (unreadOnly) "All caught up" else "Your inbox is quiet",
+                    text = if (error != null) "Notification inbox hit a snag" else "Your inbox is quiet",
                     style = TextStyle(
                         color = contentColor,
                         fontSize = 18.sp,
@@ -723,11 +563,7 @@ private fun EmptyNotificationsState(
                     )
                 )
                 BasicText(
-                    text = error ?: if (unreadOnly) {
-                        "There are no unread alerts left right now."
-                    } else {
-                        "Likes, comments, follows, and reel activity will appear here with direct shortcuts into the right screen."
-                    },
+                    text = error ?: "Comments and other activity will appear here as they come in.",
                     style = TextStyle(
                         color = contentColor.copy(alpha = 0.66f),
                         fontSize = 12.sp,
@@ -744,14 +580,12 @@ private fun EmptyNotificationsState(
                             onClick = onRetry
                         )
                     }
-                    if (!unreadOnly) {
-                        NotificationMetaPill(
-                            text = "Pull to refresh",
-                            background = Color.White.copy(alpha = 0.08f),
-                            borderColor = Color.White.copy(alpha = 0.1f),
-                            textColor = contentColor.copy(alpha = 0.62f)
-                        )
-                    }
+                    NotificationMetaPill(
+                        text = "Pull to refresh",
+                        background = Color.White.copy(alpha = 0.08f),
+                        borderColor = Color.White.copy(alpha = 0.1f),
+                        textColor = contentColor.copy(alpha = 0.62f)
+                    )
                 }
             }
         }
@@ -759,35 +593,24 @@ private fun EmptyNotificationsState(
 }
 
 private fun buildNotificationSections(
-    notifications: List<Notification>,
-    unreadOnly: Boolean
+    notifications: List<Notification>
 ): List<NotificationSection> {
     if (notifications.isEmpty()) return emptyList()
 
     val sections = mutableListOf<NotificationSection>()
 
-    if (!unreadOnly) {
-        val unread = notifications.filter { !it.isRead }
-        if (unread.isNotEmpty()) {
-            sections += NotificationSection(
-                id = "new",
-                title = "New",
-                subtitle = "",
-                notifications = unread
-            )
-        }
-    }
-
-    val remaining = if (unreadOnly) {
-        notifications
-    } else {
-        notifications.filter { it.isRead }
-    }
-
-    val today = remaining.filter { notificationBucket(it.createdAt) == NotificationBucket.TODAY }
-    val yesterday = remaining.filter { notificationBucket(it.createdAt) == NotificationBucket.YESTERDAY }
-    val thisWeek = remaining.filter { notificationBucket(it.createdAt) == NotificationBucket.THIS_WEEK }
-    val earlier = remaining.filter { notificationBucket(it.createdAt) == NotificationBucket.EARLIER }
+    val today = buildNotificationFeedItems(
+        notifications.filter { notificationBucket(it.createdAt) == NotificationBucket.TODAY }
+    )
+    val yesterday = buildNotificationFeedItems(
+        notifications.filter { notificationBucket(it.createdAt) == NotificationBucket.YESTERDAY }
+    )
+    val thisWeek = buildNotificationFeedItems(
+        notifications.filter { notificationBucket(it.createdAt) == NotificationBucket.THIS_WEEK }
+    )
+    val earlier = buildNotificationFeedItems(
+        notifications.filter { notificationBucket(it.createdAt) == NotificationBucket.EARLIER }
+    )
 
     if (today.isNotEmpty()) {
         sections += NotificationSection(
@@ -828,12 +651,176 @@ private fun buildNotificationSections(
                 id = "all",
                 title = "All activity",
                 subtitle = "",
-                notifications = notifications
+                notifications = buildNotificationFeedItems(notifications)
             )
         )
     } else {
         sections
     }
+}
+
+private fun buildNotificationFeedItems(
+    notifications: List<Notification>
+): List<NotificationFeedItem> {
+    if (notifications.isEmpty()) return emptyList()
+
+    val groupedNotifications = linkedMapOf<String, MutableList<Notification>>()
+
+    notifications.forEach { notification ->
+        val key = notificationGroupKey(notification)
+        groupedNotifications.getOrPut(key) { mutableListOf() }.add(notification)
+    }
+
+    return groupedNotifications.map { (key, group) ->
+        val representative = group.first()
+        NotificationFeedItem(
+            id = key,
+            notification = representative,
+            notificationIds = group.map { it.id },
+            displayName = notificationDisplayName(representative),
+            actionText = notificationActionSummary(group)
+        )
+    }
+}
+
+private fun notificationGroupKey(notification: Notification): String {
+    val actorKey = notification.actor?.id
+        ?: notification.dataValue("viewerId")
+        ?: notification.dataValue("userId")
+        ?: notification.dataValue("actorId")
+
+    if (actorKey.isNullOrBlank()) {
+        return "single:${notification.id}"
+    }
+
+    val action = notificationActionKey(notification.type)
+    val target = notificationTargetKey(notification)
+
+    return if (action == "message") {
+        "actor:$actorKey:$action:${notification.dataValue("conversationId") ?: notification.id}"
+    } else {
+        "actor:$actorKey:$action:$target"
+    }
+}
+
+private fun notificationActionKey(type: String): String {
+    val normalized = type.lowercase(Locale.getDefault())
+    return when {
+        normalized == "connection_request" -> "connect_request"
+        normalized == "connection_accepted" -> "connect_accepted"
+        normalized == "profile_view" -> "profile_view"
+        normalized == "follow" -> "follow"
+        normalized == "message" || "message" in normalized -> "message"
+        "like" in normalized -> "like"
+        "comment_reply" in normalized -> "reply"
+        "comment" in normalized -> "comment"
+        "mention" in normalized -> "mention"
+        "share" in normalized -> "share"
+        else -> normalized
+    }
+}
+
+private fun notificationTargetKey(notification: Notification): String {
+    val normalized = notification.type.lowercase(Locale.getDefault())
+
+    return when {
+        notification.reel?.id != null || "reel" in normalized -> "reel"
+        notification.post?.id != null -> "post"
+        "reply" in normalized -> "comment"
+        "connection" in normalized -> "connection"
+        "profile" in normalized -> "profile"
+        else -> "generic"
+    }
+}
+
+private fun notificationDisplayName(notification: Notification): String {
+    val actorName = notification.actor?.name?.trim().orEmpty()
+    if (actorName.isNotBlank()) return actorName
+
+    val username = notification.actor?.username?.trim().orEmpty()
+    if (username.isNotBlank()) return username
+
+    return if (notificationUsesVormexBranding(notification)) "Vormex" else "Someone"
+}
+
+private fun notificationActionSummary(notifications: List<Notification>): String {
+    val notification = notifications.first()
+    val count = notifications.size
+
+    return when (notificationActionKey(notification.type)) {
+        "connect_request" -> "wants to connect"
+        "connect_accepted" -> "accepted your connection"
+        "follow" -> "followed you"
+        "profile_view" -> if (count > 1) {
+            "viewed your profile $count times"
+        } else {
+            "viewed your profile"
+        }
+        "message" -> quantityCopy(
+            count = count,
+            singular = "sent you a message",
+            plural = "sent $count messages"
+        )
+        "like" -> when (notificationTargetKey(notification)) {
+            "reel" -> quantityCopy(count, "liked your reel", "liked $count of your reels")
+            "post" -> quantityCopy(count, "liked your post", "liked $count of your posts")
+            else -> quantityCopy(count, "liked your update", "liked $count of your updates")
+        }
+        "comment" -> when (notificationTargetKey(notification)) {
+            "reel" -> quantityCopy(count, "commented on your reel", "commented on $count of your reels")
+            "post" -> quantityCopy(count, "commented on your post", "commented on $count of your posts")
+            else -> quantityCopy(count, "commented on your update", "commented on $count of your updates")
+        }
+        "reply" -> quantityCopy(
+            count = count,
+            singular = "replied to your comment",
+            plural = "replied to $count of your comments"
+        )
+        "mention" -> when (notificationTargetKey(notification)) {
+            "reel" -> quantityCopy(count, "mentioned you in a reel", "mentioned you in $count reels")
+            "post" -> quantityCopy(count, "mentioned you in a post", "mentioned you in $count posts")
+            else -> quantityCopy(count, "mentioned you", "mentioned you $count times")
+        }
+        "share" -> when (notificationTargetKey(notification)) {
+            "reel" -> quantityCopy(count, "shared your reel", "shared $count of your reels")
+            "post" -> quantityCopy(count, "shared your post", "shared $count of your posts")
+            else -> quantityCopy(count, "shared your update", "shared $count of your updates")
+        }
+        else -> fallbackNotificationActionSummary(notification)
+    }
+}
+
+private fun quantityCopy(
+    count: Int,
+    singular: String,
+    plural: String
+): String {
+    return if (count > 1) plural else singular
+}
+
+private fun fallbackNotificationActionSummary(notification: Notification): String {
+    val displayName = notificationDisplayName(notification)
+    val cleanedBody = trimActorPrefix(notificationDisplayBody(notification.body), displayName)
+    if (cleanedBody.isNotBlank()) return cleanedBody
+
+    val cleanedTitle = trimActorPrefix(notificationDisplayTitle(notification.title), displayName)
+    if (cleanedTitle.isNotBlank()) return cleanedTitle
+
+    return notificationTypeLabel(notification.type)
+}
+
+private fun trimActorPrefix(
+    text: String,
+    displayName: String
+): String {
+    if (text.isBlank() || displayName.isBlank()) return text
+
+    val withoutActor = text.replaceFirst(
+        Regex("^${Regex.escape(displayName)}\\s+", RegexOption.IGNORE_CASE),
+        ""
+    ).trim()
+
+    return withoutActor.ifBlank { text }
 }
 
 private fun notificationBucket(createdAt: String): NotificationBucket {
@@ -899,6 +886,7 @@ private fun notificationTypeLabel(type: String): String {
         normalized == "admin_announcement" -> "Announcement"
         normalized == "connection_request" -> "Connection request"
         normalized == "connection_accepted" -> "Connection accepted"
+        normalized == "profile_view" -> "Profile views"
         normalized == "comment_reply" -> "Reply"
         normalized == "reel_comment_reply" -> "Reel reply"
         normalized == "people_you_know_joined" -> "People you know"
@@ -968,6 +956,7 @@ private fun notificationTone(type: String, accentColor: Color): Color {
         "admin" in normalized -> Color(0xFF2563EB)
         "message" in normalized -> Color(0xFF4FC3F7)
         "mention" in normalized -> Color(0xFFFFB74D)
+        "profile" in normalized -> Color(0xFF26A69A)
         "follow" in normalized || "connection" in normalized -> Color(0xFF66BB6A)
         "comment" in normalized -> Color(0xFF29B6F6)
         "reel" in normalized -> Color(0xFFFF8A65)
@@ -981,7 +970,10 @@ private fun resolveNotificationDestination(notification: Notification): Notifica
     val conversationId = notification.dataValue("conversationId")
     val postId = notification.post?.id ?: notification.dataValue("postId")
     val reelId = notification.reel?.id ?: notification.dataValue("reelId")
-    val actorId = notification.actor?.id ?: notification.dataValue("userId") ?: notification.dataValue("actorId")
+    val actorId = notification.actor?.id
+        ?: notification.dataValue("viewerId")
+        ?: notification.dataValue("userId")
+        ?: notification.dataValue("actorId")
 
     return when {
         notificationUsesVormexBranding(notification) || normalizedType == "admin_announcement" -> NotificationDestination(
@@ -1095,23 +1087,20 @@ private fun notificationUsesVormexBranding(notification: Notification): Boolean 
         notification.dataValue("senderType") == "admin"
 }
 
-private fun notificationIconRes(type: String): Int {
-    val normalized = type.lowercase(Locale.getDefault())
+private fun avatarInitials(displayName: String): String {
+    val parts = displayName
+        .trim()
+        .split(Regex("\\s+"))
+        .filter { it.isNotBlank() }
+
     return when {
-        normalized == "admin_announcement" -> com.kyant.backdrop.catalog.R.drawable.ic_notifications
-        normalized == "connection_accepted" -> com.kyant.backdrop.catalog.R.drawable.ic_check
-        normalized == "connection_request" -> com.kyant.backdrop.catalog.R.drawable.ic_network
-        "message" in normalized -> com.kyant.backdrop.catalog.R.drawable.ic_message
-        "mention" in normalized -> com.kyant.backdrop.catalog.R.drawable.ic_mention
-        "follow" in normalized -> com.kyant.backdrop.catalog.R.drawable.ic_profile
-        "connection" in normalized -> com.kyant.backdrop.catalog.R.drawable.ic_users
-        "comment" in normalized -> com.kyant.backdrop.catalog.R.drawable.ic_message
-        "reel" in normalized -> com.kyant.backdrop.catalog.R.drawable.ic_video
-        "share" in normalized -> com.kyant.backdrop.catalog.R.drawable.ic_repost
-        "streak" in normalized -> com.kyant.backdrop.catalog.R.drawable.ic_flame
-        "xp" in normalized -> com.kyant.backdrop.catalog.R.drawable.ic_sparkles
-        "like" in normalized -> com.kyant.backdrop.catalog.R.drawable.ic_favorite
-        else -> com.kyant.backdrop.catalog.R.drawable.ic_notifications
+        parts.isEmpty() -> "?"
+        parts.size == 1 -> parts.first().take(1).uppercase(Locale.getDefault())
+        else -> {
+            val first = parts.first().take(1)
+            val last = parts.last().take(1)
+            (first + last).uppercase(Locale.getDefault())
+        }
     }
 }
 

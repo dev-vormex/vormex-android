@@ -305,6 +305,7 @@ class VormexMessagingService : FirebaseMessagingService() {
                     type.contains("profile", ignoreCase = true) -> {
                         putExtra(EXTRA_ACTION, ACTION_PROFILE)
                         data["viewerId"]?.let { putExtra(EXTRA_USER_ID, it) }
+                            ?: data["actorId"]?.let { putExtra(EXTRA_USER_ID, it) }
                     }
                     else -> {
                         putExtra(EXTRA_ACTION, ACTION_ENGAGEMENT)
@@ -324,8 +325,32 @@ class VormexMessagingService : FirebaseMessagingService() {
                 type.contains("like", ignoreCase = true) ||
                 type.contains("comment", ignoreCase = true) ||
                 type.contains("mention", ignoreCase = true) ||
-                type.contains("follow", ignoreCase = true) -> CHANNEL_ID_SOCIAL
+                type.contains("follow", ignoreCase = true) ||
+                type.contains("profile", ignoreCase = true) -> CHANNEL_ID_SOCIAL
                 else -> CHANNEL_ID_ENGAGEMENT
+            }
+        }
+
+        private fun resolveNotificationId(type: String, data: Map<String, String>): Int {
+            val batchKey = data["notificationBatchKey"]
+                ?.takeIf { it.isNotBlank() }
+                ?: data["batchKey"]?.takeIf { it.isNotBlank() }
+
+            return when {
+                !batchKey.isNullOrBlank() -> batchKey.hashCode()
+                else -> System.currentTimeMillis().toInt()
+            }
+        }
+
+        private fun resolveNotificationGroup(type: String, data: Map<String, String>): String {
+            val batchKey = data["notificationBatchKey"]
+                ?.takeIf { it.isNotBlank() }
+                ?: data["batchKey"]?.takeIf { it.isNotBlank() }
+
+            return when {
+                !batchKey.isNullOrBlank() && type.contains("profile", ignoreCase = true) ->
+                    "vormex_profile_view"
+                else -> "vormex_$type"
             }
         }
     }
@@ -398,11 +423,12 @@ class VormexMessagingService : FirebaseMessagingService() {
         data: Map<String, String>
     ) {
         createNotificationChannels(this)
+        val type = data["type"] ?: "general"
         
         val intent = createDeepLinkIntent(this, data)
         val pendingIntent = PendingIntent.getActivity(
             this,
-            System.currentTimeMillis().toInt(),
+            resolveNotificationId(type, data),
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
@@ -418,7 +444,13 @@ class VormexMessagingService : FirebaseMessagingService() {
             .setSound(soundUri)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setCategory(
+                if (type.contains("message", ignoreCase = true)) {
+                    NotificationCompat.CATEGORY_MESSAGE
+                } else {
+                    NotificationCompat.CATEGORY_SOCIAL
+                }
+            )
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setVibrate(longArrayOf(0, 250, 250, 250))
             .setDefaults(NotificationCompat.DEFAULT_LIGHTS)
@@ -430,13 +462,13 @@ class VormexMessagingService : FirebaseMessagingService() {
         }
 
         // Add notification group for same type
-        val type = data["type"] ?: "general"
-        notificationBuilder.setGroup("vormex_$type")
+        notificationBuilder.setGroup(resolveNotificationGroup(type, data))
 
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(System.currentTimeMillis().toInt(), notificationBuilder.build())
+        val notificationId = resolveNotificationId(type, data)
+        notificationManager.notify(notificationId, notificationBuilder.build())
         
-        Log.d(TAG, "Notification posted with ID: ${System.currentTimeMillis().toInt()}")
+        Log.d(TAG, "Notification posted with ID: $notificationId")
     }
 
     private fun showChatMessageNotification(

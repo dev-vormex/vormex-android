@@ -1179,7 +1179,7 @@ private fun ProfileHeader(
                 when {
                     isGlassTheme -> Modifier.drawBackdrop(
                         backdrop = backdrop,
-                        shape = { RoundedRectangle(24f.dp) },
+                        shape = { profileCardBackdropShape() },
                         effects = {
                             vibrancy()
                             blur(16f.dp.toPx())
@@ -1190,10 +1190,10 @@ private fun ProfileHeader(
                         }
                     )
                     isDarkTheme -> Modifier
-                        .clip(RoundedCornerShape(24.dp))
+                        .clip(ProfileCardShape)
                         .background(Color(0xFF1E1E1E))
                     else -> Modifier
-                        .clip(RoundedCornerShape(24.dp))
+                        .clip(ProfileCardShape)
                         .background(Color.White)
                 }
             )
@@ -2289,7 +2289,7 @@ private fun ProfilePeopleRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .clip(ProfileCardShape)
             .background(contentColor.copy(alpha = 0.06f))
             .then(
                 if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
@@ -3034,7 +3034,7 @@ private fun ProfileGamificationRow(
                 when {
                     isGlassTheme -> Modifier.drawBackdrop(
                         backdrop = backdrop,
-                        shape = { RoundedRectangle(20f.dp) },
+                        shape = { profileCardBackdropShape() },
                         effects = {
                             vibrancy()
                             blur(12f.dp.toPx())
@@ -3045,14 +3045,14 @@ private fun ProfileGamificationRow(
                         }
                     )
                     isDarkTheme -> Modifier
-                        .clip(RoundedCornerShape(20.dp))
+                        .clip(ProfileCardShape)
                         .background(Color.White.copy(alpha = 0.06f))
                     else -> Modifier
-                        .clip(RoundedCornerShape(20.dp))
+                        .clip(ProfileCardShape)
                         .background(Color.Black.copy(alpha = 0.035f))
                 }
             )
-            .border(1.dp, contentColor.copy(alpha = 0.1f), RoundedCornerShape(20.dp))
+            .border(1.dp, contentColor.copy(alpha = 0.1f), ProfileCardShape)
     ) {
         Row(
             Modifier
