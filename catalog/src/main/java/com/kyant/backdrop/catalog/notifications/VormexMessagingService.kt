@@ -18,6 +18,7 @@ import com.google.firebase.messaging.RemoteMessage
 import com.kyant.backdrop.catalog.MainActivity
 import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.data.ChatMutePreferences
+import com.kyant.backdrop.catalog.network.GroupSocketManager
 
 /**
  * Firebase Cloud Messaging Service for Vormex
@@ -58,6 +59,7 @@ class VormexMessagingService : FirebaseMessagingService() {
         const val ACTION_LEADERBOARD = "leaderboard"
         const val ACTION_CONNECTION_CELEBRATION = "connection_celebration"
         const val ACTION_SESSION_SUMMARY = "session_summary"
+        const val ACTION_GROUP_CHAT = "group_chat"
         
         // Intent extras
         const val EXTRA_ACTION = "notification_action"
@@ -65,6 +67,7 @@ class VormexMessagingService : FirebaseMessagingService() {
         const val EXTRA_POST_ID = "post_id"
         const val EXTRA_REEL_ID = "reel_id"
         const val EXTRA_CONVERSATION_ID = "conversation_id"
+        const val EXTRA_GROUP_ID = "group_id"
         const val EXTRA_CONNECTION_ID = "connection_id"
 
         /**
@@ -247,6 +250,13 @@ class VormexMessagingService : FirebaseMessagingService() {
                 val type = data["type"] ?: data["screen"] ?: ""
                 
                 when {
+                    type.contains("group_message", ignoreCase = true) ||
+                        (type.contains("group", ignoreCase = true) && type.contains("message", ignoreCase = true)) -> {
+                        putExtra(EXTRA_ACTION, ACTION_GROUP_CHAT)
+                        data["groupId"]?.let { putExtra(EXTRA_GROUP_ID, it) }
+                        data["senderId"]?.let { putExtra(EXTRA_USER_ID, it) }
+                            ?: data["user_id"]?.let { putExtra(EXTRA_USER_ID, it) }
+                    }
                     type.contains("message", ignoreCase = true) || type == "chat" -> {
                         putExtra(EXTRA_ACTION, ACTION_CHAT)
                         data["conversationId"]?.let { putExtra(EXTRA_CONVERSATION_ID, it) }
@@ -354,7 +364,13 @@ class VormexMessagingService : FirebaseMessagingService() {
             Log.d(TAG, "Processing notification - Title: $title, Body: $body, Type: $type")
             
             if (body.isNotEmpty()) {
-                if (type.contains("message", ignoreCase = true)) {
+                if (
+                    type.contains("group_message", ignoreCase = true) ||
+                    (type.contains("group", ignoreCase = true) && type.contains("message", ignoreCase = true))
+                ) {
+                    showGroupMessageNotification(title, body, data)
+                    Log.d(TAG, "Group chat notification displayed successfully")
+                } else if (type.contains("message", ignoreCase = true)) {
                     showChatMessageNotification(title, body, data)
                     Log.d(TAG, "Chat notification displayed successfully")
                 } else {
@@ -456,6 +472,38 @@ class VormexMessagingService : FirebaseMessagingService() {
             senderImageUrl = senderImage,
             conversationId = conversationId,
             senderId = senderId
+        )
+    }
+
+    private fun showGroupMessageNotification(
+        title: String,
+        body: String,
+        data: Map<String, String>
+    ) {
+        val groupId = data["groupId"].orEmpty()
+        if (groupId.isBlank()) {
+            showNotification(title, body, CHANNEL_ID_MESSAGES, data)
+            return
+        }
+
+        if (MainActivity.isInForeground && GroupSocketManager.activeGroupId == groupId) {
+            Log.d(TAG, "Skipping FCM group notification because user is viewing group $groupId")
+            return
+        }
+
+        val senderName = data["senderName"]?.takeIf { it.isNotBlank() } ?: "Someone"
+        val messagePreview = data["messagePreview"]?.takeIf { it.isNotBlank() }
+            ?: body.removePrefix("$senderName:").trim().ifBlank { body }
+
+        MessageNotificationManager.showGroupMessageNotification(
+            context = this,
+            groupName = data["groupName"]?.takeIf { it.isNotBlank() } ?: title,
+            groupImageUrl = data["groupImage"]?.takeIf { it.isNotBlank() } ?: data["imageUrl"],
+            senderName = senderName,
+            messageContent = messagePreview,
+            senderImageUrl = data["senderImage"]?.takeIf { it.isNotBlank() },
+            groupId = groupId,
+            senderId = data["senderId"] ?: data["user_id"].orEmpty()
         )
     }
 

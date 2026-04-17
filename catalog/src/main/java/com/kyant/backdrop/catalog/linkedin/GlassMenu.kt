@@ -19,25 +19,35 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import kotlin.math.roundToInt
 
 /**
  * Glass-themed dropdown menu that matches the app's glass aesthetic.
@@ -51,6 +61,7 @@ fun GlassDropdownMenu(
     backdrop: LayerBackdrop,
     contentColor: Color,
     modifier: Modifier = Modifier,
+    anchorBounds: Rect? = null,
     useGlassBackdropEffects: Boolean = true,
     content: @Composable () -> Unit
 ) {
@@ -59,6 +70,35 @@ fun GlassDropdownMenu(
     val appearance = currentVormexAppearance(
         fallbackThemeMode = if (contentColor == Color.White) "dark" else "light"
     )
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val menuWidth = 200.dp
+    val menuWidthPx = with(density) { menuWidth.roundToPx() }
+    val screenWidthPx = with(density) { configuration.screenWidthDp.dp.roundToPx() }
+    val screenHeightPx = with(density) { configuration.screenHeightDp.dp.roundToPx() }
+    val screenPaddingPx = with(density) { 16.dp.roundToPx() }
+    val anchorGapPx = with(density) { 8.dp.roundToPx() }
+    var menuHeightPx by remember { mutableIntStateOf(0) }
+
+    val defaultMenuX = (screenWidthPx - menuWidthPx - screenPaddingPx).coerceAtLeast(screenPaddingPx)
+    val rawMenuX = anchorBounds?.let { it.right.roundToInt() - menuWidthPx } ?: defaultMenuX
+    val maxMenuX = (screenWidthPx - menuWidthPx - screenPaddingPx).coerceAtLeast(screenPaddingPx)
+    val menuX = rawMenuX.coerceIn(screenPaddingPx, maxMenuX)
+
+    val belowAnchorY = anchorBounds?.let { it.bottom.roundToInt() + anchorGapPx } ?: anchorGapPx
+    val aboveAnchorY = anchorBounds?.let { it.top.roundToInt() - anchorGapPx - menuHeightPx } ?: anchorGapPx
+    val preferredMenuY = if (
+        anchorBounds != null &&
+        menuHeightPx > 0 &&
+        belowAnchorY + menuHeightPx > screenHeightPx - screenPaddingPx &&
+        aboveAnchorY >= screenPaddingPx
+    ) {
+        aboveAnchorY
+    } else {
+        belowAnchorY
+    }
+    val maxMenuY = (screenHeightPx - menuHeightPx - screenPaddingPx).coerceAtLeast(screenPaddingPx)
+    val menuY = preferredMenuY.coerceIn(screenPaddingPx, maxMenuY)
 
     if (expandedState.currentState || expandedState.targetState) {
         Popup(
@@ -83,11 +123,11 @@ fun GlassDropdownMenu(
                         )
                 )
                 
-                // The actual menu positioned at top-right
+                // Position the menu beside the tapped anchor when available.
                 Box(
                     modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 8.dp, end = 16.dp)
+                        .align(Alignment.TopStart)
+                        .offset { IntOffset(menuX, menuY) }
                 ) {
                     AnimatedVisibility(
                         visibleState = expandedState,
@@ -103,7 +143,8 @@ fun GlassDropdownMenu(
                         if (useGlassBackdropEffects) {
                             Box(
                                 modifier = modifier
-                                    .width(200.dp)
+                                    .width(menuWidth)
+                                    .onSizeChanged { menuHeightPx = it.height }
                                     .vormexSurface(
                                         backdrop = backdrop,
                                         tone = VormexSurfaceTone.Overlay,
@@ -126,7 +167,8 @@ fun GlassDropdownMenu(
                         } else {
                             Box(
                                 modifier = modifier
-                                    .width(200.dp)
+                                    .width(menuWidth)
+                                    .onSizeChanged { menuHeightPx = it.height }
                                     .clip(RoundedCornerShape(16.dp))
                                     .background(appearance.overlayColor)
                                     .border(1.dp, appearance.overlayBorderColor, RoundedCornerShape(16.dp))

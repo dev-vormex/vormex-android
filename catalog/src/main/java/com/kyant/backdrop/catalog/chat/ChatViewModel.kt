@@ -2,6 +2,7 @@ package com.kyant.backdrop.catalog.chat
 
 import android.content.Context
 import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Build
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -13,6 +14,7 @@ import com.kyant.backdrop.catalog.network.AgentApiService
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.ChatSocketManager
 import com.kyant.backdrop.catalog.network.models.Conversation
+import com.kyant.backdrop.catalog.network.models.ConversationLastMessage
 import com.kyant.backdrop.catalog.network.models.Message
 import com.kyant.backdrop.catalog.network.models.MessageReaction
 import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
@@ -137,10 +139,11 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     val message = json.decodeFromString(Message.serializer(), messageJson)
                     val currentUserId = ensureCurrentUserId()
                     val isSelectedConversation = _uiState.value.selectedConversation?.id == conversationId
+                    var conversationKnown = false
 
                     if (isSelectedConversation) {
                         if (message.senderId != _uiState.value.currentUserId) {
-                            ChatSocketManager.markRead(conversationId)
+                            markAsRead()
                         }
                         _uiState.update { state ->
                             val updatedMessages = replaceMatchingPendingMessage(
@@ -159,6 +162,11 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                         currentUserId?.let {
                             chatCacheRepository.markConversationRead(it, conversationId)
                         }
+                        conversationKnown = applyConversationPreviewFromMessage(
+                            conversationId = conversationId,
+                            message = message,
+                            incrementUnread = false
+                        )
                     } else {
                         currentUserId?.let {
                             chatCacheRepository.upsertIncomingMessage(
@@ -169,9 +177,18 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                                 incrementUnread = true
                             )
                         }
+                        conversationKnown = applyConversationPreviewFromMessage(
+                            conversationId = conversationId,
+                            message = message,
+                            incrementUnread = true
+                        )
                     }
 
-                    refreshConversations()
+                    if (conversationKnown) {
+                        loadUnreadAndRequestsCount()
+                    } else {
+                        refreshConversations()
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing socket message", e)
                 }
@@ -197,7 +214,13 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
 
         viewModelScope.launch {
-            ChatSocketManager.messagesReadFlow.collect { (conversationId, _) ->
+            ChatSocketManager.messagesReadFlow.collect { (conversationId, readByUserId) ->
+                val currentUserId = ensureCurrentUserId()
+                if (readByUserId == currentUserId) {
+                    loadUnreadAndRequestsCount()
+                    return@collect
+                }
+
                 _uiState.update { state ->
                     val updatedMessages = if (state.selectedConversation?.id == conversationId) {
                         state.messages.map { message ->
@@ -212,7 +235,6 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     }
                     state.copy(messages = updatedMessages)
                 }
-                val currentUserId = ensureCurrentUserId()
                 if (!currentUserId.isNullOrBlank()) {
                     chatCacheRepository.markOwnMessagesAsReadByPeer(
                         cacheOwnerId = currentUserId,
@@ -326,6 +348,46 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                         persistSelectedConversationSnapshot()
                     }
                 }
+            }
+        }
+
+        viewModelScope.launch {
+            ChatSocketManager.allChatsClearedFlow.collect {
+                val currentUserId = ensureCurrentUserId()
+                stopOutgoingTyping()
+                clearTypingIndicator()
+                messagesCacheByConversation.clear()
+                hasLoadedConversations = true
+                conversationsLastLoadedAt = System.currentTimeMillis()
+                ChatSocketManager.activeConversationId = null
+                _uiState.update { state ->
+                    state.copy(
+                        conversations = emptyList(),
+                        messages = emptyList(),
+                        selectedConversation = null,
+                        isResolvingConversationOpen = false,
+                        isLoadingConversations = false,
+                        isLoadingMessages = false,
+                        isLoadingMoreMessages = false,
+                        hasMoreMessages = false,
+                        messagesNextCursor = null,
+                        isSending = false,
+                        error = null,
+                        typingUserId = null,
+                        unreadCount = 0,
+                        messageRequestsCount = 0,
+                        aiSuggestions = emptyList(),
+                        isLoadingAiSuggestions = false,
+                        replyToMessage = null,
+                        isUploadingAttachment = false,
+                        attachmentUploadError = null,
+                        threadReadyState = ChatThreadReadyState.EMPTY_THREAD
+                    )
+                }
+                currentUserId?.let { userId ->
+                    chatCacheRepository.clearAll(userId)
+                }
+                MessageNotificationManager.clearAll(context)
             }
         }
     }
@@ -460,10 +522,10 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
 
         ChatSocketManager.joinChat(conversation.id)
-        ChatSocketManager.markRead(conversation.id)
 
         viewModelScope.launch {
             ApiClient.markAsRead(context, conversation.id)
+                .onFailure { ChatSocketManager.markRead(conversation.id) }
             val currentUserId = ensureCurrentUserId()
             currentUserId?.let {
                 chatCacheRepository.markConversationRead(it, conversation.id)
@@ -591,10 +653,128 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     }
 
     fun uploadAndSendMessage(
+        uri: Uri,
+        fileName: String,
+        mimeType: String,
+        fileSize: Long? = null,
+        durationMs: Long? = null,
+        caption: String = "",
+        localPreviewUrl: String? = null,
+        replyToId: String? = null
+    ) {
+        val conversation = _uiState.value.selectedConversation ?: return
+        val currentUserId = _uiState.value.currentUserId.orEmpty()
+        val contentType = when {
+            mimeType.startsWith("image/") -> "image"
+            mimeType.startsWith("video/") -> "video"
+            mimeType.startsWith("audio/") -> "audio"
+            else -> "document"
+        }
+        val pendingLabel = when (contentType) {
+            "image" -> "Photo"
+            "video" -> "Video"
+            "audio" -> "Voice"
+            else -> "Document"
+        }
+        val pendingId = "pending-${System.currentTimeMillis()}"
+        val nowIso = isoFormatter.format(Date())
+        val optimisticFileSize = fileSize?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt()
+        val optimisticMessage = Message(
+            id = pendingId,
+            conversationId = conversation.id,
+            senderId = currentUserId,
+            receiverId = conversation.otherParticipant.id,
+            content = caption.ifBlank { "Sending $pendingLabel..." },
+            contentType = contentType,
+            mediaUrl = localPreviewUrl,
+            mediaType = contentType,
+            fileName = fileName,
+            fileSize = optimisticFileSize,
+            status = "SENDING",
+            createdAt = nowIso,
+            updatedAt = nowIso
+        )
+
+        _uiState.update { state ->
+            state.copy(
+                messages = dedupeAndSortByCreatedAt(state.messages + optimisticMessage),
+                isUploadingAttachment = true,
+                attachmentUploadError = null,
+                threadReadyState = ChatThreadReadyState.MESSAGES_READY
+            )
+        }
+
+        viewModelScope.launch {
+            ApiClient.uploadChatMedia(
+                context = context,
+                uri = uri,
+                fileName = fileName,
+                mimeType = mimeType,
+                fileSize = fileSize,
+                durationMs = durationMs
+            ).onSuccess { upload ->
+                val content = caption.ifBlank {
+                    when (contentType) {
+                        "image" -> "📷 Photo"
+                        "video" -> "🎬 Video"
+                        "audio" -> "🎤 Voice message"
+                        else -> "📎 ${upload.fileName}"
+                    }
+                }
+
+                ApiClient.sendMessage(
+                    context,
+                    conversation.id,
+                    content,
+                    contentType,
+                    mediaUrl = upload.mediaUrl,
+                    mediaType = upload.mediaType,
+                    fileName = upload.fileName,
+                    fileSize = upload.fileSize,
+                    replyToId = replyToId
+                ).onSuccess { message ->
+                    _uiState.update { state ->
+                        val withoutPending = state.messages.filterNot { it.id == pendingId }
+                        state.copy(
+                            messages = dedupeAndSortByCreatedAt(withoutPending + message),
+                            isUploadingAttachment = false,
+                            attachmentUploadError = null,
+                            threadReadyState = ChatThreadReadyState.MESSAGES_READY
+                        )
+                    }
+                    persistSelectedConversationSnapshot()
+                    if (applyConversationPreviewFromMessage(conversation.id, message, incrementUnread = false)) {
+                        loadUnreadAndRequestsCount()
+                    } else {
+                        refreshConversations()
+                    }
+                }.onFailure { error ->
+                    _uiState.update { state ->
+                        state.copy(
+                            messages = state.messages.filterNot { it.id == pendingId },
+                            isUploadingAttachment = false,
+                            attachmentUploadError = error.message
+                        )
+                    }
+                }
+            }.onFailure { error ->
+                _uiState.update { state ->
+                    state.copy(
+                        messages = state.messages.filterNot { it.id == pendingId },
+                        isUploadingAttachment = false,
+                        attachmentUploadError = error.message
+                    )
+                }
+            }
+        }
+    }
+
+    fun uploadAndSendMessage(
         fileBytes: ByteArray,
         fileName: String,
         mimeType: String,
         caption: String = "",
+        localPreviewUrl: String? = null,
         replyToId: String? = null
     ) {
         val conversation = _uiState.value.selectedConversation ?: return
@@ -618,8 +798,12 @@ class ChatViewModel(private val context: Context) : ViewModel() {
             conversationId = conversation.id,
             senderId = currentUserId,
             receiverId = conversation.otherParticipant.id,
-            content = "Sending $pendingLabel...",
-            contentType = "pending",
+            content = caption.ifBlank { "Sending $pendingLabel..." },
+            contentType = contentType,
+            mediaUrl = localPreviewUrl,
+            mediaType = contentType,
+            fileName = fileName,
+            fileSize = fileBytes.size,
             status = "SENDING",
             createdAt = nowIso,
             updatedAt = nowIso
@@ -628,7 +812,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         _uiState.update { state ->
             state.copy(
                 messages = dedupeAndSortByCreatedAt(state.messages + optimisticMessage),
-                isUploadingAttachment = false,
+                isUploadingAttachment = true,
                 attachmentUploadError = null,
                 threadReadyState = ChatThreadReadyState.MESSAGES_READY
             )
@@ -661,16 +845,22 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                             val withoutPending = state.messages.filterNot { it.id == pendingId }
                             state.copy(
                                 messages = dedupeAndSortByCreatedAt(withoutPending + message),
+                                isUploadingAttachment = false,
                                 attachmentUploadError = null,
                                 threadReadyState = ChatThreadReadyState.MESSAGES_READY
                             )
                         }
                         persistSelectedConversationSnapshot()
-                        refreshConversations()
+                        if (applyConversationPreviewFromMessage(conversation.id, message, incrementUnread = false)) {
+                            loadUnreadAndRequestsCount()
+                        } else {
+                            refreshConversations()
+                        }
                     }.onFailure { error ->
                         _uiState.update { state ->
                             state.copy(
                                 messages = state.messages.filterNot { it.id == pendingId },
+                                isUploadingAttachment = false,
                                 attachmentUploadError = error.message
                             )
                         }
@@ -680,6 +870,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     _uiState.update { state ->
                         state.copy(
                             messages = state.messages.filterNot { it.id == pendingId },
+                            isUploadingAttachment = false,
                             attachmentUploadError = error.message
                         )
                     }
@@ -735,8 +926,8 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     mediaRecorder = null
                     val file = voiceRecordingFile ?: return@withContext
                     voiceRecordingFile = null
+                    val localPreviewUrl = file.toURI().toString()
                     val bytes = file.readBytes()
-                    file.delete()
                     withContext(Dispatchers.Main) {
                         _uiState.update { it.copy(isRecordingVoice = false) }
                         uploadAndSendMessage(
@@ -744,6 +935,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                             fileName = "voice.m4a",
                             mimeType = "audio/mp4",
                             caption = "",
+                            localPreviewUrl = localPreviewUrl,
                             replyToId = _uiState.value.replyToMessage?.id
                         )
                         clearReplyTo()
@@ -752,7 +944,10 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     Log.e(TAG, "Failed to stop/send voice", e)
                     withContext(Dispatchers.Main) {
                         _uiState.update {
-                            it.copy(isRecordingVoice = false, attachmentUploadError = e.message)
+                            it.copy(
+                                isRecordingVoice = false,
+                                attachmentUploadError = e.message ?: "Voice message was too short"
+                            )
                         }
                     }
                 }
@@ -819,7 +1014,11 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                         )
                     }
                     persistSelectedConversationSnapshot()
-                    refreshConversations()
+                    if (applyConversationPreviewFromMessage(conversation.id, message, incrementUnread = false)) {
+                        loadUnreadAndRequestsCount()
+                    } else {
+                        refreshConversations()
+                    }
                 }
                 .onFailure { error ->
                     _uiState.update { state ->
@@ -858,9 +1057,9 @@ class ChatViewModel(private val context: Context) : ViewModel() {
 
     fun markAsRead() {
         _uiState.value.selectedConversation?.let { conversation ->
-            ChatSocketManager.markRead(conversation.id)
             viewModelScope.launch {
                 ApiClient.markAsRead(context, conversation.id)
+                    .onFailure { ChatSocketManager.markRead(conversation.id) }
                 ensureCurrentUserId()?.let { userId ->
                     chatCacheRepository.markConversationRead(userId, conversation.id)
                 }
@@ -1317,6 +1516,64 @@ class ChatViewModel(private val context: Context) : ViewModel() {
 
     private fun upsertMessage(messages: List<Message>, message: Message): List<Message> {
         return dedupeAndSortByCreatedAt(messages.filterNot { it.id == message.id } + message)
+    }
+
+    private fun applyConversationPreviewFromMessage(
+        conversationId: String,
+        message: Message,
+        incrementUnread: Boolean
+    ): Boolean {
+        var foundConversation = false
+        _uiState.update { state ->
+            val updatedConversations = state.conversations.map { conversation ->
+                if (conversation.id != conversationId) return@map conversation
+
+                foundConversation = true
+                val shouldIncrementUnread =
+                    incrementUnread &&
+                        message.senderId != state.currentUserId &&
+                        state.selectedConversation?.id != conversationId
+
+                conversation.copy(
+                    lastMessage = message.toPreviewMessage(),
+                    lastMessageAt = message.createdAt,
+                    updatedAt = message.updatedAt,
+                    unreadCount = if (shouldIncrementUnread) {
+                        conversation.unreadCount + 1
+                    } else if (state.selectedConversation?.id == conversationId) {
+                        0
+                    } else {
+                        conversation.unreadCount
+                    }
+                )
+            }.sortedByDescending { it.lastMessageAt ?: it.updatedAt.ifBlank { it.createdAt } }
+
+            state.copy(
+                conversations = updatedConversations,
+                unreadCount = if (
+                    incrementUnread &&
+                    message.senderId != state.currentUserId &&
+                    state.selectedConversation?.id != conversationId
+                ) {
+                    state.unreadCount + 1
+                } else {
+                    state.unreadCount
+                }
+            )
+        }
+
+        return foundConversation
+    }
+
+    private fun Message.toPreviewMessage(): ConversationLastMessage {
+        return ConversationLastMessage(
+            id = id,
+            content = content,
+            contentType = contentType,
+            senderId = senderId,
+            status = status,
+            createdAt = createdAt
+        )
     }
 
     private fun scheduleTypingIndicatorClear(conversationId: String, userId: String) {

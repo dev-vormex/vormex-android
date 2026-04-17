@@ -1,6 +1,7 @@
 package com.kyant.backdrop.catalog.components
 
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -34,6 +35,8 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberBackdrop
 import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.catalog.linkedin.VormexSurfaceTone
+import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
 import com.kyant.backdrop.catalog.utils.DampedDragAnimation
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -49,15 +52,26 @@ fun LiquidToggle(
     selected: () -> Boolean,
     onSelect: (Boolean) -> Unit,
     backdrop: Backdrop,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    useGlassEffects: Boolean? = null,
+    lightTheme: Boolean? = null,
+    accentColor: Color? = null,
+    trackColor: Color? = null,
+    thumbColor: Color? = null,
+    thumbBorderColor: Color? = null
 ) {
-    val isLightTheme = !isSystemInDarkTheme()
-    val accentColor =
-        if (isLightTheme) Color(0xFF34C759)
-        else Color(0xFF30D158)
-    val trackColor =
-        if (isLightTheme) Color(0xFF787878).copy(0.2f)
-        else Color(0xFF787880).copy(0.36f)
+    val appearance = currentVormexAppearance()
+    val shouldUseGlass = useGlassEffects ?: appearance.isGlassTheme
+    val isLightTheme = lightTheme ?: !appearance.isDarkTheme
+    val resolvedAccentColor = accentColor ?: if (isLightTheme) Color(0xFF34C759) else Color(0xFF30D158)
+    val resolvedTrackColor = trackColor ?: if (isLightTheme) {
+        Color(0xFF787878).copy(0.2f)
+    } else {
+        Color(0xFF787880).copy(0.36f)
+    }
+    val resolvedThumbColor = thumbColor ?: appearance.surfaceColor(VormexSurfaceTone.Control)
+    val resolvedThumbBorderColor =
+        thumbBorderColor ?: appearance.borderColor(VormexSurfaceTone.Control)
 
     val density = LocalDensity.current
     val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
@@ -124,10 +138,73 @@ fun LiquidToggle(
                 .clip(Capsule())
                 .drawBehind {
                     val fraction = dampedDragAnimation.value
-                    drawRect(lerp(trackColor, accentColor, fraction))
+                    drawRect(lerp(resolvedTrackColor, resolvedAccentColor, fraction))
                 }
                 .size(64f.dp, 28f.dp)
         )
+
+        val thumbSurfaceModifier = if (shouldUseGlass) {
+            Modifier.drawBackdrop(
+                backdrop = rememberCombinedBackdrop(
+                    backdrop,
+                    rememberBackdrop(trackBackdrop) { drawBackdrop ->
+                        val progress = dampedDragAnimation.pressProgress
+                        val scaleX = lerp(2f / 3f, 0.75f, progress)
+                        val scaleY = lerp(0f, 0.75f, progress)
+                        scale(scaleX, scaleY) {
+                            drawBackdrop()
+                        }
+                    }
+                ),
+                shape = { Capsule() },
+                effects = {
+                    val progress = dampedDragAnimation.pressProgress
+                    blur(8f.dp.toPx() * (1f - progress))
+                    lens(
+                        5f.dp.toPx() * progress,
+                        10f.dp.toPx() * progress,
+                        chromaticAberration = true
+                    )
+                },
+                highlight = {
+                    val progress = dampedDragAnimation.pressProgress
+                    Highlight.Ambient.copy(
+                        width = Highlight.Ambient.width / 1.5f,
+                        blurRadius = Highlight.Ambient.blurRadius / 1.5f,
+                        alpha = progress
+                    )
+                },
+                shadow = {
+                    Shadow(
+                        radius = 4f.dp,
+                        color = Color.Black.copy(alpha = 0.05f)
+                    )
+                },
+                innerShadow = {
+                    val progress = dampedDragAnimation.pressProgress
+                    InnerShadow(
+                        radius = 4f.dp * progress,
+                        alpha = progress
+                    )
+                },
+                layerBlock = {
+                    scaleX = dampedDragAnimation.scaleX
+                    scaleY = dampedDragAnimation.scaleY
+                    val velocity = dampedDragAnimation.velocity / 50f
+                    scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
+                    scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
+                },
+                onDrawSurface = {
+                    val progress = dampedDragAnimation.pressProgress
+                    drawRect(Color.White.copy(alpha = 1f - progress))
+                }
+            )
+        } else {
+            Modifier
+                .clip(Capsule())
+                .background(resolvedThumbColor)
+                .border(1.dp, resolvedThumbBorderColor, Capsule())
+        }
 
         Box(
             Modifier
@@ -142,61 +219,7 @@ fun LiquidToggle(
                     role = Role.Switch
                 }
                 .then(dampedDragAnimation.modifier)
-                .drawBackdrop(
-                    backdrop = rememberCombinedBackdrop(
-                        backdrop,
-                        rememberBackdrop(trackBackdrop) { drawBackdrop ->
-                            val progress = dampedDragAnimation.pressProgress
-                            val scaleX = lerp(2f / 3f, 0.75f, progress)
-                            val scaleY = lerp(0f, 0.75f, progress)
-                            scale(scaleX, scaleY) {
-                                drawBackdrop()
-                            }
-                        }
-                    ),
-                    shape = { Capsule() },
-                    effects = {
-                        val progress = dampedDragAnimation.pressProgress
-                        blur(8f.dp.toPx() * (1f - progress))
-                        lens(
-                            5f.dp.toPx() * progress,
-                            10f.dp.toPx() * progress,
-                            chromaticAberration = true
-                        )
-                    },
-                    highlight = {
-                        val progress = dampedDragAnimation.pressProgress
-                        Highlight.Ambient.copy(
-                            width = Highlight.Ambient.width / 1.5f,
-                            blurRadius = Highlight.Ambient.blurRadius / 1.5f,
-                            alpha = progress
-                        )
-                    },
-                    shadow = {
-                        Shadow(
-                            radius = 4f.dp,
-                            color = Color.Black.copy(alpha = 0.05f)
-                        )
-                    },
-                    innerShadow = {
-                        val progress = dampedDragAnimation.pressProgress
-                        InnerShadow(
-                            radius = 4f.dp * progress,
-                            alpha = progress
-                        )
-                    },
-                    layerBlock = {
-                        scaleX = dampedDragAnimation.scaleX
-                        scaleY = dampedDragAnimation.scaleY
-                        val velocity = dampedDragAnimation.velocity / 50f
-                        scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
-                        scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
-                    },
-                    onDrawSurface = {
-                        val progress = dampedDragAnimation.pressProgress
-                        drawRect(Color.White.copy(alpha = 1f - progress))
-                    }
-                )
+                .then(thumbSurfaceModifier)
                 .size(40f.dp, 24f.dp)
         )
     }

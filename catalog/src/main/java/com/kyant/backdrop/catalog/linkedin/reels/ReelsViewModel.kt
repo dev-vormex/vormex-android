@@ -4,31 +4,19 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import androidx.media3.exoplayer.ExoPlayer
+import com.kyant.backdrop.catalog.linkedin.reels.player.PlayerPool
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.models.Reel
 import com.kyant.backdrop.catalog.network.models.ReelComment
-import com.kyant.backdrop.catalog.network.models.ReelsFeedResponse
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
-
-/**
- * Preload status for a reel
- */
-enum class PreloadStatus {
-    NOT_STARTED,
-    PRELOADING,
-    PRELOADED,
-    FAILED
-}
 
 /**
  * UI State for Reels feature
@@ -63,14 +51,11 @@ data class ReelsUiState(
     val isLoadingMoreComments: Boolean = false,
     val isSubmittingComment: Boolean = false,
     val commentsError: String? = null,
-    val replyToComment: ReelComment? = null,
-    
-    // Preload status map (reelId -> status)
-    val preloadStatus: Map<String, PreloadStatus> = emptyMap()
+    val replyToComment: ReelComment? = null
 )
 
 /**
- * ViewModel for Reels with aggressive preloading for Instagram-like speed
+ * ViewModel for Reels with lightweight warm-up for thumbnails and feed data.
  */
 class ReelsViewModel(private val context: Context) : ViewModel() {
     
@@ -82,15 +67,9 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
         .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .build()
-    
-    // Cache for preloaded video data (URL -> cached bytes range)
-    private val preloadCache = ConcurrentHashMap<String, ByteArray>()
-    
-    // Track ongoing preload jobs
-    private val preloadJobs = ConcurrentHashMap<String, Job>()
-    
-    // Number of reels to preload ahead while user watches current reel.
-    private val PRELOAD_AHEAD_COUNT = 8
+
+    // Track thumbnails we've already warmed so scroll-driven warmups stay cheap.
+    private val warmedThumbnailUrls = ConcurrentHashMap.newKeySet<String>()
 
     private val previewCacheTtlMillis = 5 * 60 * 1000L
     private val feedCacheTtlMillis = 5 * 60 * 1000L
@@ -98,10 +77,7 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
     private var lastFeedLoadedAt = 0L
     private var isPreviewRequestInFlight = false
     private var isFeedRequestInFlight = false
-    
-    // Min and max preload bytes per MP4 reel. We aim for ~30% when size is known.
-    private val MIN_PRELOAD_BYTES = 2 * 1024 * 1024L
-    private val MAX_PRELOAD_BYTES = 12 * 1024 * 1024L
+    private val thumbnailWarmAheadCount = 5
     
     init {
         loadPreviewReels()
@@ -125,7 +101,10 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
                     nextCursor = response.nextCursor,
                     hasMore = response.hasMore
                 )
-                preloadReelsAhead(0)
+                preloadUpcomingThumbnails(0)
+                if (_uiState.value.isViewerOpen) {
+                    syncPlaybackWindow(response.reels, _uiState.value.currentReelIndex)
+                }
             }
             isFeedRequestInFlight = false
         }
@@ -164,7 +143,7 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
                     isLoadingPreview = false
                 )
                 
-                // Preload thumbnails for preview
+                // Warm preview thumbnails so the entry point feels instant.
                 preloadThumbnails(response.reels.take(8))
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(
@@ -208,8 +187,10 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
                     hasMore = response.hasMore
                 )
                 
-                // Start preloading first few reels
-                preloadReelsAhead(0)
+                preloadUpcomingThumbnails(0)
+                if (_uiState.value.isViewerOpen) {
+                    syncPlaybackWindow(response.reels, _uiState.value.currentReelIndex)
+                }
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(
                     isLoadingFeed = false,
@@ -241,12 +222,17 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
             )
             
             result.onSuccess { response ->
+                val updatedFeed = currentState.feedReels + response.reels
                 _uiState.value = _uiState.value.copy(
-                    feedReels = currentState.feedReels + response.reels,
+                    feedReels = updatedFeed,
                     isLoadingMore = false,
                     nextCursor = response.nextCursor,
                     hasMore = response.hasMore
                 )
+                preloadThumbnails(response.reels.take(thumbnailWarmAheadCount + 1))
+                if (_uiState.value.isViewerOpen) {
+                    syncPlaybackWindow(updatedFeed, _uiState.value.currentReelIndex)
+                }
             }.onFailure {
                 _uiState.value = _uiState.value.copy(isLoadingMore = false)
             }
@@ -257,14 +243,18 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
      * Open the full-screen reels viewer at a specific index
      */
     fun openReelsViewer(reels: List<Reel>, startIndex: Int = 0) {
+        val playbackReels = _uiState.value.feedReels.ifEmpty { reels }
+        if (playbackReels.isEmpty()) return
+        val safeIndex = startIndex.coerceIn(0, playbackReels.lastIndex)
+
         _uiState.value = _uiState.value.copy(
             isViewerOpen = true,
-            currentReelIndex = startIndex,
-            feedReels = if (_uiState.value.feedReels.isEmpty()) reels else _uiState.value.feedReels
+            currentReelIndex = safeIndex,
+            feedReels = playbackReels
         )
         
-        // Preload reels around the current index
-        preloadReelsAhead(startIndex)
+        preloadUpcomingThumbnails(safeIndex)
+        syncPlaybackWindow(playbackReels, safeIndex)
     }
     
     /**
@@ -272,6 +262,7 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
      */
     fun closeReelsViewer() {
         _uiState.value = _uiState.value.copy(isViewerOpen = false)
+        releasePlayback()
     }
     
     /**
@@ -288,13 +279,15 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
             val result = ApiClient.getReel(context, reelId)
             
             result.onSuccess { reel ->
+                val updatedFeed = listOf(reel) + _uiState.value.feedReels.filter { it.id != reelId }
                 // Add the reel to feedReels and open at index 0
                 _uiState.value = _uiState.value.copy(
-                    feedReels = listOf(reel) + _uiState.value.feedReels.filter { it.id != reelId },
+                    feedReels = updatedFeed,
                     isLoadingFeed = false,
                     currentReelIndex = 0
                 )
-                preloadReelsAhead(0)
+                preloadUpcomingThumbnails(0)
+                syncPlaybackWindow(updatedFeed, 0)
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(
                     isLoadingFeed = false,
@@ -343,6 +336,8 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
                         isLoadingFeed = false,
                         currentReelIndex = 0
                     )
+                    preloadUpcomingThumbnails(0)
+                    syncPlaybackWindow(response.reels, 0)
                     return@launch
                 }
             }
@@ -358,6 +353,8 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
                     hasMore = response.hasMore,
                     currentReelIndex = 0
                 )
+                preloadUpcomingThumbnails(0)
+                syncPlaybackWindow(response.reels, 0)
                 
                 if (response.reels.isEmpty()) {
                     _uiState.value = _uiState.value.copy(
@@ -378,15 +375,33 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
      */
     fun onReelChanged(newIndex: Int) {
         _uiState.value = _uiState.value.copy(currentReelIndex = newIndex)
-        
-        // Preload reels ahead of new position
-        preloadReelsAhead(newIndex)
-        
-        // Load more if near the end
-        val reels = _uiState.value.feedReels
-        if (newIndex >= reels.size - 8) {
-            loadMoreReels()
-        }
+
+        preloadUpcomingThumbnails(newIndex)
+        syncPlaybackWindow(currentPlaybackReels(), newIndex)
+    }
+
+    fun playerForIndex(index: Int): ExoPlayer? {
+        return PlayerPool.playerForIndex(context, index)
+    }
+
+    fun handlePlaybackError(index: Int): Boolean {
+        return PlayerPool.handlePlaybackError(context, index)
+    }
+
+    fun retryPlayback(index: Int) {
+        PlayerPool.retry(context, index)
+    }
+
+    fun pausePlayback(resetPosition: Boolean = false) {
+        PlayerPool.pauseAll(resetPosition)
+    }
+
+    fun resumePlayback(currentIndex: Int = _uiState.value.currentReelIndex) {
+        syncPlaybackWindow(currentPlaybackReels(), currentIndex)
+    }
+
+    fun releasePlayback() {
+        PlayerPool.release()
     }
     
     /**
@@ -581,15 +596,19 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
         }
     }
     
-    // ==================== Preloading Logic ====================
+    // ==================== Poster Warm-Up ====================
     
     /**
-     * Preload thumbnails for faster rendering
+     * Warm thumbnail requests so poster images appear immediately while video buffers.
      */
     private fun preloadThumbnails(reels: List<Reel>) {
         viewModelScope.launch(Dispatchers.IO) {
             reels.forEach { reel ->
-                reel.thumbnailUrl?.let { url ->
+                val posterUrl = reel.thumbnailUrl ?: reel.previewGifUrl
+                posterUrl?.let { url ->
+                    if (!warmedThumbnailUrls.add(url)) {
+                        return@let
+                    }
                     try {
                         val request = Request.Builder()
                             .url(url)
@@ -603,146 +622,21 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
             }
         }
     }
-    
-    /**
-     * Preload video data for reels ahead of current position
-     * This downloads the first few MB of each video for instant playback
-     */
-    private fun preloadReelsAhead(currentIndex: Int) {
-        val reels = _uiState.value.feedReels
-        val previewReels = _uiState.value.previewReels
-        val allReels = if (reels.isNotEmpty()) reels else previewReels
-        
-        if (allReels.isEmpty()) return
-        
-        // Preload current and next N reels
-        val indicesToPreload = (currentIndex..(currentIndex + PRELOAD_AHEAD_COUNT))
-            .filter { it in allReels.indices }
-        
-        indicesToPreload.forEach { index ->
-            val reel = allReels[index]
-            preloadReel(reel)
-        }
+
+    private fun preloadUpcomingThumbnails(currentIndex: Int) {
+        val reels = _uiState.value.feedReels.ifEmpty { _uiState.value.previewReels }
+        if (reels.isEmpty()) return
+
+        val safeStart = currentIndex.coerceIn(0, reels.lastIndex)
+        val postersToWarm = (safeStart..(safeStart + thumbnailWarmAheadCount))
+            .mapNotNull(reels::getOrNull)
+
+        preloadThumbnails(postersToWarm)
     }
-    
-    /**
-     * Preload a single reel's video data
-     */
-    private fun preloadReel(reel: Reel) {
-        val videoUrl = reel.hlsUrl ?: reel.videoUrl
-        
-        // Skip if already preloading or preloaded
-        val currentStatus = _uiState.value.preloadStatus[reel.id]
-        if (currentStatus == PreloadStatus.PRELOADING || currentStatus == PreloadStatus.PRELOADED) {
-            return
-        }
-        
-        // Skip if cache already has data
-        if (preloadCache.containsKey(videoUrl)) {
-            // Use non-suspend version to update state
-            updatePreloadStatusSync(reel.id, PreloadStatus.PRELOADED)
-            return
-        }
-        
-        // Cancel any existing job for this reel
-        preloadJobs[reel.id]?.cancel()
-        
-        val job = viewModelScope.launch(Dispatchers.IO) {
-            updatePreloadStatus(reel.id, PreloadStatus.PRELOADING)
-            
-            try {
-                // For HLS, just warm up the playlist
-                if (reel.hlsUrl != null) {
-                    val request = Request.Builder()
-                        .url(reel.hlsUrl)
-                        .build()
-                    val response = httpClient.newCall(request).execute()
-                    val playlist = response.body?.string().orEmpty()
-                    response.close()
 
-                    // Warm first few segments for faster startup.
-                    val segmentUrls = playlist
-                        .lineSequence()
-                        .map { it.trim() }
-                        .filter { it.isNotEmpty() && !it.startsWith("#") }
-                        .take(3)
-                        .map { segment ->
-                            if (segment.startsWith("http://") || segment.startsWith("https://")) {
-                                segment
-                            } else {
-                                URL(URL(reel.hlsUrl), segment).toString()
-                            }
-                        }
-                        .toList()
-
-                    segmentUrls.forEach { segmentUrl ->
-                        runCatching {
-                            httpClient.newCall(
-                                Request.Builder().url(segmentUrl).header("Range", "bytes=0-524287").build()
-                            ).execute().use { segResp -> segResp.body?.bytes() }
-                        }
-                    }
-                    
-                    updatePreloadStatus(reel.id, PreloadStatus.PRELOADED)
-                } else {
-                    // For MP4, preload around 30% (bounded) for faster uninterrupted play.
-                    val contentLength = runCatching {
-                        httpClient.newCall(Request.Builder().url(videoUrl).head().build())
-                            .execute()
-                            .use { headResp ->
-                                headResp.header("Content-Length")?.toLongOrNull()
-                            }
-                    }.getOrNull()
-
-                    val targetPreloadBytes = contentLength
-                        ?.let { (it * 0.30).toLong() }
-                        ?.coerceIn(MIN_PRELOAD_BYTES, MAX_PRELOAD_BYTES)
-                        ?: MIN_PRELOAD_BYTES
-
-                    val request = Request.Builder()
-                        .url(videoUrl)
-                        .header("Range", "bytes=0-${targetPreloadBytes - 1}")
-                        .build()
-                    
-                    val response = httpClient.newCall(request).execute()
-                    
-                    if (response.isSuccessful) {
-                        val bytes = response.body?.bytes()
-                        if (bytes != null) {
-                            preloadCache[videoUrl] = bytes
-                        }
-                        updatePreloadStatus(reel.id, PreloadStatus.PRELOADED)
-                    } else {
-                        updatePreloadStatus(reel.id, PreloadStatus.FAILED)
-                    }
-                    response.close()
-                }
-            } catch (e: Exception) {
-                updatePreloadStatus(reel.id, PreloadStatus.FAILED)
-            }
-        }
-        
-        preloadJobs[reel.id] = job
-    }
-    
-    /**
-     * Update preload status for a reel (suspend version for coroutines)
-     */
-    private suspend fun updatePreloadStatus(reelId: String, status: PreloadStatus) {
-        withContext(Dispatchers.Main) {
-            _uiState.value = _uiState.value.copy(
-                preloadStatus = _uiState.value.preloadStatus + (reelId to status)
-            )
-        }
-    }
-    
-    /**
-     * Update preload status synchronously (for non-coroutine contexts)
-     */
-    private fun updatePreloadStatusSync(reelId: String, status: PreloadStatus) {
-        _uiState.value = _uiState.value.copy(
-            preloadStatus = _uiState.value.preloadStatus + (reelId to status)
-        )
+    private fun syncPlaybackWindow(reels: List<Reel>, currentIndex: Int) {
+        if (reels.isEmpty()) return
+        PlayerPool.syncWindow(context, reels, currentIndex.coerceIn(0, reels.lastIndex))
     }
     
     /**
@@ -764,9 +658,12 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
      */
     override fun onCleared() {
         super.onCleared()
-        preloadJobs.values.forEach { it.cancel() }
-        preloadJobs.clear()
-        preloadCache.clear()
+        releasePlayback()
+        warmedThumbnailUrls.clear()
+    }
+
+    private fun currentPlaybackReels(): List<Reel> {
+        return _uiState.value.feedReels.ifEmpty { _uiState.value.previewReels }
     }
     
     companion object {

@@ -683,7 +683,40 @@ data class TopRepo(
     val stars: Int = 0,
     val forks: Int = 0,
     val language: String? = null,
-    val description: String? = null
+    val description: String? = null,
+    val updatedAt: String? = null
+)
+
+@Serializable
+data class GitHubContributionDay(
+    val color: String = "#ebedf0",
+    val contributionCount: Int = 0,
+    val contributionLevel: String = "NONE",
+    val date: String = "",
+    val weekday: Int = 1
+)
+
+@Serializable
+data class GitHubContributionWeek(
+    val firstDay: String = "",
+    val contributionDays: List<GitHubContributionDay> = emptyList()
+)
+
+@Serializable
+data class GitHubContributionMonth(
+    val firstDay: String = "",
+    val name: String = "",
+    val totalWeeks: Int = 0,
+    val year: Int = 0
+)
+
+@Serializable
+data class GitHubContributionCalendar(
+    val colors: List<String> = emptyList(),
+    val contributionYears: List<Int> = emptyList(),
+    val months: List<GitHubContributionMonth> = emptyList(),
+    val totalContributions: Int = 0,
+    val weeks: List<GitHubContributionWeek> = emptyList()
 )
 
 @Serializable
@@ -704,6 +737,7 @@ data class GitHubProfile(
     val avatarUrl: String? = null,
     val profileUrl: String? = null,
     val stats: GitHubStats? = null,
+    val contributionCalendar: GitHubContributionCalendar? = null,
     val lastSyncedAt: String? = null
 )
 

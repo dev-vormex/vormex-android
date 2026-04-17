@@ -21,6 +21,7 @@ import java.net.URI
  * - group:user_typing (typing indicator state)
  * - group:online_count (active members count)
  * - group:message_deleted
+ * - group:chat_cleared
  * - group:user_joined, group:user_left
  */
 object GroupSocketManager {
@@ -32,9 +33,14 @@ object GroupSocketManager {
     private var socket: Socket? = null
     private var currentToken: String? = null
     private var isConnecting = false
+    var currentUserId: String? = null
+    var activeGroupId: String? = null
     
     // Track joined groups to re-join on reconnect
     private val joinedGroups = mutableSetOf<String>()
+
+    // Notification callback for foreground group message alerts
+    private var notificationCallback: ((title: String, body: String, data: Map<String, String>) -> Unit)? = null
 
     /** Emits (groupId, messageJsonString) for new group messages */
     private val _newMessageFlow = MutableSharedFlow<Pair<String, String>>(replay = 0, extraBufferCapacity = 10)
@@ -47,6 +53,10 @@ object GroupSocketManager {
     /** Emits (groupId, userId, messageId) for message deletion events */
     private val _messageDeletedFlow = MutableSharedFlow<Triple<String, String, String>>(replay = 0, extraBufferCapacity = 5)
     val messageDeletedFlow = _messageDeletedFlow.asSharedFlow()
+
+    /** Emits when admin clears all group chat history */
+    private val _allGroupChatsClearedFlow = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 2)
+    val allGroupChatsClearedFlow = _allGroupChatsClearedFlow.asSharedFlow()
 
     /** Emits (groupId, userId, isJoining) for user join/leave events */
     private val _userJoinLeaveFlow = MutableSharedFlow<GroupUserEvent>(replay = 0, extraBufferCapacity = 5)
@@ -81,6 +91,10 @@ object GroupSocketManager {
     )
 
     fun isConnected(): Boolean = socket?.connected() == true
+
+    fun setNotificationCallback(callback: (title: String, body: String, data: Map<String, String>) -> Unit) {
+        notificationCallback = callback
+    }
     
     fun getConnectionState(): ConnectionState = when {
         socket?.connected() == true -> ConnectionState.CONNECTED
@@ -164,6 +178,9 @@ object GroupSocketManager {
                 on("group:message_deleted") { args ->
                     handleMessageDeleted(args)
                 }
+                on("group:chat_cleared") {
+                    handleAllGroupChatsCleared()
+                }
                 on("group:user_joined") { args ->
                     handleUserJoined(args)
                 }
@@ -183,6 +200,7 @@ object GroupSocketManager {
     fun disconnect() {
         Log.d(TAG, "Disconnecting group socket")
         joinedGroups.clear()
+        activeGroupId = null
         socket?.disconnect()
         socket?.off()
         socket = null
@@ -200,12 +218,16 @@ object GroupSocketManager {
 
     fun joinGroup(groupId: String) {
         Log.d(TAG, "Joining group room: $groupId")
+        activeGroupId = groupId
         joinedGroups.add(groupId)
         socket?.emit("group:join", JSONObject().put("groupId", groupId))
     }
 
     fun leaveGroup(groupId: String) {
         Log.d(TAG, "Leaving group room: $groupId")
+        if (activeGroupId == groupId) {
+            activeGroupId = null
+        }
         joinedGroups.remove(groupId)
         socket?.emit("group:leave", JSONObject().put("groupId", groupId))
     }
@@ -272,16 +294,76 @@ object GroupSocketManager {
         if (args.isEmpty()) return
         try {
             val rawArg = args[0]
-            val obj = rawArg as? JSONObject ?: JSONObject(rawArg.toString())
+            val obj = parseSocketObject(rawArg) ?: return
             val groupId = obj.optString("groupId")
             val message = obj.optJSONObject("message") ?: obj
             Log.d(TAG, "📩 New message in group $groupId: ${message.optString("content").take(50)}")
             if (groupId.isNotEmpty()) {
                 _newMessageFlow.tryEmit(groupId to message.toString())
+                showGroupNotificationIfNeeded(groupId, message, obj)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error handling group message", e)
         }
+    }
+
+    private fun parseSocketObject(rawArg: Any?): JSONObject? {
+        return when (rawArg) {
+            is JSONObject -> rawArg
+            null -> null
+            else -> runCatching { JSONObject(rawArg.toString()) }
+                .onFailure { Log.w(TAG, "Could not parse group socket payload: $rawArg", it) }
+                .getOrNull()
+        }
+    }
+
+    private fun showGroupNotificationIfNeeded(groupId: String, message: JSONObject, event: JSONObject) {
+        if (activeGroupId == groupId) {
+            Log.d(TAG, "🔕 Skipping group notification - user is viewing group $groupId")
+            return
+        }
+
+        val sender = message.optJSONObject("sender") ?: message.optJSONObject("users")
+        val senderName = sender?.optString("name")?.takeIf { it.isNotBlank() }
+            ?: sender?.optString("username")?.takeIf { it.isNotBlank() }
+            ?: "Someone"
+        val senderId = sender?.optString("id")?.takeIf { it.isNotBlank() }
+            ?: message.optString("senderId")
+        if (!currentUserId.isNullOrBlank() && senderId == currentUserId) {
+            Log.d(TAG, "🔕 Skipping group notification for self-sent message $groupId")
+            return
+        }
+
+        val contentType = message.optString("contentType", "text")
+        val displayContent = when (contentType) {
+            "image" -> "Sent a photo"
+            "video" -> "Sent a video"
+            "file" -> "Sent a file"
+            "audio" -> "Sent a voice message"
+            else -> message.optString("content", "Sent a message")
+        }
+        val groupName = event.optString("groupName").takeIf { it.isNotBlank() }
+            ?: message.optString("groupName").takeIf { it.isNotBlank() }
+            ?: "Group message"
+        val groupImage = event.optString("groupImage").takeIf { it.isNotBlank() }
+            ?: event.optString("iconImage").takeIf { it.isNotBlank() }
+            ?: message.optString("groupImage").takeIf { it.isNotBlank() }
+            ?: ""
+        val senderImage = sender?.optString("profileImage")?.takeIf { it.isNotBlank() } ?: ""
+
+        notificationCallback?.invoke(
+            groupName,
+            displayContent,
+            mapOf(
+                "type" to "group_message",
+                "groupId" to groupId,
+                "groupName" to groupName,
+                "groupImage" to groupImage,
+                "senderId" to senderId,
+                "senderName" to senderName,
+                "senderImage" to senderImage
+            )
+        )
     }
 
     private fun handleTyping(args: Array<Any>) {
@@ -331,6 +413,11 @@ object GroupSocketManager {
         } catch (e: Exception) {
             Log.e(TAG, "Error handling message deleted", e)
         }
+    }
+
+    private fun handleAllGroupChatsCleared() {
+        Log.d(TAG, "Received group:chat_cleared")
+        _allGroupChatsClearedFlow.tryEmit(Unit)
     }
 
     private fun handleUserJoined(args: Array<Any>) {

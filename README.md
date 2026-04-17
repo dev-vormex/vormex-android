@@ -1,5 +1,37 @@
 # Android Liquid Glass (Backdrop)
 
+## Local Vormex Backend
+
+Debug builds connect to the local `vormex-backend` by default:
+
+- API: `http://127.0.0.1:5000/api`
+- Socket.IO: `http://127.0.0.1:5000`
+
+This is set up for both emulators and physical devices when you use `adb reverse tcp:5000 tcp:5000`, which makes the phone's `127.0.0.1:5000` point to your computer's local backend.
+
+Quick start for a connected Android phone:
+
+```bash
+cd ../vormex-backend
+npm run dev
+```
+
+In another terminal:
+
+```bash
+cd ../vormex-android
+./scripts/connect-device.sh
+```
+
+If you prefer the emulator host bridge instead, override the debug URLs to `http://10.0.2.2:5000`.
+
+You can override debug URLs with Gradle properties:
+
+```properties
+VORMEX_DEBUG_API_BASE_URL=http://10.0.2.2:5000/api
+VORMEX_DEBUG_SOCKET_BASE_URL=http://10.0.2.2:5000
+```
+
 ![frontPhoto](artworks/banner.jpg)
 
 A customizable Liquid Glass effect library for Jetpack Compose.

@@ -1053,25 +1053,23 @@ private fun GrowthSurfaceCard(
     tint: Color = Color.White.copy(alpha = 0.10f),
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val appearance = currentVormexAppearance()
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .drawBackdrop(
+            .vormexSurface(
                 backdrop = backdrop,
-                shape = { RoundedRectangle(22.dp) },
-                effects = {
-                    vibrancy()
-                    blur(14f.dp.toPx())
-                    lens(6f.dp.toPx(), 12f.dp.toPx())
-                },
-                onDrawSurface = {
-                    drawRect(tint)
+                tone = VormexSurfaceTone.Card,
+                cornerRadius = 22.dp,
+                blurRadius = 14.dp,
+                lensRadius = 6.dp,
+                lensDepth = 12.dp,
+                surfaceColor = if (appearance.isGlassTheme) tint else appearance.cardColor,
+                borderColor = if (appearance.isGlassTheme) {
+                    contentColor.copy(alpha = 0.08f)
+                } else {
+                    appearance.cardBorderColor
                 }
-            )
-            .border(
-                width = 1.dp,
-                color = contentColor.copy(alpha = 0.08f),
-                shape = RoundedCornerShape(22.dp)
             )
             .padding(18.dp)
     ) {

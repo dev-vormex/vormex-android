@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.settingsDataStore by preferencesDataStore(name = "app_settings")
@@ -78,6 +79,17 @@ object SettingsPreferences {
     
     fun weeklySummaryEnabled(context: Context): Flow<Boolean> =
         context.settingsDataStore.data.map { it[WEEKLY_SUMMARY_ENABLED] ?: true }
+
+    suspend fun isPushNotificationDeliveryEnabled(context: Context): Boolean {
+        val settings = context.settingsDataStore.data.first()
+        return settings[PUSH_NOTIFICATIONS_ENABLED] ?: true
+    }
+
+    suspend fun isMessageNotificationDeliveryEnabled(context: Context): Boolean {
+        val settings = context.settingsDataStore.data.first()
+        return (settings[PUSH_NOTIFICATIONS_ENABLED] ?: true) &&
+            (settings[MESSAGE_NOTIFICATIONS_ENABLED] ?: true)
+    }
     
     // ==================== PRIVACY GETTERS ====================
     

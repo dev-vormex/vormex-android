@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -115,7 +116,7 @@ fun VideoPlayer(
             .aspectRatio(videoAspectRatio.coerceIn(0.5f, 2.5f))
             .background(Color.Black)
             .then(
-                if (onFullScreenClick != null) {
+                if (showControls && onFullScreenClick != null) {
                     Modifier.clickable { onFullScreenClick() }
                 } else {
                     Modifier
@@ -201,7 +202,11 @@ fun VideoPlayer(
                 modifier = Modifier
                     .fillMaxSize()
                     .clickable {
-                        if (isPlaying) exoPlayer.pause() else exoPlayer.play()
+                        if (onFullScreenClick != null) {
+                            onFullScreenClick()
+                        } else {
+                            if (isPlaying) exoPlayer.pause() else exoPlayer.play()
+                        }
                     },
                 contentAlignment = Alignment.Center
             ) {
@@ -269,15 +274,16 @@ private fun PlayIcon(
 @Composable
 fun FullScreenVideoPlayer(
     videoUrl: String,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    backgroundStatusText: String? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     
-    var isLoading by remember { mutableStateOf(true) }
-    var hasError by remember { mutableStateOf(false) }
+    var isLoading by remember(videoUrl) { mutableStateOf(true) }
+    var hasError by remember(videoUrl) { mutableStateOf(false) }
     
-    val exoPlayer = remember {
+    val exoPlayer = remember(videoUrl) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(videoUrl))
             prepare()
@@ -296,7 +302,7 @@ fun FullScreenVideoPlayer(
         }
     }
     
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, exoPlayer) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> exoPlayer.pause()
@@ -308,6 +314,11 @@ fun FullScreenVideoPlayer(
         
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    DisposableEffect(exoPlayer) {
+        onDispose {
             exoPlayer.release()
         }
     }
@@ -332,6 +343,14 @@ fun FullScreenVideoPlayer(
                     controllerShowTimeoutMs = 3000
                     controllerHideOnTouch = true
                 }
+            },
+            update = { view ->
+                view.player = exoPlayer
+                view.useController = true
+                view.showController()
+            },
+            onRelease = { view ->
+                view.player = null
             },
             modifier = Modifier.fillMaxSize()
         )
@@ -403,6 +422,39 @@ fun FullScreenVideoPlayer(
                             style = TextStyle(Color.White, 13.sp, FontWeight.Medium)
                         )
                     }
+                }
+            }
+        }
+
+        backgroundStatusText?.let { status ->
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp, vertical = 24.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Color.Black.copy(alpha = 0.68f))
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (!status.equals("Saved locally", ignoreCase = true)) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = Color.White
+                        )
+                    }
+                    BasicText(
+                        text = status,
+                        style = TextStyle(
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
                 }
             }
         }

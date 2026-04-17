@@ -20,6 +20,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
 import com.kyant.backdrop.catalog.network.ChatSocketManager
+import com.kyant.backdrop.catalog.network.GroupSocketManager
 import com.kyant.backdrop.catalog.data.ChatMutePreferences
 import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
 import com.kyant.backdrop.catalog.notifications.PushTokenRegistrar
@@ -40,6 +41,7 @@ data class NotificationDeepLink(
     val postId: String? = null,
     val reelId: String? = null,
     val conversationId: String? = null,
+    val groupId: String? = null,
     val referralCode: String? = null,
     val authMode: String? = null
 )
@@ -179,8 +181,9 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
             val postId = intent.getStringExtra(VormexMessagingService.EXTRA_POST_ID)
             val reelId = intent.getStringExtra(VormexMessagingService.EXTRA_REEL_ID)
             val conversationId = intent.getStringExtra(VormexMessagingService.EXTRA_CONVERSATION_ID)
+            val groupId = intent.getStringExtra(VormexMessagingService.EXTRA_GROUP_ID)
             
-            Log.d(TAG, "Handling deep link: action=$action, userId=$userId, postId=$postId, reelId=$reelId, conversationId=$conversationId")
+            Log.d(TAG, "Handling deep link: action=$action, userId=$userId, postId=$postId, reelId=$reelId, conversationId=$conversationId, groupId=$groupId")
             
             pendingDeepLink = NotificationDeepLink(
                 action = action,
@@ -188,7 +191,8 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
                 connectionId = connectionId,
                 postId = postId,
                 reelId = reelId,
-                conversationId = conversationId
+                conversationId = conversationId,
+                groupId = groupId
             )
         }
     }
@@ -258,6 +262,32 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
                 senderImageUrl = data["senderImage"],
                 conversationId = data["conversationId"] ?: "",
                 senderId = data["user_id"] ?: ""
+            )
+        }
+
+        GroupSocketManager.setNotificationCallback { groupName, messageContent, data ->
+            if (!isInForeground) {
+                Log.d(TAG, "🔕 Skipping group socket notification while app is backgrounded")
+                return@setNotificationCallback
+            }
+
+            val groupId = data["groupId"].orEmpty()
+            val muteKey = MessageNotificationManager.groupNotificationKey(groupId)
+            if (groupId.isNotBlank() && ChatMutePreferences.isMuted(this, muteKey)) {
+                Log.d(TAG, "🔕 Skipping group socket notification — group muted: $groupId")
+                return@setNotificationCallback
+            }
+
+            Log.d(TAG, "🔔 Local group notification: $groupName - $messageContent")
+            MessageNotificationManager.showGroupMessageNotification(
+                context = this,
+                groupName = groupName,
+                groupImageUrl = data["groupImage"],
+                senderName = data["senderName"] ?: "Someone",
+                messageContent = messageContent,
+                senderImageUrl = data["senderImage"],
+                groupId = groupId,
+                senderId = data["senderId"] ?: ""
             )
         }
     }

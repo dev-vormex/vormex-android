@@ -1,6 +1,7 @@
 package com.kyant.backdrop.catalog.network
 
 import android.content.Context
+import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -34,6 +35,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import kotlinx.io.asSource
+import kotlinx.io.buffered
+import java.io.IOException
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "vormex_prefs")
 
@@ -47,12 +51,25 @@ object ApiClient {
         explicitNulls = false // Don't send null values to backend
     }
     
-    private val client = HttpClient(OkHttp) {
+    private val client = createHttpClient(
+        defaultJsonContentType = true,
+        logBody = true
+    )
+
+    private val uploadClient = createHttpClient(
+        defaultJsonContentType = false,
+        logBody = false
+    )
+
+    private fun createHttpClient(
+        defaultJsonContentType: Boolean,
+        logBody: Boolean
+    ) = HttpClient(OkHttp) {
         engine {
             config {
                 connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
-                writeTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+                readTimeout(300, java.util.concurrent.TimeUnit.SECONDS)
+                writeTimeout(300, java.util.concurrent.TimeUnit.SECONDS)
             }
         }
         install(ContentNegotiation) {
@@ -61,16 +78,18 @@ object ApiClient {
         if (BuildConfig.DEBUG) {
             install(Logging) {
                 logger = Logger.ANDROID
-                level = LogLevel.BODY
+                level = if (logBody) LogLevel.BODY else LogLevel.HEADERS
             }
         }
         install(HttpTimeout) {
-            requestTimeoutMillis = 180000 // 3 minutes for large uploads
+            requestTimeoutMillis = 300000 // 5 minutes for large video uploads
             connectTimeoutMillis = 30000
-            socketTimeoutMillis = 120000
+            socketTimeoutMillis = 300000
         }
-        defaultRequest {
-            contentType(ContentType.Application.Json)
+        if (defaultJsonContentType) {
+            defaultRequest {
+                contentType(ContentType.Application.Json)
+            }
         }
     }
     
@@ -1493,29 +1512,104 @@ object ApiClient {
      */
     suspend fun uploadChatMedia(
         context: Context,
+        uri: Uri,
+        fileName: String,
+        mimeType: String,
+        fileSize: Long? = null,
+        durationMs: Long? = null
+    ): Result<UploadChatMediaResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = uploadClient.post("$BASE_URL/chat/upload") {
+                header("Authorization", "Bearer $token")
+                setBody(MultiPartFormDataContent(formData {
+                    append("mediaType", chatMediaTypeFromMime(mimeType))
+                    durationMs?.let { append("durationMs", it.toString()) }
+                    appendInput(
+                        key = "file",
+                        headers = chatFilePartHeaders(fileName, mimeType),
+                        size = fileSize
+                    ) {
+                        val stream = context.contentResolver.openInputStream(uri)
+                            ?: throw IOException("Could not open this file")
+                        stream.asSource().buffered()
+                    }
+                }))
+            }
+            if (response.status.isSuccess()) Result.success(response.body())
+            else {
+                val responseText = response.bodyAsText()
+                val errorMessage = runCatching {
+                    json.decodeFromString<ApiError>(responseText).getErrorMessage()
+                }.getOrDefault(responseText.ifBlank { "Upload failed" })
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Result.failure(Exception(chatUploadErrorMessage(e), e))
+        }
+    }
+
+    suspend fun uploadChatMedia(
+        context: Context,
         fileBytes: ByteArray,
         fileName: String,
         mimeType: String
     ): Result<UploadChatMediaResponse> {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.post("$BASE_URL/chat/upload") {
+            val response = uploadClient.post("$BASE_URL/chat/upload") {
                 header("Authorization", "Bearer $token")
                 setBody(MultiPartFormDataContent(formData {
+                    append("mediaType", chatMediaTypeFromMime(mimeType))
                     append(
                         "file",
                         fileBytes,
-                        Headers.build {
-                            append(HttpHeaders.ContentType, mimeType)
-                            append(HttpHeaders.ContentDisposition, "filename=${fileName}")
-                        }
+                        chatFilePartHeaders(fileName, mimeType)
                     )
                 }))
             }
             if (response.status.isSuccess()) Result.success(response.body())
-            else Result.failure(Exception((response.body<ApiError>()).getErrorMessage()))
+            else {
+                val responseText = response.bodyAsText()
+                val errorMessage = runCatching {
+                    json.decodeFromString<ApiError>(responseText).getErrorMessage()
+                }.getOrDefault(responseText.ifBlank { "Upload failed" })
+                Result.failure(Exception(errorMessage))
+            }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(Exception(chatUploadErrorMessage(e), e))
+        }
+    }
+
+    private fun chatUploadErrorMessage(error: Exception): String {
+        val rawMessage = error.message.orEmpty()
+        return if (
+            rawMessage.contains("broken pipe", ignoreCase = true) ||
+            rawMessage.contains("connection reset", ignoreCase = true)
+        ) {
+            "Upload was interrupted. Please choose a video that is 90 seconds or less and under 150 MB."
+        } else {
+            rawMessage.ifBlank { "Upload failed" }
+        }
+    }
+
+    private fun chatMediaTypeFromMime(mimeType: String): String = when {
+        mimeType.startsWith("image/") -> "image"
+        mimeType.startsWith("video/") -> "video"
+        mimeType.startsWith("audio/") -> "audio"
+        else -> "document"
+    }
+
+    private fun chatFilePartHeaders(fileName: String, mimeType: String): Headers {
+        val safeFileName = fileName
+            .replace("\\", "_")
+            .replace("\"", "_")
+            .replace("\r", "_")
+            .replace("\n", "_")
+
+        return Headers.build {
+            append(HttpHeaders.ContentType, mimeType)
+            append(HttpHeaders.ContentDisposition, "filename=\"$safeFileName\"")
         }
     }
 

@@ -50,6 +50,7 @@ import com.kyant.backdrop.catalog.components.LiquidToggle
 import com.kyant.backdrop.catalog.data.SettingsPreferences
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.GrowthApiService
+import com.kyant.backdrop.catalog.notifications.PushTokenRegistrar
 import kotlinx.coroutines.launch
 
 private data class HelpFaqItemData(
@@ -249,7 +250,8 @@ fun NotificationSettingsScreen(
                     accentColor = accentColor,
                     onCheckedChange = { 
                         coroutineScope.launch { 
-                            SettingsPreferences.setPushNotificationsEnabled(context, it) 
+                            SettingsPreferences.setPushNotificationsEnabled(context, it)
+                            PushTokenRegistrar.setPushEnabled(context, it)
                         }
                     }
                 )

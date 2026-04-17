@@ -340,6 +340,7 @@ private fun LiquidGlassAuthFrame(
     scrollable: Boolean,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val appearance = currentVormexAppearance()
     val sensor = rememberUISensor()
     val logoDrop = remember { Animatable(-220f) }
     val cardDrop = remember { Animatable(120f) }
@@ -428,17 +429,14 @@ private fun LiquidGlassAuthFrame(
                         rotationY = -sensorX * 3.6f
                         cameraDistance = 28f * density
                     }
-                    .drawBackdrop(
+                    .vormexSurface(
                         backdrop = backdrop,
-                        shape = { RoundedRectangle(34f.dp) },
-                        effects = {
-                            vibrancy()
-                            backdropBlur(22f.dp.toPx())
-                            lens(10f.dp.toPx(), 18f.dp.toPx())
-                        },
-                        onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = 0.16f))
-                        }
+                        tone = VormexSurfaceTone.Card,
+                        cornerRadius = 34.dp,
+                        blurRadius = 22.dp,
+                        lensRadius = 10.dp,
+                        lensDepth = 18.dp,
+                        surfaceColor = if (appearance.isGlassTheme) Color.White.copy(alpha = 0.16f) else appearance.cardColor
                     )
                     .padding(cardPadding)
             ) {
@@ -652,9 +650,13 @@ private fun AuthInputField(
     accentColor: Color,
     visualTransformation: androidx.compose.ui.text.input.VisualTransformation = androidx.compose.ui.text.input.VisualTransformation.None
 ) {
+    val appearance = currentVormexAppearance()
     val shape = RoundedCornerShape(22.dp)
-    val borderColor = Color.White.copy(alpha = 0.72f)
+    val isGlassTheme = appearance.isGlassTheme
+    val borderColor = if (isGlassTheme) Color.White.copy(alpha = 0.72f) else appearance.inputBorderColor
     val baseColor = Color(0xFFF9FCFF)
+    val textColor = if (isGlassTheme) Color(0xFF102033) else appearance.contentColor
+    val placeholderColor = if (isGlassTheme) Color(0xFF6B7280) else appearance.mutedContentColor
 
     BasicTextField(
         value = value,
@@ -662,7 +664,7 @@ private fun AuthInputField(
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
         textStyle = TextStyle(
-            color = Color(0xFF102033),
+            color = textColor,
             fontSize = 16.sp,
             fontWeight = FontWeight.Medium
         ),
@@ -673,13 +675,19 @@ private fun AuthInputField(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(shape)
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                baseColor.copy(alpha = 0.92f),
-                                baseColor.copy(alpha = 0.76f)
+                    .then(
+                        if (isGlassTheme) {
+                            Modifier.background(
+                                Brush.verticalGradient(
+                                    listOf(
+                                        baseColor.copy(alpha = 0.92f),
+                                        baseColor.copy(alpha = 0.76f)
+                                    )
+                                )
                             )
-                        )
+                        } else {
+                            Modifier.background(appearance.inputColor, shape)
+                        }
                     )
                     .border(1.dp, borderColor, shape)
                     .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -714,7 +722,7 @@ private fun AuthInputField(
                             BasicText(
                                 placeholder,
                                 style = TextStyle(
-                                    color = Color(0xFF6B7280),
+                                    color = placeholderColor,
                                     fontSize = 15.sp
                                 )
                             )
@@ -766,6 +774,7 @@ private fun AuthGoogleButton(
     isEnabled: Boolean,
     onClick: () -> Unit
 ) {
+    val appearance = currentVormexAppearance()
     LiquidButton(
         onClick = {
             if (isEnabled) {
@@ -776,7 +785,7 @@ private fun AuthGoogleButton(
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp),
-        surfaceColor = Color.White.copy(alpha = 0.2f),
+        surfaceColor = if (appearance.isGlassTheme) Color.White.copy(alpha = 0.2f) else Color.Unspecified,
         isInteractive = isEnabled
     ) {
         if (isLoading) {

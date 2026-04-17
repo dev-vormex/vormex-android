@@ -3,6 +3,8 @@ package com.kyant.backdrop.catalog.components
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -63,15 +66,27 @@ fun LiquidBottomTabs(
     backdrop: Backdrop,
     tabsCount: Int,
     modifier: Modifier = Modifier,
+    useGlassEffects: Boolean = true,
+    lightTheme: Boolean? = null,
+    accentColor: Color? = null,
     content: @Composable RowScope.() -> Unit
 ) {
-    val isLightTheme = !isSystemInDarkTheme()
-    val accentColor =
+    val isLightTheme = lightTheme ?: !isSystemInDarkTheme()
+    val resolvedAccentColor = accentColor ?:
         if (isLightTheme) Color(0xFF0088FF)
         else Color(0xFF0091FF)
-    val containerColor =
-        if (isLightTheme) Color(0xFFFAFAFA).copy(0.15f)
-        else Color(0xFF121212).copy(0.15f)
+    val containerColor = if (useGlassEffects) {
+        if (isLightTheme) Color(0xFFFAFAFA).copy(0.4f)
+        else Color(0xFF121212).copy(0.4f)
+    } else {
+        if (isLightTheme) Color.White.copy(alpha = 0.96f)
+        else Color(0xFF0F1724).copy(alpha = 0.96f)
+    }
+    val solidBorderColor =
+        if (isLightTheme) Color(0xFFD6E0EB) else Color.White.copy(alpha = 0.10f)
+    val solidIndicatorColor =
+        if (isLightTheme) resolvedAccentColor.copy(alpha = 0.12f)
+        else resolvedAccentColor.copy(alpha = 0.24f)
 
     val tabsBackdrop = rememberLayerBackdrop()
 
@@ -158,45 +173,9 @@ fun LiquidBottomTabs(
             )
         }
 
-        Row(
-            Modifier
-                .graphicsLayer {
-                    translationX = panelOffset
-                }
-                .drawBackdrop(
-                    backdrop = backdrop,
-                    shape = { Capsule() },
-                    effects = {
-                        vibrancy()
-                        blur(8f.dp.toPx())
-                        lens(24f.dp.toPx(), 24f.dp.toPx())
-                    },
-                    layerBlock = {
-                        val progress = dampedDragAnimation.pressProgress
-                        val scale = lerp(1f, 1f + 16f.dp.toPx() / size.width, progress)
-                        scaleX = scale
-                        scaleY = scale
-                    },
-                    onDrawSurface = { drawRect(containerColor) }
-                )
-                .then(interactiveHighlight.modifier)
-                .height(64f.dp)
-                .fillMaxWidth()
-                .padding(4f.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            content = content
-        )
-
-        CompositionLocalProvider(
-            LocalLiquidBottomTabScale provides {
-                lerp(1f, 1.2f, dampedDragAnimation.pressProgress)
-            }
-        ) {
+        if (useGlassEffects) {
             Row(
                 Modifier
-                    .clearAndSetSemantics {}
-                    .alpha(0f)
-                    .layerBackdrop(tabsBackdrop)
                     .graphicsLayer {
                         translationX = panelOffset
                     }
@@ -204,84 +183,164 @@ fun LiquidBottomTabs(
                         backdrop = backdrop,
                         shape = { Capsule() },
                         effects = {
-                            val progress = dampedDragAnimation.pressProgress
                             vibrancy()
                             blur(8f.dp.toPx())
+                            lens(24f.dp.toPx(), 24f.dp.toPx())
+                        },
+                        layerBlock = {
+                            val progress = dampedDragAnimation.pressProgress
+                            val scale = lerp(1f, 1f + 16f.dp.toPx() / size.width, progress)
+                            scaleX = scale
+                            scaleY = scale
+                        },
+                        onDrawSurface = { drawRect(containerColor) }
+                    )
+                    .then(interactiveHighlight.modifier)
+                    .height(64f.dp)
+                    .fillMaxWidth()
+                    .padding(4f.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                content = content
+            )
+
+            CompositionLocalProvider(
+                LocalLiquidBottomTabScale provides {
+                    lerp(1f, 1.2f, dampedDragAnimation.pressProgress)
+                }
+            ) {
+                Row(
+                    Modifier
+                        .clearAndSetSemantics {}
+                        .alpha(0f)
+                        .layerBackdrop(tabsBackdrop)
+                        .graphicsLayer {
+                            translationX = panelOffset
+                        }
+                        .drawBackdrop(
+                            backdrop = backdrop,
+                            shape = { Capsule() },
+                            effects = {
+                                val progress = dampedDragAnimation.pressProgress
+                                vibrancy()
+                                blur(8f.dp.toPx())
+                                lens(
+                                    24f.dp.toPx() * progress,
+                                    24f.dp.toPx() * progress
+                                )
+                            },
+                            highlight = {
+                                val progress = dampedDragAnimation.pressProgress
+                                Highlight.Default.copy(alpha = progress)
+                            },
+                            onDrawSurface = { drawRect(containerColor) }
+                        )
+                        .then(interactiveHighlight.modifier)
+                        .height(56f.dp)
+                        .fillMaxWidth()
+                        .padding(horizontal = 4f.dp)
+                        .graphicsLayer(colorFilter = ColorFilter.tint(resolvedAccentColor)),
+                    verticalAlignment = Alignment.CenterVertically,
+                    content = content
+                )
+            }
+
+            Box(
+                Modifier
+                    .padding(horizontal = 4f.dp)
+                    .graphicsLayer {
+                        translationX =
+                            if (isLtr) dampedDragAnimation.value * tabWidth + panelOffset
+                            else size.width - (dampedDragAnimation.value + 1f) * tabWidth + panelOffset
+                    }
+                    .then(interactiveHighlight.gestureModifier)
+                    .then(dampedDragAnimation.modifier)
+                    .drawBackdrop(
+                        backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop),
+                        shape = { Capsule() },
+                        effects = {
+                            val progress = dampedDragAnimation.pressProgress
                             lens(
-                                24f.dp.toPx() * progress,
-                                24f.dp.toPx() * progress
+                                10f.dp.toPx() * progress,
+                                14f.dp.toPx() * progress,
+                                chromaticAberration = true
                             )
                         },
                         highlight = {
                             val progress = dampedDragAnimation.pressProgress
                             Highlight.Default.copy(alpha = progress)
                         },
-                        onDrawSurface = { drawRect(containerColor) }
+                        shadow = {
+                            val progress = dampedDragAnimation.pressProgress
+                            Shadow(alpha = progress)
+                        },
+                        innerShadow = {
+                            val progress = dampedDragAnimation.pressProgress
+                            InnerShadow(
+                                radius = 8f.dp * progress,
+                                alpha = progress
+                            )
+                        },
+                        layerBlock = {
+                            scaleX = dampedDragAnimation.scaleX
+                            scaleY = dampedDragAnimation.scaleY
+                            val velocity = dampedDragAnimation.velocity / 10f
+                            scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
+                            scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
+                        },
+                        onDrawSurface = {
+                            val progress = dampedDragAnimation.pressProgress
+                            drawRect(
+                                if (isLightTheme) Color.Black.copy(0.1f)
+                                else Color.White.copy(0.1f),
+                                alpha = 1f - progress
+                            )
+                            drawRect(Color.Black.copy(alpha = 0.03f * progress))
+                        }
                     )
-                    .then(interactiveHighlight.modifier)
                     .height(56f.dp)
+                    .fillMaxWidth(1f / tabsCount)
+            )
+        } else {
+            Box(
+                Modifier
+                    .graphicsLayer {
+                        translationX = panelOffset
+                    }
+                    .clip(Capsule())
+                    .background(containerColor)
+                    .border(1.dp, solidBorderColor, Capsule())
+                    .height(64f.dp)
                     .fillMaxWidth()
-                    .padding(horizontal = 4f.dp)
-                    .graphicsLayer(colorFilter = ColorFilter.tint(Color.White)),
+            )
+
+            Box(
+                Modifier
+                    .padding(horizontal = 4f.dp, vertical = 4f.dp)
+                    .graphicsLayer {
+                        translationX =
+                            if (isLtr) dampedDragAnimation.value * tabWidth + panelOffset
+                            else size.width - (dampedDragAnimation.value + 1f) * tabWidth + panelOffset
+                        scaleX = 1f
+                        scaleY = 1f
+                    }
+                    .clip(Capsule())
+                    .background(solidIndicatorColor)
+                    .height(56f.dp)
+                    .fillMaxWidth(1f / tabsCount)
+            )
+
+            Row(
+                Modifier
+                    .graphicsLayer {
+                        translationX = panelOffset
+                    }
+                    .height(64f.dp)
+                    .fillMaxWidth()
+                    .padding(4f.dp)
+                    .then(dampedDragAnimation.modifier),
                 verticalAlignment = Alignment.CenterVertically,
                 content = content
             )
         }
-
-        Box(
-            Modifier
-                .padding(horizontal = 4f.dp)
-                .graphicsLayer {
-                    translationX =
-                        if (isLtr) dampedDragAnimation.value * tabWidth + panelOffset
-                        else size.width - (dampedDragAnimation.value + 1f) * tabWidth + panelOffset
-                }
-                .then(interactiveHighlight.gestureModifier)
-                .then(dampedDragAnimation.modifier)
-                .drawBackdrop(
-                    backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop),
-                    shape = { Capsule() },
-                    effects = {
-                        val progress = dampedDragAnimation.pressProgress
-                        lens(
-                            10f.dp.toPx() * progress,
-                            14f.dp.toPx() * progress,
-                            chromaticAberration = true
-                        )
-                    },
-                    highlight = {
-                        val progress = dampedDragAnimation.pressProgress
-                        Highlight.Default.copy(alpha = progress)
-                    },
-                    shadow = {
-                        val progress = dampedDragAnimation.pressProgress
-                        Shadow(alpha = progress)
-                    },
-                    innerShadow = {
-                        val progress = dampedDragAnimation.pressProgress
-                        InnerShadow(
-                            radius = 8f.dp * progress,
-                            alpha = progress
-                        )
-                    },
-                    layerBlock = {
-                        scaleX = dampedDragAnimation.scaleX
-                        scaleY = dampedDragAnimation.scaleY
-                        val velocity = dampedDragAnimation.velocity / 10f
-                        scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
-                        scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
-                    },
-                    onDrawSurface = {
-                        val progress = dampedDragAnimation.pressProgress
-                        drawRect(
-                            Color.White.copy(0.3f),
-                            alpha = 1f - progress
-                        )
-                        drawRect(Color.White.copy(alpha = 0.1f * progress))
-                    }
-                )
-                .height(56f.dp)
-                .fillMaxWidth(1f / tabsCount)
-        )
     }
 }

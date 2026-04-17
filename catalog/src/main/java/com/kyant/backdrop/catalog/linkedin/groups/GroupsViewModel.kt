@@ -9,6 +9,7 @@ import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.GroupsApiService
 import com.kyant.backdrop.catalog.network.GroupSocketManager
 import com.kyant.backdrop.catalog.network.models.*
+import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -106,6 +107,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     private fun loadCurrentUser() {
         viewModelScope.launch {
             currentUserId = ApiClient.getCurrentUserId(context)
+            GroupSocketManager.currentUserId = currentUserId
         }
     }
     
@@ -421,6 +423,10 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     fun loadGroupChat(groupId: String) {
         viewModelScope.launch {
             _chatState.value = GroupChatUiState(isLoading = true)
+            MessageNotificationManager.clearConversationNotification(
+                context,
+                MessageNotificationManager.groupNotificationKey(groupId)
+            )
             
             // Connect socket and join room
             val token = ApiClient.getToken(context)
@@ -489,6 +495,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
         if (content.isBlank() && mediaUrl == null) return
         
         val tempId = UUID.randomUUID().toString()
+        val replyToMessageId = _chatState.value.replyingTo?.id
         val contentType = when {
             mediaUrl != null && mediaType?.startsWith("image") == true -> "image"
             mediaUrl != null && mediaType?.startsWith("video") == true -> "video"
@@ -509,7 +516,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
             contentType = contentType,
             mediaUrl = mediaUrl,
             mediaType = mediaType,
-            replyToId = _chatState.value.replyingTo?.id,
+            replyToId = replyToMessageId,
             createdAt = java.time.Instant.now().toString()
         )
         
@@ -519,18 +526,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
             replyingTo = null
         )
         
-        // Send via socket
-        GroupSocketManager.sendMessage(
-            groupId = groupId,
-            content = content,
-            tempId = tempId,
-            contentType = contentType,
-            mediaUrl = mediaUrl,
-            mediaType = mediaType,
-            replyToId = _chatState.value.replyingTo?.id
-        )
-        
-        // Also send via REST as fallback
+        // Send via REST so persistence, real-time fanout, and push notifications share one path.
         viewModelScope.launch {
             GroupsApiService.sendGroupMessage(
                 context = context,
@@ -539,15 +535,14 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                 contentType = contentType,
                 mediaUrl = mediaUrl,
                 mediaType = mediaType,
-                replyToId = _chatState.value.replyingTo?.id
+                replyToId = replyToMessageId
             ).fold(
                 onSuccess = { message ->
                     // Replace temp message with real one
                     _chatState.value = _chatState.value.copy(
                         isSending = false,
-                        messages = _chatState.value.messages.map {
-                            if (it.id == tempId) message else it
-                        }
+                        messages = _chatState.value.messages
+                            .filterNot { it.id == tempId || it.id == message.id } + message
                     )
                 },
                 onFailure = { e ->
@@ -640,6 +635,20 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                         messages = _chatState.value.messages.filter { it.id != messageId }
                     )
                 }
+            }
+        }
+
+        viewModelScope.launch {
+            GroupSocketManager.allGroupChatsClearedFlow.collect {
+                _chatState.value = _chatState.value.copy(
+                    messages = emptyList(),
+                    typingUsers = emptyList(),
+                    hasMoreMessages = false,
+                    isSending = false,
+                    replyingTo = null,
+                    error = null
+                )
+                MessageNotificationManager.clearAll(context)
             }
         }
     }

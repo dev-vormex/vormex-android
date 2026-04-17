@@ -48,6 +48,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -62,6 +63,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -118,6 +120,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.foundation.border
+import kotlin.math.max
+import kotlin.math.min
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.PathEffect
@@ -133,6 +137,8 @@ import java.time.OffsetDateTime
 import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.roundToInt
+
+private const val ProfileGitHubSectionKey = "profile_github_section"
 
 // ==================== Main Profile Screen ====================
 
@@ -159,9 +165,10 @@ fun ProfileScreen(
     // Theme detection
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
     val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
-    val isGlassTheme = themeMode == "glass"
-    val isDarkTheme = themeMode == "dark"
-    val isLightTheme = themeMode == "light"
+    val appearance = currentVormexAppearance(themeMode)
+    val isGlassTheme = appearance.isGlassTheme
+    val isDarkTheme = appearance.isDarkTheme
+    val isLightTheme = appearance.isLightTheme
     
     // Project screen state
     var showAddProject by remember { mutableStateOf(false) }
@@ -791,8 +798,40 @@ private fun ProfileContent(
     val profile = uiState.profile!!
     // Derive isLightTheme for components that need it
     val isLightTheme = !isDarkTheme
+    val listState = rememberLazyListState()
+    val isGitHubItemVisible by remember(listState, profile.github.connected, uiState.isOwner) {
+        derivedStateOf {
+            if (!(profile.github.connected || uiState.isOwner)) return@derivedStateOf false
+
+            val layoutInfo = listState.layoutInfo
+            val githubItem = layoutInfo.visibleItemsInfo.firstOrNull { it.key == ProfileGitHubSectionKey }
+                ?: return@derivedStateOf false
+
+            val viewportStart = layoutInfo.viewportStartOffset
+            val viewportEnd = layoutInfo.viewportEndOffset
+            val visibleTop = max(githubItem.offset, viewportStart)
+            val visibleBottom = min(githubItem.offset + githubItem.size, viewportEnd)
+            val visibleHeight = (visibleBottom - visibleTop).coerceAtLeast(0)
+            val visibleRatio = visibleHeight.toFloat() / githubItem.size.coerceAtLeast(1)
+            visibleRatio >= 0.22f
+        }
+    }
+    var shouldAnimateGitHubSection by remember(
+        profile.user.username,
+        profile.github.username,
+        profile.github.lastSyncedAt,
+        profile.github.contributionCalendar?.totalContributions,
+        uiState.isOwner
+    ) { mutableStateOf(false) }
+
+    LaunchedEffect(isGitHubItemVisible) {
+        if (isGitHubItemVisible) {
+            shouldAnimateGitHubSection = true
+        }
+    }
     
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 100.dp)
     ) {
@@ -852,14 +891,15 @@ private fun ProfileContent(
         
         // GitHub Stats Section
         if (profile.github.connected || uiState.isOwner) {
-            item {
+            item(key = ProfileGitHubSectionKey) {
                 Spacer(Modifier.height(12.dp))
                 GitHubSection(
                     github = profile.github,
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
-                    isOwner = uiState.isOwner
+                    isOwner = uiState.isOwner,
+                    isVisible = shouldAnimateGitHubSection
                 )
             }
         }

@@ -1,5 +1,6 @@
 package com.kyant.backdrop.catalog.linkedin.groups
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -38,8 +39,14 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -67,8 +74,10 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.catalog.chat.shouldShowClusterMetaForGroup
+import com.kyant.backdrop.catalog.data.ChatMutePreferences
 import com.kyant.backdrop.catalog.network.GroupSocketManager
 import com.kyant.backdrop.catalog.network.models.*
+import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.vibrancy
@@ -94,6 +103,11 @@ fun GroupChatScreen(
     
     var messageInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val groupMuteKey = remember(groupId) { MessageNotificationManager.groupNotificationKey(groupId) }
+    var muteUntilMillis by remember(groupId) {
+        mutableStateOf(ChatMutePreferences.getMuteUntilMillis(context, groupMuteKey))
+    }
+    val isNotificationsMuted = muteUntilMillis > System.currentTimeMillis()
     
     // Load chat when screen opens
     LaunchedEffect(groupId) {
@@ -127,7 +141,20 @@ fun GroupChatScreen(
             group = chatState.group,
             onlineCount = chatState.onlineCount,
             connectionState = chatState.connectionState,
-            onBackClick = onNavigateBack
+            isNotificationsMuted = isNotificationsMuted,
+            onBackClick = onNavigateBack,
+            onToggleNotifications = {
+                if (isNotificationsMuted) {
+                    ChatMutePreferences.clearMute(context, groupMuteKey)
+                    muteUntilMillis = 0L
+                    Toast.makeText(context, "Group notifications on", Toast.LENGTH_SHORT).show()
+                } else {
+                    ChatMutePreferences.setMuteUntilMillis(context, groupMuteKey, Long.MAX_VALUE)
+                    muteUntilMillis = Long.MAX_VALUE
+                    MessageNotificationManager.clearConversationNotification(context, groupMuteKey)
+                    Toast.makeText(context, "Group notifications muted", Toast.LENGTH_SHORT).show()
+                }
+            }
         )
         
         // Messages
@@ -290,9 +317,12 @@ private fun ChatHeader(
     group: Group?,
     onlineCount: Int,
     connectionState: GroupSocketManager.ConnectionState,
-    onBackClick: () -> Unit
+    isNotificationsMuted: Boolean,
+    onBackClick: () -> Unit,
+    onToggleNotifications: () -> Unit
 ) {
     val context = LocalContext.current
+    var showMenu by remember { mutableStateOf(false) }
     
     Row(
         Modifier
@@ -388,6 +418,45 @@ private fun ChatHeader(
                         color = contentColor.copy(alpha = 0.5f),
                         fontSize = 12.sp
                     )
+                )
+            }
+        }
+
+        Box {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .background(contentColor.copy(alpha = 0.1f), CircleShape)
+                    .clip(CircleShape)
+                    .clickable { showMenu = true },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.MoreVert,
+                    contentDescription = "Group chat menu",
+                    tint = contentColor,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false }
+            ) {
+                DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(
+                            if (isNotificationsMuted) Icons.Default.Notifications else Icons.Default.NotificationsOff,
+                            contentDescription = null
+                        )
+                    },
+                    text = {
+                        Text(if (isNotificationsMuted) "Unmute notifications" else "Mute notifications")
+                    },
+                    onClick = {
+                        showMenu = false
+                        onToggleNotifications()
+                    }
                 )
             }
         }

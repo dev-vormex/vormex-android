@@ -2,8 +2,12 @@ package com.kyant.backdrop.catalog.linkedin
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,6 +40,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,13 +48,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -71,6 +83,11 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.absoluteValue
+import kotlin.math.cos
+import kotlin.math.ln
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
 
 // ==================== Section Card Wrapper ====================
 
@@ -358,13 +375,26 @@ fun AboutSection(
 
 // ==================== GitHub Section ====================
 
+private const val GitHubMetricAnimationDurationMs = 2600
+private const val GitHubMetricRevealDurationMs = 1700
+private const val GitHubContributionRevealDurationMs = 3200
+private const val GitHubContributionRevealDelayMs = 520
+private const val GitHubLanguageOrbitDurationMs = 3600
+private const val GitHubLanguageOrbitDelayMs = 680
+private const val GitHubLanguageBarDurationMs = 2200
+private const val GitHubLanguageBarRevealDurationMs = 1600
+private const val GitHubSignalGraphDurationMs = 4200
+private const val GitHubSignalGraphDelayMs = 260
+private const val GitHubInteractiveModelMotionDurationMs = 420
+
 @Composable
 fun GitHubSection(
     github: GitHubProfile,
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
-    isOwner: Boolean
+    isOwner: Boolean,
+    isVisible: Boolean
 ) {
     val context = LocalContext.current
     
@@ -375,8 +405,9 @@ fun GitHubSection(
         accentColor = accentColor
     ) {
         val stats = github.stats
-        if (github.connected && stats != null) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        val contributionCalendar = github.contributionCalendar
+        if (github.connected) {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 // GitHub profile link
                 Row(
                     Modifier.fillMaxWidth(),
@@ -396,12 +427,12 @@ fun GitHubSection(
                         }
                         Column {
                             BasicText(
-                                "@${github.username}",
+                                "@${github.username ?: "github"}",
                                 style = TextStyle(contentColor, 14.sp, FontWeight.Medium)
                             )
                             github.lastSyncedAt?.let {
                                 BasicText(
-                                    "Last synced: ${formatDate(it)}",
+                                    "Last synced: ${formatGitHubSyncDate(it)}",
                                     style = TextStyle(contentColor.copy(alpha = 0.5f), 10.sp)
                                 )
                             }
@@ -436,89 +467,131 @@ fun GitHubSection(
                         }
                     }
                 }
-                
-                // Stats grid
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    GitHubStatItem(iconRes = R.drawable.ic_code, value = "${stats.totalPublicRepos}", label = "Repos", contentColor = contentColor)
-                    GitHubStatItem(iconRes = R.drawable.ic_favorite, value = "${stats.totalStars}", label = "Stars", contentColor = contentColor)
-                    GitHubStatItem(iconRes = R.drawable.ic_share, value = "${stats.totalForks}", label = "Forks", contentColor = contentColor)
-                    GitHubStatItem(iconRes = R.drawable.ic_users, value = "${stats.followers}", label = "Followers", contentColor = contentColor)
-                }
-                
-                // Top languages
-                if (stats.topLanguages.isNotEmpty()) {
-                    Column {
-                        BasicText(
-                            "Top Languages",
-                            style = TextStyle(contentColor.copy(alpha = 0.6f), 12.sp, FontWeight.Medium)
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            stats.topLanguages.entries.take(5).forEach { (lang, stat) ->
-                                Box(
-                                    Modifier
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(getLanguageColor(lang).copy(alpha = 0.2f))
-                                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                                ) {
-                                    BasicText(
-                                        "$lang ${stat.percentage.toInt()}%",
-                                        style = TextStyle(getLanguageColor(lang), 11.sp)
-                                    )
-                                }
-                            }
+
+                if (contributionCalendar != null) {
+                    GitHubSignalGraph(
+                        contributionCalendar = contributionCalendar,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isVisible = isVisible
+                    )
+                    GitHubContributionGraph(
+                        contributionCalendar = contributionCalendar,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isVisible = isVisible
+                    )
+                } else {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(contentColor.copy(alpha = 0.05f))
+                            .padding(14.dp)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            BasicText(
+                                "Contribution graph is syncing",
+                                style = TextStyle(contentColor, 13.sp, FontWeight.Medium)
+                            )
+                            BasicText(
+                                if (isOwner) {
+                                    "Sync GitHub once and the contribution graph will appear on your profile."
+                                } else {
+                                    "This profile has GitHub connected, but the contribution graph is not available yet."
+                                },
+                                style = TextStyle(contentColor.copy(alpha = 0.58f), 11.sp)
+                            )
                         }
                     }
                 }
-                
-                // Top repos
-                if (stats.topRepos.isNotEmpty()) {
-                    Column {
-                        BasicText(
-                            "Top Repositories",
-                            style = TextStyle(contentColor.copy(alpha = 0.6f), 12.sp, FontWeight.Medium)
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        stats.topRepos.take(3).forEach { repo ->
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(contentColor.copy(alpha = 0.05f))
-                                    .clickable {
-                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(repo.url)))
-                                    }
-                                    .padding(10.dp)
+
+                stats?.let { githubStats ->
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Column {
-                                    Row(
-                                        Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        BasicText(
-                                            repo.name,
-                                            style = TextStyle(contentColor, 13.sp, FontWeight.Medium)
-                                        )
-                                        Row {
-                                            BasicText("⭐ ${repo.stars}", style = TextStyle(contentColor.copy(alpha = 0.6f), 11.sp))
-                                            Spacer(Modifier.width(8.dp))
-                                            BasicText("🍴 ${repo.forks}", style = TextStyle(contentColor.copy(alpha = 0.6f), 11.sp))
+                                GitHubMetricCard(
+                                    modifier = Modifier.weight(1f),
+                                    iconRes = R.drawable.ic_code,
+                                    value = githubStats.totalPublicRepos.toString(),
+                                    label = "Repos",
+                                    tint = Color(0xFF60A5FA),
+                                    progress = githubMetricProgress(githubStats.totalPublicRepos, 80),
+                                    contentColor = contentColor,
+                                    isVisible = isVisible,
+                                    delayMillis = 260
+                                )
+                                GitHubMetricCard(
+                                    modifier = Modifier.weight(1f),
+                                    iconRes = R.drawable.ic_favorite,
+                                    value = githubStats.totalStars.toString(),
+                                    label = "Stars",
+                                    tint = Color(0xFFFBBF24),
+                                    progress = githubMetricProgress(githubStats.totalStars, 1500),
+                                    contentColor = contentColor,
+                                    isVisible = isVisible,
+                                    delayMillis = 560
+                                )
+                            }
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                GitHubMetricCard(
+                                    modifier = Modifier.weight(1f),
+                                    iconRes = R.drawable.ic_share,
+                                    value = githubStats.totalForks.toString(),
+                                    label = "Forks",
+                                    tint = Color(0xFFC084FC),
+                                    progress = githubMetricProgress(githubStats.totalForks, 400),
+                                    contentColor = contentColor,
+                                    isVisible = isVisible,
+                                    delayMillis = 860
+                                )
+                                GitHubMetricCard(
+                                    modifier = Modifier.weight(1f),
+                                    iconRes = R.drawable.ic_users,
+                                    value = githubStats.followers.toString(),
+                                    label = "Followers",
+                                    tint = Color(0xFF34D399),
+                                    progress = githubMetricProgress(githubStats.followers, 1000),
+                                    contentColor = contentColor,
+                                    isVisible = isVisible,
+                                    delayMillis = 1160
+                                )
+                            }
+                        }
+
+                        if (githubStats.topLanguages.isNotEmpty()) {
+                            GitHubLanguageOrbit(
+                                languages = githubStats.topLanguages.entries
+                                    .sortedByDescending { it.value.percentage }
+                                    .take(5),
+                                contentColor = contentColor,
+                                accentColor = accentColor,
+                                isVisible = isVisible
+                            )
+                        }
+
+                        if (githubStats.topRepos.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                BasicText(
+                                    "Top Repositories",
+                                    style = TextStyle(contentColor.copy(alpha = 0.68f), 12.sp, FontWeight.Medium)
+                                )
+                                githubStats.topRepos.take(3).forEach { repo ->
+                                    GitHubRepositoryCard(
+                                        repo = repo,
+                                        contentColor = contentColor,
+                                        onOpen = {
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(repo.url)))
                                         }
-                                    }
-                                    repo.description?.let { desc ->
-                                        BasicText(
-                                            desc,
-                                            style = TextStyle(contentColor.copy(alpha = 0.6f), 11.sp),
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
+                                    )
                                 }
                             }
-                            Spacer(Modifier.height(6.dp))
                         }
                     }
                 }
@@ -564,18 +637,1232 @@ fun GitHubSection(
 }
 
 @Composable
-private fun GitHubStatItem(iconRes: Int, value: String, label: String, contentColor: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Image(
-            painter = painterResource(iconRes),
-            contentDescription = label,
-            modifier = Modifier.size(18.dp),
-            colorFilter = ColorFilter.tint(contentColor)
-        )
-        BasicText(value, style = TextStyle(contentColor, 16.sp, FontWeight.Bold))
-        BasicText(label, style = TextStyle(contentColor.copy(alpha = 0.6f), 10.sp))
+private fun GitHubMetricCard(
+    modifier: Modifier = Modifier,
+    iconRes: Int,
+    value: String,
+    label: String,
+    tint: Color,
+    progress: Float,
+    contentColor: Color,
+    isVisible: Boolean,
+    delayMillis: Int = 0
+) {
+    val animatedProgress by animateFloatAsState(
+        targetValue = if (isVisible) progress.coerceIn(0f, 1f) else 0f,
+        animationSpec = tween(
+            durationMillis = GitHubMetricAnimationDurationMs,
+            delayMillis = delayMillis,
+            easing = FastOutSlowInEasing
+        ),
+        label = "githubMetricRing$label"
+    )
+    val revealProgress by animateFloatAsState(
+        targetValue = if (isVisible) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = GitHubMetricRevealDurationMs,
+            delayMillis = max(0, delayMillis / 2),
+            easing = FastOutSlowInEasing
+        ),
+        label = "githubMetricReveal$label"
+    )
+    Box(
+        modifier
+            .graphicsLayer {
+                alpha = 0.4f + (0.6f * revealProgress)
+                translationY = (1f - revealProgress) * 28f
+            }
+            .clip(RoundedCornerShape(14.dp))
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        tint.copy(alpha = 0.12f),
+                        contentColor.copy(alpha = 0.04f)
+                    )
+                )
+            )
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val stroke = size.minDimension * 0.11f
+                    drawArc(
+                        color = contentColor.copy(alpha = 0.10f),
+                        startAngle = -90f,
+                        sweepAngle = 360f,
+                        useCenter = false,
+                        style = Stroke(width = stroke, cap = StrokeCap.Round)
+                    )
+                    drawArc(
+                        color = tint,
+                        startAngle = -90f,
+                        sweepAngle = 360f * animatedProgress,
+                        useCenter = false,
+                        style = Stroke(width = stroke, cap = StrokeCap.Round)
+                    )
+                }
+                Box(
+                    Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(contentColor.copy(alpha = 0.08f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(iconRes),
+                        contentDescription = label,
+                        modifier = Modifier.size(15.dp),
+                        colorFilter = ColorFilter.tint(tint)
+                    )
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Column {
+                BasicText(value, style = TextStyle(contentColor, 16.sp, FontWeight.Bold))
+                BasicText(label, style = TextStyle(contentColor.copy(alpha = 0.6f), 10.sp))
+            }
+        }
     }
 }
+
+@Composable
+private fun GitHubContributionGraph(
+    contributionCalendar: GitHubContributionCalendar,
+    contentColor: Color,
+    accentColor: Color,
+    isVisible: Boolean
+) {
+    val graphRevealProgress by animateFloatAsState(
+        targetValue = if (isVisible) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = GitHubContributionRevealDurationMs,
+            delayMillis = GitHubContributionRevealDelayMs,
+            easing = LinearEasing
+        ),
+        label = "githubGraphReveal"
+    )
+    val scrollState = rememberScrollState()
+    var selectedDay by remember(contributionCalendar) { mutableStateOf<GitHubContributionDay?>(null) }
+    val allDays = remember(contributionCalendar) {
+        contributionCalendar.weeks.flatMap { week ->
+            week.contributionDays.sortedBy { it.weekday }
+        }
+    }
+    val activeDays = remember(allDays) { allDays.count { it.contributionCount > 0 } }
+    val peakDay = remember(allDays) { allDays.maxByOrNull { it.contributionCount } }
+    val highlightedDay = selectedDay ?: peakDay
+    val monthSegments = contributionCalendar.months.ifEmpty {
+        contributionCalendar.weeks.firstOrNull()?.let { listOf(GitHubContributionMonth(totalWeeks = contributionCalendar.weeks.size, name = "This year")) }
+            ?: emptyList()
+    }
+    val palette = contributionCalendar.colors.ifEmpty {
+        listOf(
+            accentColor.copy(alpha = 0.25f).toHexColor(),
+            accentColor.copy(alpha = 0.45f).toHexColor(),
+            accentColor.copy(alpha = 0.7f).toHexColor(),
+            accentColor.toHexColor()
+        )
+    }
+    val cellSize = 12.dp
+    val cellGap = 3.dp
+    val monthSlotWidth = 15
+    val dayLabelWidth = 24.dp
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                alpha = 0.68f + (0.32f * graphRevealProgress)
+                translationY = (1f - graphRevealProgress) * 18f
+            }
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        accentColor.copy(alpha = 0.12f),
+                        contentColor.copy(alpha = 0.03f)
+                    )
+                )
+            )
+            .padding(14.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    BasicText(
+                        "Contribution Graph",
+                        style = TextStyle(contentColor, 13.sp, FontWeight.SemiBold)
+                    )
+                    BasicText(
+                        "Visible to anyone who visits this profile",
+                        style = TextStyle(contentColor.copy(alpha = 0.56f), 10.sp)
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    BasicText(
+                        contributionCalendar.totalContributions.toString(),
+                        style = TextStyle(contentColor, 20.sp, FontWeight.Bold)
+                    )
+                    BasicText(
+                        "last year",
+                        style = TextStyle(contentColor.copy(alpha = 0.56f), 10.sp)
+                    )
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                GitHubGraphInfoChip(
+                    modifier = Modifier.weight(1f),
+                    value = activeDays.toString(),
+                    label = "Active days",
+                    contentColor = contentColor
+                )
+                GitHubGraphInfoChip(
+                    modifier = Modifier.weight(1f),
+                    value = (peakDay?.contributionCount ?: 0).toString(),
+                    label = "Peak day",
+                    contentColor = contentColor
+                )
+                GitHubGraphInfoChip(
+                    modifier = Modifier.weight(1f),
+                    value = when {
+                        contributionCalendar.contributionYears.isEmpty() -> "1"
+                        else -> contributionCalendar.contributionYears.size.toString()
+                    },
+                    label = "Years",
+                    contentColor = contentColor
+                )
+            }
+
+            Column(
+                modifier = Modifier.horizontalScroll(scrollState),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Spacer(Modifier.width(dayLabelWidth))
+                    monthSegments.forEach { month ->
+                        Box(
+                            Modifier
+                                .width((month.totalWeeks.coerceAtLeast(1) * monthSlotWidth).dp)
+                                .padding(end = cellGap)
+                        ) {
+                            BasicText(
+                                month.name.take(3),
+                                style = TextStyle(contentColor.copy(alpha = 0.52f), 10.sp)
+                            )
+                        }
+                    }
+                }
+
+                Row {
+                    Column(
+                        modifier = Modifier.width(dayLabelWidth),
+                        verticalArrangement = Arrangement.spacedBy(cellGap)
+                    ) {
+                        repeat(7) { index ->
+                            Box(
+                                Modifier.height(cellSize),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                val label = when (index) {
+                                    0 -> "M"
+                                    2 -> "W"
+                                    4 -> "F"
+                                    else -> ""
+                                }
+                                if (label.isNotEmpty()) {
+                                    BasicText(
+                                        label,
+                                        style = TextStyle(contentColor.copy(alpha = 0.42f), 9.sp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(cellGap)) {
+                        contributionCalendar.weeks.forEach { week ->
+                            Column(verticalArrangement = Arrangement.spacedBy(cellGap)) {
+                                week.contributionDays
+                                    .sortedBy { it.weekday }
+                                    .forEach { day ->
+                                        val squareColor = contributionColorOrDefault(
+                                            hex = day.color,
+                                            fallback = accentColor,
+                                            alpha = when {
+                                                day.contributionCount <= 0 -> 0.08f
+                                                else -> 1f
+                                            }
+                                        )
+                                        Box(
+                                            Modifier
+                                                .size(cellSize)
+                                                .graphicsLayer {
+                                                    val activeScale = if (day.contributionCount > 0) {
+                                                        0.82f + (0.18f * graphRevealProgress)
+                                                    } else {
+                                                        1f
+                                                    }
+                                                    scaleX = activeScale
+                                                    scaleY = activeScale
+                                                }
+                                                .clip(RoundedCornerShape(3.dp))
+                                                .background(
+                                                    if (day.contributionCount <= 0) {
+                                                        contentColor.copy(alpha = 0.08f)
+                                                    } else {
+                                                        squareColor
+                                                    }
+                                                )
+                                                .border(
+                                                    width = 0.8.dp,
+                                                    color = if (selectedDay == day) {
+                                                        contentColor.copy(alpha = 0.42f)
+                                                    } else {
+                                                        contentColor.copy(alpha = 0.06f)
+                                                    },
+                                                    shape = RoundedCornerShape(3.dp)
+                                                )
+                                                .clickable { selectedDay = day }
+                                        )
+                                    }
+                            }
+                        }
+                    }
+                }
+            }
+
+            highlightedDay?.let { day ->
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(contentColor.copy(alpha = 0.05f))
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        BasicText(
+                            "${day.contributionCount} contributions",
+                            style = TextStyle(contentColor, 13.sp, FontWeight.Medium)
+                        )
+                        BasicText(
+                            formatGitHubContributionDate(day.date),
+                            style = TextStyle(contentColor.copy(alpha = 0.56f), 10.sp)
+                        )
+                    }
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                BasicText("Less", style = TextStyle(contentColor.copy(alpha = 0.46f), 10.sp))
+                Box(
+                    Modifier
+                        .size(12.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(contentColor.copy(alpha = 0.08f))
+                )
+                palette.takeLast(4).forEach { hex ->
+                    Box(
+                        Modifier
+                            .size(12.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(contributionColorOrDefault(hex, accentColor))
+                    )
+                }
+                BasicText("More", style = TextStyle(contentColor.copy(alpha = 0.46f), 10.sp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun GitHubLanguageOrbit(
+    languages: List<Map.Entry<String, LanguageStat>>,
+    contentColor: Color,
+    accentColor: Color,
+    isVisible: Boolean
+) {
+    val density = LocalDensity.current
+    val chartProgress by animateFloatAsState(
+        targetValue = if (isVisible) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = GitHubLanguageOrbitDurationMs,
+            delayMillis = GitHubLanguageOrbitDelayMs,
+            easing = LinearEasing
+        ),
+        label = "githubLanguageOrbit"
+    )
+    val totalShare = languages.sumOf { it.value.percentage }.takeIf { it > 0.0 } ?: 1.0
+    val leadLanguage = languages.firstOrNull()
+    val dragHintColor = accentColor.copy(alpha = 0.74f)
+    val horizontalTravelPx = remember(density) { with(density) { 210.dp.toPx() } }
+    val verticalTravelPx = remember(density) { with(density) { 132.dp.toPx() } }
+    val maxOffsetX = remember(density) { with(density) { 14.dp.toPx() } }
+    val maxOffsetY = remember(density) { with(density) { 9.dp.toPx() } }
+    var rotationTarget by remember(languages) { mutableStateOf(0f) }
+    var tiltTarget by remember(languages) { mutableStateOf(0f) }
+    var offsetXTarget by remember(languages) { mutableStateOf(0f) }
+    var offsetYTarget by remember(languages) { mutableStateOf(0f) }
+    val animatedRotation by animateFloatAsState(
+        targetValue = if (isVisible) rotationTarget else 0f,
+        animationSpec = tween(
+            durationMillis = GitHubInteractiveModelMotionDurationMs,
+            easing = FastOutSlowInEasing
+        ),
+        label = "githubPieRotation"
+    )
+    val animatedTilt by animateFloatAsState(
+        targetValue = if (isVisible) tiltTarget else 0f,
+        animationSpec = tween(
+            durationMillis = GitHubInteractiveModelMotionDurationMs,
+            easing = FastOutSlowInEasing
+        ),
+        label = "githubPieTilt"
+    )
+    val animatedOffsetX by animateFloatAsState(
+        targetValue = if (isVisible) offsetXTarget else 0f,
+        animationSpec = tween(
+            durationMillis = GitHubInteractiveModelMotionDurationMs,
+            easing = FastOutSlowInEasing
+        ),
+        label = "githubPieOffsetX"
+    )
+    val animatedOffsetY by animateFloatAsState(
+        targetValue = if (isVisible) offsetYTarget else 0f,
+        animationSpec = tween(
+            durationMillis = GitHubInteractiveModelMotionDurationMs,
+            easing = FastOutSlowInEasing
+        ),
+        label = "githubPieOffsetY"
+    )
+    val orbitSlices = remember(languages, totalShare, animatedRotation, chartProgress) {
+        buildGitHubOrbitSlices(
+            languages = languages,
+            totalShare = totalShare,
+            rotationDegrees = animatedRotation,
+            revealProgress = chartProgress
+        )
+    }
+    val focusSlice = remember(orbitSlices, leadLanguage) {
+        orbitSlices.maxByOrNull { it.frontness }
+            ?: leadLanguage?.let {
+                GitHubOrbitSliceSpec(
+                    name = it.key,
+                    percentage = it.value.percentage,
+                    color = getLanguageColor(it.key),
+                    startAngle = -90f,
+                    fullSweep = 0f,
+                    animatedSweep = 0f,
+                    midAngle = -90f,
+                    frontness = 0f
+                )
+            }
+    }
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                alpha = 0.46f + (0.54f * chartProgress)
+                translationY = (1f - chartProgress) * 34f
+            }
+            .padding(14.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    BasicText(
+                        "3D Language Breakdown",
+                        style = TextStyle(contentColor, 13.sp, FontWeight.SemiBold)
+                    )
+                    BasicText(
+                        "Drag the model to rotate and tilt it",
+                        style = TextStyle(contentColor.copy(alpha = 0.56f), 10.sp)
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    BasicText(
+                        focusSlice?.name ?: leadLanguage?.key ?: "GitHub",
+                        style = TextStyle(contentColor, 14.sp, FontWeight.Bold)
+                    )
+                    BasicText(
+                        focusSlice?.percentage?.toInt()?.let { "$it% front view" }
+                            ?: leadLanguage?.value?.percentage?.toInt()?.let { "$it% lead" }
+                            ?: "",
+                        style = TextStyle(contentColor.copy(alpha = 0.56f), 10.sp)
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(234.dp)
+                    .pointerInput(languages, isVisible) {
+                        detectDragGestures(
+                            onDragEnd = {
+                                rotationTarget = normalizeRotationDegrees(rotationTarget)
+                            },
+                            onDragCancel = {
+                                rotationTarget = normalizeRotationDegrees(rotationTarget)
+                            }
+                        ) { change, dragAmount ->
+                            change.consume()
+                            rotationTarget = normalizeRotationDegrees(
+                                rotationTarget + ((dragAmount.x / horizontalTravelPx) * 170f)
+                            )
+                            tiltTarget = (
+                                tiltTarget - (dragAmount.y / verticalTravelPx)
+                            ).coerceIn(-1f, 1f)
+                            offsetXTarget = (
+                                offsetXTarget + (dragAmount.x * 0.05f)
+                            ).coerceIn(-maxOffsetX, maxOffsetX)
+                            offsetYTarget = (
+                                offsetYTarget + (dragAmount.y * 0.04f)
+                            ).coerceIn(-maxOffsetY, maxOffsetY)
+                        }
+                    }
+            ) {
+                Canvas(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    val pieWidth = size.width * 0.78f
+                    val tiltFactor = ((animatedTilt + 1f) / 2f).coerceIn(0f, 1f)
+                    val pieHeight = size.height * (0.38f + (tiltFactor * 0.18f))
+                    val topLeft = Offset(
+                        x = ((size.width - pieWidth) / 2f) + animatedOffsetX,
+                        y = (size.height * 0.20f) + animatedOffsetY
+                    )
+                    val pieSize = Size(pieWidth, pieHeight)
+                    val depth = size.height * (0.13f + (tiltFactor * 0.12f))
+                    val baseShadowTopLeft = Offset(
+                        x = topLeft.x + (pieWidth * 0.05f) + (animatedOffsetX * 0.08f),
+                        y = topLeft.y + pieHeight + (depth * 0.9f) + (animatedOffsetY * 0.18f)
+                    )
+                    val shadowStrength = 0.12f + (0.12f * chartProgress)
+                    val depthOrder = orbitSlices.sortedBy { it.frontness }
+                    val rotationEnergy = (animatedRotation.absoluteValue / 180f).coerceIn(0f, 1f)
+
+                    drawOval(
+                        color = Color.Black.copy(alpha = shadowStrength),
+                        topLeft = baseShadowTopLeft,
+                        size = Size(pieWidth * 0.9f, pieHeight * 0.36f)
+                    )
+
+                    depthOrder.forEachIndexed { index, slice ->
+                        val frontBias = ((slice.frontness + 1f) / 2f).coerceIn(0f, 1f)
+                        val leadingBoost = if (slice.name == focusSlice?.name) 3.5f else 0f
+                        val sliceLift = (
+                            if (index == depthOrder.lastIndex) 7f else 4.5f
+                        ) + (rotationEnergy * 4f) + (frontBias * 6f) + leadingBoost
+                        val sliceOffsetX = cos(Math.toRadians(slice.midAngle.toDouble())).toFloat() * sliceLift
+                        val sliceOffsetY = sin(Math.toRadians(slice.midAngle.toDouble())).toFloat() * (sliceLift * 0.42f)
+                        val topOffset = Offset(topLeft.x + sliceOffsetX, topLeft.y + sliceOffsetY)
+                        val sideDepth = depth * (0.24f + (0.76f * frontBias))
+                        val sideColor = slice.color.darken(0.36f + ((1f - frontBias) * 0.08f))
+                        val topColor = slice.color.lighten(0.06f + (frontBias * 0.10f))
+
+                        for (layer in sideDepth.toInt() downTo 2 step 3) {
+                            drawArc(
+                                color = sideColor.copy(alpha = 0.22f + (0.34f * frontBias)),
+                                startAngle = slice.startAngle,
+                                sweepAngle = slice.animatedSweep,
+                                useCenter = true,
+                                topLeft = Offset(topOffset.x, topOffset.y + layer),
+                                size = pieSize
+                            )
+                        }
+
+                        drawArc(
+                            color = topColor,
+                            startAngle = slice.startAngle,
+                            sweepAngle = slice.animatedSweep,
+                            useCenter = true,
+                            topLeft = topOffset,
+                            size = pieSize
+                        )
+                        drawArc(
+                            color = topColor.lighten(0.18f).copy(alpha = 0.32f + (0.22f * frontBias)),
+                            startAngle = slice.startAngle + 2f,
+                            sweepAngle = (slice.animatedSweep - 4f).coerceAtLeast(0f),
+                            useCenter = true,
+                            topLeft = Offset(topOffset.x, topOffset.y + 4f),
+                            size = Size(pieSize.width, pieSize.height * 0.86f)
+                        )
+                        drawArc(
+                            color = Color.White.copy(alpha = 0.10f + (0.12f * frontBias)),
+                            startAngle = slice.startAngle,
+                            sweepAngle = slice.animatedSweep,
+                            useCenter = false,
+                            topLeft = topOffset,
+                            size = pieSize,
+                            style = Stroke(width = 1.6f, cap = StrokeCap.Round)
+                        )
+                    }
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                GitHubOrbitInfoChip(
+                    modifier = Modifier.weight(1f),
+                    title = "Front Slice",
+                    value = focusSlice?.let { "${it.name} ${it.percentage.toInt()}%" } ?: "GitHub",
+                    tint = focusSlice?.color ?: dragHintColor,
+                    contentColor = contentColor
+                )
+                GitHubOrbitInfoChip(
+                    modifier = Modifier.weight(1f),
+                    title = "Control",
+                    value = "Drag to rotate and tilt",
+                    tint = dragHintColor,
+                    contentColor = contentColor
+                )
+            }
+
+            leadLanguage?.let { primary ->
+                BasicText(
+                    "Leading language: ${primary.key} at ${primary.value.percentage.toInt()}%",
+                    style = TextStyle(contentColor.copy(alpha = 0.52f), 10.sp)
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                languages.forEachIndexed { index, (lang, stat) ->
+                    GitHubLanguageBar(
+                        language = lang,
+                        percentage = stat.percentage,
+                        color = getLanguageColor(lang),
+                        contentColor = contentColor,
+                        isVisible = isVisible,
+                        delayMillis = 980 + (index * 180)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GitHubOrbitInfoChip(
+    modifier: Modifier = Modifier,
+    title: String,
+    value: String,
+    tint: Color,
+    contentColor: Color
+) {
+    Box(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(contentColor.copy(alpha = 0.05f))
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(tint)
+                )
+                BasicText(
+                    title,
+                    style = TextStyle(contentColor.copy(alpha = 0.54f), 10.sp, FontWeight.Medium)
+                )
+            }
+            BasicText(
+                value,
+                style = TextStyle(contentColor, 12.sp, FontWeight.SemiBold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun GitHubGraphInfoChip(
+    modifier: Modifier = Modifier,
+    value: String,
+    label: String,
+    contentColor: Color
+) {
+    Box(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(contentColor.copy(alpha = 0.05f))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            BasicText(
+                value,
+                style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold)
+            )
+            BasicText(
+                label,
+                style = TextStyle(contentColor.copy(alpha = 0.52f), 10.sp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun GitHubLanguageBar(
+    language: String,
+    percentage: Double,
+    color: Color,
+    contentColor: Color,
+    isVisible: Boolean,
+    delayMillis: Int = 0
+) {
+    val animatedWidth by animateFloatAsState(
+        targetValue = if (isVisible) (percentage / 100.0).toFloat().coerceIn(0f, 1f) else 0f,
+        animationSpec = tween(
+            durationMillis = GitHubLanguageBarDurationMs,
+            delayMillis = delayMillis,
+            easing = FastOutSlowInEasing
+        ),
+        label = "githubLanguageBar$language"
+    )
+    val revealProgress by animateFloatAsState(
+        targetValue = if (isVisible) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = GitHubLanguageBarRevealDurationMs,
+            delayMillis = max(0, delayMillis / 2),
+            easing = FastOutSlowInEasing
+        ),
+        label = "githubLanguageBarReveal$language"
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .graphicsLayer {
+                    alpha = 0.4f + (0.6f * revealProgress)
+                    translationY = (1f - revealProgress) * 18f
+                },
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(color)
+                )
+                Spacer(Modifier.width(6.dp))
+                BasicText(
+                    language,
+                    style = TextStyle(contentColor, 12.sp, FontWeight.Medium)
+                )
+            }
+            BasicText(
+                "${percentage.toInt()}%",
+                style = TextStyle(contentColor.copy(alpha = 0.56f), 11.sp)
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(contentColor.copy(alpha = 0.08f))
+        ) {
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(animatedWidth)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(color)
+            )
+        }
+    }
+}
+
+@Composable
+private fun GitHubSignalGraph(
+    contributionCalendar: GitHubContributionCalendar,
+    contentColor: Color,
+    accentColor: Color,
+    isVisible: Boolean
+) {
+    val weeklySignals = remember(contributionCalendar) {
+        contributionCalendar.weeks.map { week ->
+            val orderedDays = week.contributionDays.sortedBy { it.weekday }
+            GitHubWeeklySignal(
+                total = orderedDays.sumOf { it.contributionCount },
+                activeDays = orderedDays.count { it.contributionCount > 0 },
+                peakDay = orderedDays.maxOfOrNull { it.contributionCount } ?: 0
+            )
+        }
+    }
+    val contributionSeries = remember(weeklySignals) {
+        normalizeGraphSeries(smoothGraphSeries(weeklySignals.map { it.total.toFloat() }))
+    }
+    val activeSeries = remember(weeklySignals) {
+        normalizeGraphSeries(weeklySignals.map { it.activeDays.toFloat() })
+    }
+    val peakSeries = remember(weeklySignals) {
+        normalizeGraphSeries(smoothGraphSeries(weeklySignals.map { it.peakDay.toFloat() }))
+    }
+    val highlightWeek = remember(weeklySignals) {
+        weeklySignals.maxByOrNull { it.total }
+    }
+    val revealProgress by animateFloatAsState(
+        targetValue = if (isVisible) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = GitHubSignalGraphDurationMs,
+            delayMillis = GitHubSignalGraphDelayMs,
+            easing = LinearEasing
+        ),
+        label = "githubSignalGraph"
+    )
+    val monthLabels = remember(contributionCalendar) {
+        contributionCalendar.months
+            .filterIndexed { index, _ -> index % 2 == 0 }
+            .map { it.name.take(3) }
+            .takeLast(6)
+            .ifEmpty { listOf("Jan", "Mar", "May", "Jul", "Sep", "Now") }
+    }
+    val lineColors = listOf(
+        Color(0xFF42D9FF),
+        Color(0xFFFF5DA2),
+        Color(0xFFFFB444)
+    )
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                alpha = 0.42f + (0.58f * revealProgress)
+                translationY = (1f - revealProgress) * 38f
+            }
+            .padding(14.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    BasicText(
+                        "Signal Graph",
+                        style = TextStyle(contentColor, 13.sp, FontWeight.SemiBold)
+                    )
+                    BasicText(
+                        "Weekly activity, active days, and bursts",
+                        style = TextStyle(contentColor.copy(alpha = 0.56f), 10.sp)
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    BasicText(
+                        (highlightWeek?.total ?: 0).toString(),
+                        style = TextStyle(contentColor, 18.sp, FontWeight.Bold)
+                    )
+                    BasicText(
+                        "best week",
+                        style = TextStyle(contentColor.copy(alpha = 0.54f), 10.sp)
+                    )
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                GitHubSignalLegendPill(
+                    modifier = Modifier.weight(1f),
+                    label = "Flow",
+                    color = lineColors[0],
+                    contentColor = contentColor
+                )
+                GitHubSignalLegendPill(
+                    modifier = Modifier.weight(1f),
+                    label = "Active",
+                    color = lineColors[1],
+                    contentColor = contentColor
+                )
+                GitHubSignalLegendPill(
+                    modifier = Modifier.weight(1f),
+                    label = "Peaks",
+                    color = lineColors[2],
+                    contentColor = contentColor
+                )
+            }
+
+            Canvas(
+                Modifier
+                    .fillMaxWidth()
+                    .height(188.dp)
+            ) {
+                val leftPadding = 8.dp.toPx()
+                val rightPadding = 8.dp.toPx()
+                val topPadding = 12.dp.toPx()
+                val bottomPadding = 24.dp.toPx()
+                val chartWidth = size.width - leftPadding - rightPadding
+                val chartHeight = size.height - topPadding - bottomPadding
+                val baselineY = topPadding + chartHeight
+                val gridColor = Color.White.copy(alpha = 0.08f)
+
+                for (index in 0..4) {
+                    val y = topPadding + ((chartHeight / 4f) * index)
+                    drawLine(
+                        color = gridColor,
+                        start = Offset(leftPadding, y),
+                        end = Offset(size.width - rightPadding, y),
+                        strokeWidth = 1f
+                    )
+                }
+
+                for (index in 0..6) {
+                    val x = leftPadding + ((chartWidth / 6f) * index)
+                    drawLine(
+                        color = gridColor.copy(alpha = 0.74f),
+                        start = Offset(x, topPadding),
+                        end = Offset(x, baselineY),
+                        strokeWidth = 1f
+                    )
+                }
+
+                fun toPoints(series: List<Float>): List<Offset> {
+                    if (series.isEmpty()) return emptyList()
+                    return series.mapIndexed { index, value ->
+                        val x = if (series.size == 1) {
+                            leftPadding + (chartWidth / 2f)
+                        } else {
+                            leftPadding + ((chartWidth / (series.lastIndex).coerceAtLeast(1)) * index)
+                        }
+                        val y = baselineY - (value.coerceIn(0f, 1f) * chartHeight * 0.92f)
+                        Offset(x, y)
+                    }
+                }
+
+                val primaryPoints = trimGraphPoints(toPoints(contributionSeries), revealProgress)
+                val activePoints = trimGraphPoints(toPoints(activeSeries), revealProgress)
+                val peakPoints = trimGraphPoints(toPoints(peakSeries), revealProgress)
+
+                if (primaryPoints.isNotEmpty()) {
+                    drawPath(
+                        path = buildAreaPath(primaryPoints, baselineY),
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                lineColors[0].copy(alpha = 0.28f),
+                                Color.Transparent
+                            ),
+                            startY = topPadding,
+                            endY = baselineY
+                        )
+                    )
+                }
+
+                listOf(
+                    primaryPoints to lineColors[0],
+                    activePoints to lineColors[1],
+                    peakPoints to lineColors[2]
+                ).forEachIndexed { index, (points, color) ->
+                    if (points.size >= 2) {
+                        drawPath(
+                            path = buildSmoothGraphPath(points),
+                            color = color,
+                            style = Stroke(
+                                width = if (index == 0) 5f else 3.6f,
+                                cap = StrokeCap.Round
+                            )
+                        )
+                    }
+
+                    points.lastOrNull()?.let { point ->
+                        drawCircle(
+                            color = color.copy(alpha = 0.28f),
+                            radius = 12f + (index * 2f),
+                            center = point
+                        )
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.88f),
+                            radius = 4.2f,
+                            center = point
+                        )
+                    }
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                monthLabels.forEach { month ->
+                    BasicText(
+                        month,
+                        style = TextStyle(contentColor.copy(alpha = 0.44f), 10.sp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GitHubSignalLegendPill(
+    modifier: Modifier = Modifier,
+    label: String,
+    color: Color,
+    contentColor: Color
+) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.White.copy(alpha = 0.07f))
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Spacer(Modifier.width(6.dp))
+        BasicText(
+            label,
+            style = TextStyle(contentColor.copy(alpha = 0.72f), 10.sp, FontWeight.Medium)
+        )
+    }
+}
+
+@Composable
+private fun GitHubRepositoryCard(
+    repo: TopRepo,
+    contentColor: Color,
+    onOpen: () -> Unit
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(contentColor.copy(alpha = 0.05f))
+            .clickable(onClick = onOpen)
+            .padding(12.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    BasicText(
+                        repo.name,
+                        style = TextStyle(contentColor, 13.sp, FontWeight.Medium)
+                    )
+                    repo.description?.takeIf { it.isNotBlank() }?.let { desc ->
+                        BasicText(
+                            desc,
+                            style = TextStyle(contentColor.copy(alpha = 0.58f), 11.sp),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(horizontalAlignment = Alignment.End) {
+                    BasicText("⭐ ${repo.stars}", style = TextStyle(contentColor.copy(alpha = 0.64f), 11.sp))
+                    BasicText("🍴 ${repo.forks}", style = TextStyle(contentColor.copy(alpha = 0.64f), 11.sp))
+                }
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                repo.language?.takeIf { it.isNotBlank() }?.let { language ->
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(getLanguageColor(language).copy(alpha = 0.18f))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        BasicText(
+                            language,
+                            style = TextStyle(getLanguageColor(language), 10.sp, FontWeight.Medium)
+                        )
+                    }
+                }
+                repo.updatedAt?.takeIf { it.isNotBlank() }?.let { updatedAt ->
+                    BasicText(
+                        "Updated ${formatGitHubRepoDate(updatedAt)}",
+                        style = TextStyle(contentColor.copy(alpha = 0.46f), 10.sp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+private data class GitHubWeeklySignal(
+    val total: Int,
+    val activeDays: Int,
+    val peakDay: Int
+)
+
+private data class GitHubOrbitSliceSpec(
+    val name: String,
+    val percentage: Double,
+    val color: Color,
+    val startAngle: Float,
+    val fullSweep: Float,
+    val animatedSweep: Float,
+    val midAngle: Float,
+    val frontness: Float
+)
+
+private fun normalizeRotationDegrees(value: Float): Float {
+    val normalized = value % 360f
+    return when {
+        normalized > 180f -> normalized - 360f
+        normalized < -180f -> normalized + 360f
+        else -> normalized
+    }
+}
+
+private fun buildGitHubOrbitSlices(
+    languages: List<Map.Entry<String, LanguageStat>>,
+    totalShare: Double,
+    rotationDegrees: Float,
+    revealProgress: Float
+): List<GitHubOrbitSliceSpec> {
+    val collapsedStartAngle = -120f + (30f * revealProgress) + rotationDegrees
+    var startAngle = collapsedStartAngle
+    return languages.map { (language, stat) ->
+        val share = (stat.percentage / totalShare).toFloat().coerceIn(0f, 1f)
+        val fullSweep = (360f * share).coerceAtLeast(8f)
+        val animatedSweep = fullSweep * revealProgress
+        val midAngle = startAngle + (animatedSweep / 2f)
+        val frontness = sin(Math.toRadians(midAngle.toDouble())).toFloat()
+        GitHubOrbitSliceSpec(
+            name = language,
+            percentage = stat.percentage,
+            color = getLanguageColor(language),
+            startAngle = startAngle,
+            fullSweep = fullSweep,
+            animatedSweep = animatedSweep,
+            midAngle = midAngle,
+            frontness = frontness
+        ).also {
+            startAngle += fullSweep
+        }
+    }
+}
+
+private fun smoothGraphSeries(values: List<Float>): List<Float> {
+    if (values.size < 3) return values
+    return values.mapIndexed { index, _ ->
+        val start = max(0, index - 1)
+        val end = min(values.lastIndex, index + 1)
+        values.subList(start, end + 1).average().toFloat()
+    }
+}
+
+private fun normalizeGraphSeries(values: List<Float>): List<Float> {
+    if (values.isEmpty()) return emptyList()
+    val minValue = values.minOrNull() ?: 0f
+    val maxValue = values.maxOrNull() ?: 0f
+    val range = maxValue - minValue
+    if (range == 0f) return values.map { 0.5f }
+    return values.map { ((it - minValue) / range).coerceIn(0f, 1f) }
+}
+
+private fun trimGraphPoints(points: List<Offset>, progress: Float): List<Offset> {
+    if (points.isEmpty()) return emptyList()
+    if (points.size == 1) return points
+    val clampedProgress = progress.coerceIn(0f, 1f)
+    if (clampedProgress <= 0f) return listOf(points.first())
+    if (clampedProgress >= 1f) return points
+
+    val rawIndex = clampedProgress * (points.lastIndex)
+    val fullIndex = rawIndex.toInt()
+    val remainder = rawIndex - fullIndex
+    val visiblePoints = points.take(fullIndex + 1).toMutableList()
+
+    if (fullIndex < points.lastIndex) {
+        val start = points[fullIndex]
+        val end = points[fullIndex + 1]
+        visiblePoints += Offset(
+            x = start.x + ((end.x - start.x) * remainder),
+            y = start.y + ((end.y - start.y) * remainder)
+        )
+    }
+
+    return visiblePoints
+}
+
+private fun buildSmoothGraphPath(points: List<Offset>): Path {
+    return Path().apply {
+        if (points.isEmpty()) return@apply
+        moveTo(points.first().x, points.first().y)
+        if (points.size == 1) return@apply
+        for (index in 1 until points.size) {
+            val previous = points[index - 1]
+            val current = points[index]
+            val controlX = (previous.x + current.x) / 2f
+            cubicTo(
+                controlX,
+                previous.y,
+                controlX,
+                current.y,
+                current.x,
+                current.y
+            )
+        }
+    }
+}
+
+private fun buildAreaPath(points: List<Offset>, baselineY: Float): Path {
+    return buildSmoothGraphPath(points).apply {
+        if (points.isNotEmpty()) {
+            lineTo(points.last().x, baselineY)
+            lineTo(points.first().x, baselineY)
+            close()
+        }
+    }
+}
+
+private fun Color.mixWith(other: Color, amount: Float): Color {
+    val fraction = amount.coerceIn(0f, 1f)
+    return Color(
+        red = red + ((other.red - red) * fraction),
+        green = green + ((other.green - green) * fraction),
+        blue = blue + ((other.blue - blue) * fraction),
+        alpha = alpha + ((other.alpha - alpha) * fraction)
+    )
+}
+
+private fun Color.lighten(amount: Float): Color = mixWith(Color.White, amount)
+
+private fun Color.darken(amount: Float): Color = mixWith(Color.Black, amount)
 
 private fun getLanguageColor(language: String): Color {
     return when (language.lowercase()) {
@@ -591,6 +1878,28 @@ private fun getLanguageColor(language: String): Color {
         "c" -> Color(0xFF555555)
         else -> Color(0xFF858585)
     }
+}
+
+private fun githubMetricProgress(value: Int, softCap: Int): Float {
+    if (value <= 0 || softCap <= 0) return 0f
+    val numerator = ln((value + 1).toFloat())
+    val denominator = ln((softCap + 1).toFloat())
+    if (denominator == 0f) return 0f
+    return (numerator / denominator).coerceIn(0.08f, 1f)
+}
+
+private fun contributionColorOrDefault(hex: String?, fallback: Color, alpha: Float = 1f): Color {
+    val parsed = runCatching {
+        if (hex.isNullOrBlank()) fallback else Color(android.graphics.Color.parseColor(hex))
+    }.getOrElse { fallback }
+    return parsed.copy(alpha = alpha.coerceIn(0f, 1f))
+}
+
+private fun Color.toHexColor(): String {
+    val red = (red * 255).toInt().coerceIn(0, 255)
+    val green = (green * 255).toInt().coerceIn(0, 255)
+    val blue = (blue * 255).toInt().coerceIn(0, 255)
+    return String.format("#%02X%02X%02X", red, green, blue)
 }
 
 // ==================== Activity Calendar Section ====================
@@ -3347,5 +4656,34 @@ private fun formatDate(dateString: String): String {
         date.format(DateTimeFormatter.ofPattern("MMM yyyy"))
     } catch (e: Exception) {
         dateString.take(10)
+    }
+}
+
+private fun formatGitHubSyncDate(dateString: String): String {
+    return try {
+        val normalized = dateString.replace("Z", "+00:00")
+        val instant = java.time.OffsetDateTime.parse(normalized)
+        instant.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))
+    } catch (e: Exception) {
+        formatDate(dateString)
+    }
+}
+
+private fun formatGitHubContributionDate(dateString: String): String {
+    return try {
+        val date = LocalDate.parse(dateString.take(10))
+        date.format(DateTimeFormatter.ofPattern("EEE, MMM d, yyyy"))
+    } catch (e: Exception) {
+        dateString.take(10)
+    }
+}
+
+private fun formatGitHubRepoDate(dateString: String): String {
+    return try {
+        val normalized = dateString.replace("Z", "+00:00")
+        val instant = java.time.OffsetDateTime.parse(normalized)
+        instant.format(DateTimeFormatter.ofPattern("MMM d"))
+    } catch (e: Exception) {
+        formatDate(dateString)
     }
 }

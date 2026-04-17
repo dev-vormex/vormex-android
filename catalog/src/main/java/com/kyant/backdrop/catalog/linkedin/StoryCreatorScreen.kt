@@ -1,6 +1,9 @@
 package com.kyant.backdrop.catalog.linkedin
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.widget.Toast
@@ -32,6 +35,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.catalog.network.models.StoryCategory
@@ -58,7 +64,8 @@ fun StoryCreatorDialog(
         properties = DialogProperties(
             dismissOnBackPress = !isCreating,
             dismissOnClickOutside = false,
-            usePlatformDefaultWidth = false
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
         )
     ) {
         StoryCreator(
@@ -85,6 +92,22 @@ private fun StoryCreator(
     isCreating: Boolean
 ) {
     val context = LocalContext.current
+    val hostActivity = remember(context) { context.findActivity() }
+
+    DisposableEffect(hostActivity) {
+        hostActivity?.let { activity ->
+            val window = activity.window
+            val controller = WindowInsetsControllerCompat(window, window.decorView)
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+
+            onDispose {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+        } ?: onDispose { }
+    }
     
     // State
     var storyType by remember { mutableStateOf("TEXT") } // TEXT, IMAGE, VIDEO
@@ -135,7 +158,9 @@ private fun StoryCreator(
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(top = 48.dp, bottom = 24.dp)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(top = 16.dp, bottom = 24.dp)
         ) {
             // Header
             Row(
@@ -563,4 +588,13 @@ private fun StoryCreator(
             }
         }
     }
+}
+
+private fun Context.findActivity(): Activity? {
+    var current: Context? = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return null
 }

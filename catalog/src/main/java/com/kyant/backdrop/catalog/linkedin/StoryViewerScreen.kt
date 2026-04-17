@@ -1,5 +1,8 @@
 package com.kyant.backdrop.catalog.linkedin
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
@@ -49,6 +52,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.zIndex
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -70,6 +77,11 @@ data class StoryViewer(
     val user: StoryViewerUser?
 )
 
+data class StoryViewersResult(
+    val viewers: List<StoryViewer>,
+    val totalCount: Int
+)
+
 data class StoryViewerUser(
     val id: String,
     val name: String?,
@@ -83,11 +95,13 @@ fun StoryViewerDialog(
     storyGroups: List<StoryGroup>,
     accentColor: Color,
     initialGroupIndex: Int,
+    initialStoryIndex: Int = 0,
     onDismiss: () -> Unit,
     onStoryViewed: (String) -> Unit,
     onReact: (String, String) -> Unit = { _, _ -> },
     onReply: (String, String) -> Unit = { _, _ -> },
-    onGetViewers: ((String, (List<StoryViewer>) -> Unit) -> Unit)? = null,
+    onGetViewers: ((String, (StoryViewersResult) -> Unit) -> Unit)? = null,
+    onAddStory: (() -> Unit)? = null,
     onNextGroup: () -> Unit = {},
     onPreviousGroup: () -> Unit = {}
 ) {
@@ -101,18 +115,21 @@ fun StoryViewerDialog(
         properties = DialogProperties(
             dismissOnBackPress = true,
             dismissOnClickOutside = false,
-            usePlatformDefaultWidth = false
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
         )
     ) {
         StoryViewer(
             storyGroups = storyGroups,
             accentColor = accentColor,
             initialGroupIndex = initialGroupIndex,
+            initialStoryIndex = initialStoryIndex,
             onDismiss = onDismiss,
             onStoryViewed = onStoryViewed,
             onReact = onReact,
             onReply = onReply,
-            onGetViewers = onGetViewers
+            onGetViewers = onGetViewers,
+            onAddStory = onAddStory
         )
     }
 }
@@ -122,17 +139,36 @@ private fun StoryViewer(
     storyGroups: List<StoryGroup>,
     accentColor: Color,
     initialGroupIndex: Int,
+    initialStoryIndex: Int,
     onDismiss: () -> Unit,
     onStoryViewed: (String) -> Unit,
     onReact: (String, String) -> Unit,
     onReply: (String, String) -> Unit,
-    onGetViewers: ((String, (List<StoryViewer>) -> Unit) -> Unit)?
+    onGetViewers: ((String, (StoryViewersResult) -> Unit) -> Unit)?,
+    onAddStory: (() -> Unit)?
 ) {
+    val context = LocalContext.current
+    val hostActivity = remember(context) { context.findActivity() }
     val pagerState = rememberPagerState(
         initialPage = initialGroupIndex.coerceIn(0, storyGroups.size - 1),
         pageCount = { storyGroups.size }
     )
     val scope = rememberCoroutineScope()
+
+    DisposableEffect(hostActivity) {
+        hostActivity?.let { activity ->
+            val window = activity.window
+            val controller = WindowInsetsControllerCompat(window, window.decorView)
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+
+            onDispose {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+        } ?: onDispose { }
+    }
     
     // Swipe down to dismiss
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -158,11 +194,13 @@ private fun StoryViewer(
                 storyGroup = storyGroup,
                 accentColor = accentColor,
                 isCurrentGroup = pagerState.currentPage == groupIndex,
+                initialStoryIndex = if (groupIndex == initialGroupIndex) initialStoryIndex else 0,
                 onDismiss = onDismiss,
                 onStoryViewed = onStoryViewed,
                 onReact = onReact,
                 onReply = onReply,
                 onGetViewers = onGetViewers,
+                onAddStory = onAddStory,
                 onComplete = {
                     // Move to next group or dismiss
                     if (groupIndex < storyGroups.size - 1) {
@@ -198,8 +236,8 @@ private fun StoryViewer(
         // Close button
         Box(
             Modifier
+                .statusBarsPadding()
                 .padding(16.dp)
-                .padding(top = 28.dp)
                 .size(32.dp)
                 .align(Alignment.TopEnd)
                 .clip(CircleShape)
@@ -220,17 +258,18 @@ private fun StoryGroupViewer(
     storyGroup: StoryGroup,
     accentColor: Color,
     isCurrentGroup: Boolean,
+    initialStoryIndex: Int,
     onDismiss: () -> Unit,
     onStoryViewed: (String) -> Unit,
     onReact: (String, String) -> Unit,
     onReply: (String, String) -> Unit,
-    onGetViewers: ((String, (List<StoryViewer>) -> Unit) -> Unit)?,
+    onGetViewers: ((String, (StoryViewersResult) -> Unit) -> Unit)?,
+    onAddStory: (() -> Unit)?,
     onComplete: () -> Unit,
     onPreviousGroup: () -> Unit,
     onSwipeDown: (Float) -> Unit,
     onSwipeDownEnd: () -> Unit
 ) {
-    var currentStoryIndex by remember { mutableIntStateOf(0) }
     val stories = storyGroup.stories
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -239,23 +278,34 @@ private fun StoryGroupViewer(
         onComplete()
         return
     }
+
+    val safeInitialStoryIndex = initialStoryIndex.coerceIn(0, stories.lastIndex)
+    var currentStoryIndex by remember(storyGroup.user.id, stories.firstOrNull()?.id, safeInitialStoryIndex) {
+        mutableIntStateOf(safeInitialStoryIndex)
+    }
     
     val currentStory = stories.getOrNull(currentStoryIndex)
+    val isOwnStory = currentStory?.isOwn == true || storyGroup.isOwnStory
     
     // Progress animation
-    val progress = remember { Animatable(0f) }
+    val progress = remember(currentStory?.id) { Animatable(0f) }
     var isPaused by remember { mutableStateOf(false) }
     
     // Video duration tracking
     var videoDurationMs by remember { mutableLongStateOf(5000L) }
     
-    // Story duration (5s for images, actual video duration for videos)
-    val storyDurationMs = if (currentStory?.mediaType == "VIDEO") videoDurationMs else 5000L
+    // Text stories should stay a little longer than image stories.
+    val storyDurationMs = when (currentStory?.mediaType) {
+        "VIDEO" -> videoDurationMs
+        "TEXT" -> 7000L
+        else -> 5000L
+    }
     
     // Viewers modal state
     var showViewersModal by remember { mutableStateOf(false) }
     var viewers by remember { mutableStateOf<List<StoryViewer>>(emptyList()) }
     var isLoadingViewers by remember { mutableStateOf(false) }
+    var viewersTotalCount by remember { mutableIntStateOf(currentStory?.viewsCount ?: 0) }
     
     // Reply input state
     var isReplyExpanded by remember { mutableStateOf(false) }
@@ -282,7 +332,7 @@ private fun StoryGroupViewer(
     }
     
     // Story progress animation
-    LaunchedEffect(currentStoryIndex, isCurrentGroup, isPaused, storyDurationMs, isReplyExpanded) {
+    LaunchedEffect(currentStory?.id, isCurrentGroup, isPaused, storyDurationMs, isReplyExpanded) {
         if (isCurrentGroup && currentStory != null && !isPaused && !isReplyExpanded) {
             // Mark story as viewed
             onStoryViewed(currentStory.id)
@@ -310,10 +360,12 @@ private fun StoryGroupViewer(
             }
         }
     }
-    
-    // Reset progress when story changes
-    LaunchedEffect(currentStoryIndex) {
-        progress.snapTo(0f)
+
+    LaunchedEffect(currentStory?.id) {
+        viewers = emptyList()
+        isLoadingViewers = false
+        showViewersModal = false
+        viewersTotalCount = currentStory?.viewsCount ?: 0
     }
     
     // Focus reply input when expanded
@@ -414,8 +466,8 @@ private fun StoryGroupViewer(
         Row(
             Modifier
                 .fillMaxWidth()
+                .statusBarsPadding()
                 .padding(horizontal = 8.dp, vertical = 12.dp)
-                .padding(top = 28.dp)
                 .align(Alignment.TopCenter),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -447,40 +499,66 @@ private fun StoryGroupViewer(
         Row(
             Modifier
                 .fillMaxWidth()
+                .statusBarsPadding()
                 .padding(horizontal = 16.dp)
-                .padding(top = 52.dp)
+                .padding(top = 40.dp)
                 .align(Alignment.TopStart),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Profile image
             Box(
-                Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(Color.Gray),
+                Modifier.size(48.dp),
                 contentAlignment = Alignment.Center
             ) {
-                val profileImage = storyGroup.user.profileImage
-                if (!profileImage.isNullOrEmpty()) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(LocalContext.current)
-                            .data(profileImage)
-                            .crossfade(true)
-                            .build(),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize().clip(CircleShape)
-                    )
-                } else {
-                    val initials = (storyGroup.user.name ?: storyGroup.user.username ?: "U")
-                        .split(" ")
-                        .mapNotNull { it.firstOrNull()?.uppercase() }
-                        .take(2)
-                        .joinToString("")
-                    BasicText(
-                        initials,
-                        style = TextStyle(Color.White, 14.sp, FontWeight.Bold)
-                    )
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(Color.Gray),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val profileImage = storyGroup.user.profileImage
+                    if (!profileImage.isNullOrEmpty()) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(profileImage)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize().clip(CircleShape)
+                        )
+                    } else {
+                        val initials = (storyGroup.user.name ?: storyGroup.user.username ?: "U")
+                            .split(" ")
+                            .mapNotNull { it.firstOrNull()?.uppercase() }
+                            .take(2)
+                            .joinToString("")
+                        BasicText(
+                            initials,
+                            style = TextStyle(Color.White, 14.sp, FontWeight.Bold)
+                        )
+                    }
+                }
+
+                if (isOwnStory && onAddStory != null) {
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomEnd)
+                            .offset(x = 2.dp, y = 2.dp)
+                            .size(20.dp)
+                            .zIndex(1f)
+                            .clip(CircleShape)
+                            .background(accentColor)
+                            .border(1.5.dp, Color.White, CircleShape)
+                            .clickable { onAddStory() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        BasicText(
+                            "+",
+                            style = TextStyle(Color.White, 13.sp, FontWeight.Bold)
+                        )
+                    }
                 }
             }
             
@@ -505,33 +583,48 @@ private fun StoryGroupViewer(
             Column(
                 Modifier
                     .fillMaxWidth()
+                    .navigationBarsPadding()
                     .padding(horizontal = 16.dp)
                     .padding(bottom = 24.dp)
                     .align(Alignment.BottomCenter)
             ) {
                 // For own stories - show eye icon and view count
-                if (story.isOwn) {
+                if (isOwnStory) {
                     Row(
                         Modifier
-                            .fillMaxWidth()
+                            .align(Alignment.CenterHorizontally)
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(Color.Black.copy(alpha = 0.45f))
+                            .border(
+                                width = 1.dp,
+                                color = Color.White.copy(alpha = 0.14f),
+                                shape = RoundedCornerShape(22.dp)
+                            )
                             .clickable {
                                 showViewersModal = true
                                 isLoadingViewers = true
-                                onGetViewers?.invoke(story.id) { viewerList ->
-                                    viewers = viewerList
+                                onGetViewers?.invoke(story.id) { result ->
+                                    viewers = result.viewers
+                                    viewersTotalCount = result.totalCount
                                     isLoadingViewers = false
                                 }
                             }
-                            .padding(vertical = 12.dp),
-                        horizontalArrangement = Arrangement.Center,
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         EyeIcon(modifier = Modifier.size(24.dp), tint = Color.White)
                         Spacer(Modifier.width(8.dp))
-                        BasicText(
-                            "${story.viewsCount}",
-                            style = TextStyle(Color.White, 18.sp, FontWeight.Medium)
-                        )
+                        Column(horizontalAlignment = Alignment.Start) {
+                            BasicText(
+                                "$viewersTotalCount views",
+                                style = TextStyle(Color.White, 16.sp, FontWeight.SemiBold)
+                            )
+                            BasicText(
+                                if (viewersTotalCount > 0) "Tap to see who watched"
+                                else "Tap to open viewer list",
+                                style = TextStyle(Color.White.copy(alpha = 0.72f), 12.sp)
+                            )
+                        }
                     }
                 } else {
                     // For others' stories - show reply input
@@ -701,7 +794,7 @@ private fun StoryGroupViewer(
     if (showViewersModal) {
         ViewersBottomSheet(
             viewers = viewers,
-            totalCount = currentStory?.viewsCount ?: 0,
+            totalCount = viewersTotalCount,
             isLoading = isLoadingViewers,
             onDismiss = { showViewersModal = false }
         )
@@ -787,7 +880,8 @@ private fun ViewersBottomSheet(
         properties = DialogProperties(
             dismissOnBackPress = true,
             dismissOnClickOutside = true,
-            usePlatformDefaultWidth = false
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
         )
     ) {
         Box(
@@ -923,12 +1017,17 @@ private fun ViewersBottomSheet(
                             }
                             Spacer(Modifier.height(16.dp))
                             BasicText(
-                                "No viewers yet",
+                                if (totalCount > 0) "Viewer details unavailable"
+                                else "No viewers yet",
                                 style = TextStyle(Color.White.copy(alpha = 0.5f), 16.sp, FontWeight.Medium)
                             )
                             Spacer(Modifier.height(8.dp))
                             BasicText(
-                                "Views will appear here when people watch your story",
+                                if (totalCount > 0) {
+                                    "This story has views, but the viewer records are missing right now."
+                                } else {
+                                    "Views will appear here when people watch your story"
+                                },
                                 style = TextStyle(Color.White.copy(alpha = 0.3f), 13.sp)
                             )
                         }
@@ -950,7 +1049,7 @@ private fun ViewersBottomSheet(
 
 @Composable
 private fun ViewerItem(viewer: StoryViewer) {
-    val user = viewer.user ?: return
+    val user = viewer.user
     val accentCyan = Color(0xFF00D4FF)
     
     Row(
@@ -984,7 +1083,7 @@ private fun ViewerItem(viewer: StoryViewer) {
                 .background(Color(0xFF2A2A3A)),
             contentAlignment = Alignment.Center
         ) {
-            if (!user.profileImage.isNullOrEmpty()) {
+            if (!user?.profileImage.isNullOrEmpty()) {
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(user.profileImage)
@@ -995,7 +1094,7 @@ private fun ViewerItem(viewer: StoryViewer) {
                     modifier = Modifier.fillMaxSize().clip(CircleShape)
                 )
             } else {
-                val initials = (user.name ?: user.username ?: "U")
+                val initials = (user?.name ?: user?.username ?: "U")
                     .split(" ")
                     .mapNotNull { it.firstOrNull()?.uppercase() }
                     .take(2)
@@ -1011,12 +1110,12 @@ private fun ViewerItem(viewer: StoryViewer) {
         
         Column(Modifier.weight(1f)) {
             BasicText(
-                user.name ?: "Unknown",
+                user?.name ?: user?.username ?: "Unknown viewer",
                 style = TextStyle(Color.White, 15.sp, FontWeight.SemiBold)
             )
             Spacer(Modifier.height(2.dp))
             BasicText(
-                "@${user.username ?: "user"}",
+                if (!user?.username.isNullOrBlank()) "@${user.username}" else "Viewer",
                 style = TextStyle(accentCyan.copy(alpha = 0.7f), 13.sp)
             )
         }
@@ -1053,7 +1152,7 @@ private fun StoryContent(
                     .diskCachePolicy(CachePolicy.ENABLED)
                     .build(),
                 contentDescription = null,
-                contentScale = ContentScale.Fit,
+                contentScale = ContentScale.Crop,
                 modifier = modifier.background(Color.Black)
             )
         }
@@ -1112,6 +1211,15 @@ private fun StoryContent(
     }
 }
 
+private fun Context.findActivity(): Activity? {
+    var current: Context? = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return null
+}
+
 @Composable
 private fun StoryVideoPlayer(
     videoUrl: String,
@@ -1121,7 +1229,7 @@ private fun StoryVideoPlayer(
 ) {
     val context = LocalContext.current
     
-    val exoPlayer = remember {
+    val exoPlayer = remember(videoUrl) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(Uri.parse(videoUrl)))
             prepare()
@@ -1145,7 +1253,7 @@ private fun StoryVideoPlayer(
         exoPlayer.playWhenReady = !isPaused
     }
     
-    DisposableEffect(Unit) {
+    DisposableEffect(exoPlayer) {
         onDispose {
             exoPlayer.release()
         }
@@ -1156,7 +1264,8 @@ private fun StoryVideoPlayer(
             PlayerView(ctx).apply {
                 player = exoPlayer
                 useController = false
-                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                setShutterBackgroundColor(android.graphics.Color.BLACK)
             }
         },
         modifier = modifier.background(Color.Black)

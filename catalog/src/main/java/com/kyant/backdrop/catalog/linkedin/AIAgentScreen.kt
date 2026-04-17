@@ -28,46 +28,49 @@ fun AIAgentScreen(
     val glassMotionStyleKey by SettingsPreferences.glassMotionStyle(context)
         .collectAsState(initial = DefaultGlassMotionStyleKey)
     val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
-    val isGlassTheme = themeMode == "glass"
-    val isDarkTheme = themeMode == "dark"
-    val contentColor = if (isDarkTheme) Color.White else Color.Black
+    val appearance = rememberVormexAppearance(themeMode)
+    val isGlassTheme = appearance.isGlassTheme
+    val isDarkTheme = appearance.isDarkTheme
+    val contentColor = appearance.contentColor
     val accentColor = glassAccentPalette(accentPaletteKey).color
     val backdrop = rememberLayerBackdrop()
 
-    Box(
-        modifier = Modifier.fillMaxSize()
-    ) {
-        if (isGlassTheme) {
-            GlassBackgroundLayer(
-                modifier = Modifier
-                    .layerBackdrop(backdrop)
-                    .fillMaxSize(),
-                backgroundKey = glassBackgroundKey,
+    ProvideVormexAppearance(themeMode) {
+        Box(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            if (isGlassTheme) {
+                GlassBackgroundLayer(
+                    modifier = Modifier
+                        .layerBackdrop(backdrop)
+                        .fillMaxSize(),
+                    backgroundKey = glassBackgroundKey,
+                    accentColor = accentColor,
+                    motionStyleKey = glassMotionStyleKey,
+                    reduceAnimations = reduceAnimations
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(appearance.backgroundColor)
+                )
+            }
+
+            AgentSheetContent(
+                viewModel = viewModel,
+                surface = "global",
+                surfaceContext = mapOf("surface" to "global", "entry" to "ai_agent_screen"),
+                userDisplayName = null,
+                contentColor = contentColor,
                 accentColor = accentColor,
-                motionStyleKey = glassMotionStyleKey,
-                reduceAnimations = reduceAnimations
-            )
-        } else {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(if (isDarkTheme) Color.Black else Color(0xFFF9F7F2))
+                backdrop = backdrop,
+                reduceAnimations = reduceAnimations,
+                isDarkTheme = isDarkTheme,
+                enableInlineNavigationActions = false,
+                onDismiss = onNavigateBack,
+                isFullScreen = true
             )
         }
-
-        AgentSheetContent(
-            viewModel = viewModel,
-            surface = "global",
-            surfaceContext = mapOf("surface" to "global", "entry" to "ai_agent_screen"),
-            userDisplayName = null,
-            contentColor = contentColor,
-            accentColor = accentColor,
-            backdrop = backdrop,
-            reduceAnimations = reduceAnimations,
-            isDarkTheme = isDarkTheme,
-            enableInlineNavigationActions = false,
-            onDismiss = onNavigateBack,
-            isFullScreen = true
-        )
     }
 }

@@ -209,8 +209,9 @@ fun AddEditEducationScreen(
     
     // Theme preference: "glass", "light", "dark"
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
-    val isGlassTheme = themeMode == "glass"
-    val isDarkTheme = themeMode == "dark"
+    val appearance = currentVormexAppearance(themeMode)
+    val isGlassTheme = appearance.isGlassTheme
+    val isDarkTheme = appearance.isDarkTheme
 
     Box(
         Modifier

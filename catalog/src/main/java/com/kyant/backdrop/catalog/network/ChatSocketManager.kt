@@ -21,6 +21,7 @@ import java.net.URI
  * - chat:delete_message, chat:message_deleted
  * - chat:edit_message, chat:message_edited
  * - chat:message_reaction
+ * - chat:cleared
  * 
  * Configuration:
  * - For local dev with `adb reverse tcp:5000 tcp:5000`: use "http://localhost:5000"
@@ -78,6 +79,9 @@ object ChatSocketManager {
 
     private val _reactionFlow = MutableSharedFlow<ReactionEvent>(replay = 0, extraBufferCapacity = 5)
     val reactionFlow = _reactionFlow.asSharedFlow()
+
+    private val _allChatsClearedFlow = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 2)
+    val allChatsClearedFlow = _allChatsClearedFlow.asSharedFlow()
     
     /** Connection state flow for UI feedback */
     private val _connectionStateFlow = MutableSharedFlow<ConnectionState>(replay = 1, extraBufferCapacity = 1)
@@ -187,6 +191,9 @@ object ChatSocketManager {
                 on("chat:message_reaction") { args ->
                     handleReaction(args)
                 }
+                on("chat:cleared") {
+                    handleAllChatsCleared()
+                }
                 
                 // Debug: catch all events to see what's being received
                 onAnyIncoming { args ->
@@ -211,19 +218,7 @@ object ChatSocketManager {
         try {
             val rawArg = args[0]
             Log.d(TAG, "📩 Raw arg type: ${rawArg::class.java.simpleName}, value: $rawArg")
-            val obj = rawArg as? JSONObject
-            if (obj == null) {
-                Log.w(TAG, "📩 Could not cast to JSONObject, trying toString...")
-                // Try parsing as string
-                val jsonStr = rawArg.toString()
-                val parsed = JSONObject(jsonStr)
-                val conversationId = parsed.optString("conversationId")
-                val message = parsed.optJSONObject("message")
-                if (message != null && conversationId.isNotEmpty()) {
-                    emitIncomingMessage(conversationId, message, "string")
-                }
-                return
-            }
+            val obj = parseSocketObject(rawArg) ?: return
             val conversationId = obj.optString("conversationId")
             val message = obj.optJSONObject("message")
             if (message == null) {
@@ -236,6 +231,16 @@ object ChatSocketManager {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error handling new message", e)
+        }
+    }
+
+    private fun parseSocketObject(rawArg: Any?): JSONObject? {
+        return when (rawArg) {
+            is JSONObject -> rawArg
+            null -> null
+            else -> runCatching { JSONObject(rawArg.toString()) }
+                .onFailure { Log.w(TAG, "Could not parse socket payload: $rawArg", it) }
+                .getOrNull()
         }
     }
 
@@ -317,7 +322,7 @@ object ChatSocketManager {
         try {
             val rawArg = args[0]
             Log.d(TAG, "🔔 Raw arg type: ${rawArg::class.java.simpleName}")
-            val obj = rawArg as? JSONObject ?: JSONObject(rawArg.toString())
+            val obj = parseSocketObject(rawArg) ?: return
 
             Log.d(TAG, "🔔 Notification type: ${obj.optString("type")}")
             if (obj.optString("type") == "new_message") {
@@ -344,7 +349,7 @@ object ChatSocketManager {
     private fun handleTyping(args: Array<Any>) {
         if (args.isEmpty()) return
         try {
-            val obj = args[0] as? JSONObject ?: return
+            val obj = parseSocketObject(args[0]) ?: return
             _typingFlow.tryEmit(
                 Triple(
                     obj.optString("conversationId"),
@@ -360,7 +365,7 @@ object ChatSocketManager {
     private fun handleMessagesRead(args: Array<Any>) {
         if (args.isEmpty()) return
         try {
-            val obj = args[0] as? JSONObject ?: return
+            val obj = parseSocketObject(args[0]) ?: return
             _messagesReadFlow.tryEmit(
                 obj.optString("conversationId") to obj.optString("readBy")
             )
@@ -372,7 +377,7 @@ object ChatSocketManager {
     private fun handleMessageDeleted(args: Array<Any>) {
         if (args.isEmpty()) return
         try {
-            val obj = args[0] as? JSONObject ?: return
+            val obj = parseSocketObject(args[0]) ?: return
             _messageDeletedFlow.tryEmit(
                 Triple(
                     obj.optString("messageId"),
@@ -388,7 +393,7 @@ object ChatSocketManager {
     private fun handleMessageEdited(args: Array<Any>) {
         if (args.isEmpty()) return
         try {
-            val obj = args[0] as? JSONObject ?: return
+            val obj = parseSocketObject(args[0]) ?: return
             _messageEditedFlow.tryEmit(
                 Triple(
                     obj.optString("messageId"),
@@ -404,7 +409,7 @@ object ChatSocketManager {
     private fun handleReaction(args: Array<Any>) {
         if (args.isEmpty()) return
         try {
-            val obj = args[0] as? JSONObject ?: return
+            val obj = parseSocketObject(args[0]) ?: return
             _reactionFlow.tryEmit(
                 ReactionEvent(
                     messageId = obj.optString("messageId"),
@@ -417,6 +422,20 @@ object ChatSocketManager {
         } catch (e: Exception) {
             Log.e(TAG, "Error handling reaction", e)
         }
+    }
+
+    private fun handleAllChatsCleared() {
+        Log.d(TAG, "Received chat:cleared")
+        joinedRooms.toList().forEach { conversationId ->
+            socket?.emit("chat:leave", JSONObject().put("conversationId", conversationId))
+        }
+        joinedRooms.clear()
+        activeConversationId = null
+        synchronized(recentMessageIdSet) {
+            recentlyProcessedMessageIds.clear()
+            recentMessageIdSet.clear()
+        }
+        _allChatsClearedFlow.tryEmit(Unit)
     }
 
     fun disconnect() {

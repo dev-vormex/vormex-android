@@ -38,7 +38,10 @@ enum class VormexSurfaceTone {
     Subtle,
     Sheet,
     Input,
-    Overlay
+    Overlay,
+    Control,
+    Navigation,
+    Selected
 }
 
 data class VormexAppearance(
@@ -55,6 +58,12 @@ data class VormexAppearance(
     val inputBorderColor: Color,
     val overlayColor: Color,
     val overlayBorderColor: Color,
+    val controlColor: Color,
+    val controlBorderColor: Color,
+    val navigationColor: Color,
+    val navigationBorderColor: Color,
+    val selectedColor: Color,
+    val selectedBorderColor: Color,
     val dividerColor: Color
 ) {
     val isGlassTheme: Boolean
@@ -72,6 +81,9 @@ data class VormexAppearance(
         VormexSurfaceTone.Sheet -> sheetColor
         VormexSurfaceTone.Input -> inputColor
         VormexSurfaceTone.Overlay -> overlayColor
+        VormexSurfaceTone.Control -> controlColor
+        VormexSurfaceTone.Navigation -> navigationColor
+        VormexSurfaceTone.Selected -> selectedColor
     }
 
     fun borderColor(tone: VormexSurfaceTone): Color = when (tone) {
@@ -80,7 +92,22 @@ data class VormexAppearance(
         VormexSurfaceTone.Sheet -> sheetBorderColor
         VormexSurfaceTone.Input -> inputBorderColor
         VormexSurfaceTone.Overlay -> overlayBorderColor
+        VormexSurfaceTone.Control -> controlBorderColor
+        VormexSurfaceTone.Navigation -> navigationBorderColor
+        VormexSurfaceTone.Selected -> selectedBorderColor
     }
+
+    val mutedContentColor: Color
+        get() = contentColor.copy(alpha = if (isDarkTheme) 0.68f else 0.62f)
+
+    val disabledContentColor: Color
+        get() = contentColor.copy(alpha = if (isDarkTheme) 0.38f else 0.34f)
+
+    val mediaSurfaceColor: Color
+        get() = if (isDarkTheme) Color.White.copy(alpha = 0.06f) else Color.Black.copy(alpha = 0.05f)
+
+    val scrimColor: Color
+        get() = Color.Black.copy(alpha = if (isGlassTheme) 0.42f else 0.50f)
 }
 
 val LocalVormexAppearance = compositionLocalOf<VormexAppearance?> { null }
@@ -122,13 +149,19 @@ private fun appearanceForTheme(themeMode: String): VormexAppearance =
             inputBorderColor = Color.White.copy(alpha = 0.16f),
             overlayColor = Color.White.copy(alpha = 0.18f),
             overlayBorderColor = Color.White.copy(alpha = 0.22f),
+            controlColor = Color.White.copy(alpha = 0.22f),
+            controlBorderColor = Color.White.copy(alpha = 0.22f),
+            navigationColor = Color.White.copy(alpha = 0.40f),
+            navigationBorderColor = Color.White.copy(alpha = 0.30f),
+            selectedColor = Color.Black.copy(alpha = 0.10f),
+            selectedBorderColor = Color.White.copy(alpha = 0.22f),
             dividerColor = Color.Black.copy(alpha = 0.08f)
         )
         VormexThemeMode.Light -> VormexAppearance(
             mode = VormexThemeMode.Light,
             backgroundColor = Color(0xFFF5F7FB),
             contentColor = Color(0xFF0F1720),
-            cardColor = Color.White.copy(alpha = 0.98f),
+            cardColor = Color.White,
             cardBorderColor = Color(0xFFDCE4EF),
             subtleColor = Color(0xFFF0F4F9),
             subtleBorderColor = Color(0xFFE2E9F2),
@@ -136,8 +169,14 @@ private fun appearanceForTheme(themeMode: String): VormexAppearance =
             sheetBorderColor = Color(0xFFDAE3EE),
             inputColor = Color.White,
             inputBorderColor = Color(0xFFD6E0EB),
-            overlayColor = Color.White.copy(alpha = 0.96f),
+            overlayColor = Color.White,
             overlayBorderColor = Color(0xFFDCE4EF),
+            controlColor = Color.White,
+            controlBorderColor = Color(0xFFD6E0EB),
+            navigationColor = Color.White,
+            navigationBorderColor = Color(0xFFDCE4EF),
+            selectedColor = Color(0xFFEAF2FF),
+            selectedBorderColor = Color(0xFFCFE0F7),
             dividerColor = Color(0xFFE7EDF5)
         )
         VormexThemeMode.Dark -> VormexAppearance(
@@ -154,6 +193,12 @@ private fun appearanceForTheme(themeMode: String): VormexAppearance =
             inputBorderColor = Color.White.copy(alpha = 0.08f),
             overlayColor = Color(0xFF141C28),
             overlayBorderColor = Color.White.copy(alpha = 0.08f),
+            controlColor = Color(0xFF151E2A),
+            controlBorderColor = Color.White.copy(alpha = 0.08f),
+            navigationColor = Color(0xFF0F1724),
+            navigationBorderColor = Color.White.copy(alpha = 0.10f),
+            selectedColor = Color(0xFF173353),
+            selectedBorderColor = Color.White.copy(alpha = 0.10f),
             dividerColor = Color.White.copy(alpha = 0.06f)
         )
     }

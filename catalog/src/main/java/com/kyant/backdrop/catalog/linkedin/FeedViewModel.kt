@@ -23,6 +23,7 @@ import com.kyant.backdrop.catalog.network.models.FullProfileResponse
 import com.kyant.backdrop.catalog.network.models.Post
 import com.kyant.backdrop.catalog.network.models.Story
 import com.kyant.backdrop.catalog.network.models.StoryGroup
+import com.kyant.backdrop.catalog.network.models.StoryUser
 import com.kyant.backdrop.catalog.network.models.User
 import com.kyant.backdrop.catalog.network.models.Connection
 import com.kyant.backdrop.catalog.notifications.PushTokenRegistrar
@@ -123,6 +124,44 @@ private fun Post.withSanitizedPoll(): Post =
  */
 private fun prependCreatedPost(post: Post, currentPosts: ImmutableList<Post>): ImmutableList<Post> =
     (listOf(post) + currentPosts.filterNot { it.id == post.id }).toImmutableList()
+
+private fun prependCreatedStory(
+    story: Story,
+    currentStoryGroups: List<StoryGroup>,
+    currentUser: User?
+): List<StoryGroup> {
+    val existingOwnStoryIndex = currentStoryGroups.indexOfFirst { it.isOwnStory }
+    if (existingOwnStoryIndex >= 0) {
+        return currentStoryGroups.mapIndexed { index, group ->
+            if (index == existingOwnStoryIndex) {
+                group.copy(
+                    stories = listOf(story) + group.stories.filterNot { it.id == story.id },
+                    hasUnviewed = true,
+                    lastStoryAt = story.createdAt,
+                    isOwnStory = true
+                )
+            } else {
+                group
+            }
+        }
+    }
+
+    val user = currentUser ?: return currentStoryGroups
+    val ownStoryGroup = StoryGroup(
+        user = StoryUser(
+            id = user.id,
+            username = user.username,
+            name = user.name,
+            profileImage = user.profileImage,
+            headline = user.headline
+        ),
+        stories = listOf(story),
+        hasUnviewed = true,
+        lastStoryAt = story.createdAt,
+        isOwnStory = true
+    )
+    return listOf(ownStoryGroup) + currentStoryGroups
+}
 
 // Helper to convert FullPost to Post for FeedUiState compatibility
 private fun FullPost.toPost(): Post = Post(
@@ -812,8 +851,14 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                 linkTitle = linkTitle
             )
                 .onSuccess { response ->
+                    val currentState = _uiState.value
                     _uiState.value = _uiState.value.copy(
-                        myStories = listOf(response.story) + _uiState.value.myStories,
+                        myStories = listOf(response.story) + currentState.myStories.filterNot { it.id == response.story.id },
+                        storyGroups = prependCreatedStory(
+                            story = response.story,
+                            currentStoryGroups = currentState.storyGroups,
+                            currentUser = currentState.currentUser
+                        ),
                         isCreatingStory = false
                     )
                     loadStories(forceRefresh = true) // Refresh all stories
@@ -870,7 +915,7 @@ class FeedViewModel(private val context: Context) : ViewModel() {
         }
     }
     
-    fun getStoryViewers(storyId: String, callback: (List<StoryViewer>) -> Unit) {
+    fun getStoryViewers(storyId: String, callback: (StoryViewersResult) -> Unit) {
         viewModelScope.launch {
             println("DEBUG: Fetching viewers for story: $storyId")
             ApiClient.getStoryViewers(context, storyId)
@@ -892,11 +937,16 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                             }
                         )
                     }
-                    callback(viewers)
+                    callback(
+                        StoryViewersResult(
+                            viewers = viewers,
+                            totalCount = response.totalCount
+                        )
+                    )
                 }
                 .onFailure { e ->
                     println("DEBUG: Failed to get viewers: ${e.message}")
-                    callback(emptyList())
+                    callback(StoryViewersResult(viewers = emptyList(), totalCount = 0))
                 }
         }
     }

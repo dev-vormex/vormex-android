@@ -108,8 +108,9 @@ fun AddEditProjectScreen(
 
     // Theme preference: "glass", "light", "dark"
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
-    val isGlassTheme = themeMode == "glass"
-    val isDarkTheme = themeMode == "dark"
+    val appearance = currentVormexAppearance(themeMode)
+    val isGlassTheme = appearance.isGlassTheme
+    val isDarkTheme = appearance.isDarkTheme
     val modalBackground = when {
         isDarkTheme -> Color(0xFF0E1014)
         isGlassTheme -> Color(0xFFF2F6FA)
@@ -845,8 +846,9 @@ fun ProjectDetailScreen(
 ) {
     val context = LocalContext.current
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
-    val isGlassTheme = themeMode == "glass"
-    val isDarkTheme = themeMode == "dark"
+    val appearance = currentVormexAppearance(themeMode)
+    val isGlassTheme = appearance.isGlassTheme
+    val isDarkTheme = appearance.isDarkTheme
     val heroAccent = if (project.featured) Color(0xFFFFD66B) else accentColor
     val surfaceBorder = if (project.featured) heroAccent.copy(alpha = 0.26f) else contentColor.copy(alpha = 0.1f)
     val baseBackground = when {

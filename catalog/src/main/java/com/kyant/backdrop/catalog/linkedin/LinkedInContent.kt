@@ -24,6 +24,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -90,10 +91,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
@@ -102,6 +105,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -184,6 +189,18 @@ private val KaushanScriptFontFamily = FontFamily(
     Font(R.font.kaushan_script)
 )
 
+private fun Modifier.noRippleClickable(
+    enabled: Boolean = true,
+    onClick: () -> Unit
+): Modifier = composed {
+    clickable(
+        interactionSource = remember { MutableInteractionSource() },
+        indication = null,
+        enabled = enabled,
+        onClick = onClick
+    )
+}
+
 // Shimmer effect for skeleton loading
 @Composable
 private fun shimmerBrush(isLightTheme: Boolean): Brush {
@@ -225,10 +242,17 @@ private fun PostSkeletonCard(
     shimmerBrush: Brush,
     isLightTheme: Boolean
 ) {
-    val surfaceColor =
+    val appearance = currentVormexAppearance()
+    val surfaceColor = if (appearance.isGlassTheme) {
         if (isLightTheme) Color.White.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.08f)
-    val borderColor =
+    } else {
+        appearance.cardColor
+    }
+    val borderColor = if (appearance.isGlassTheme) {
         if (isLightTheme) Color.Black.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.12f)
+    } else {
+        appearance.cardBorderColor
+    }
 
     Box(
         Modifier
@@ -367,6 +391,7 @@ private fun SectionOverlayContainer(
     accentColor: Color,
     glassMotionStyleKey: String,
     reduceAnimations: Boolean,
+    applyStatusBarPadding: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val appearance = currentVormexAppearance(themeMode)
@@ -394,7 +419,7 @@ private fun SectionOverlayContainer(
         Box(
             Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .then(if (applyStatusBarPadding) Modifier.statusBarsPadding() else Modifier)
         ) {
             content()
         }
@@ -439,6 +464,8 @@ fun LinkedInContent(
     val isDarkTheme = appearance.isDarkTheme
     val contentColor = appearance.contentColor
     val accentColor = glassAccentPalette(accentPaletteKey).color
+    val footerIconSize = 28.dp
+    val footerTextStyle = TextStyle(contentColor, 12.sp)
 
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var showFullMoreScreen by rememberSaveable { mutableStateOf(false) }
@@ -639,6 +666,14 @@ fun LinkedInContent(
                         openChatWithUserId = null
                     }
                 }
+                com.kyant.backdrop.catalog.notifications.VormexMessagingService.ACTION_GROUP_CHAT -> {
+                    link.groupId?.let { groupId ->
+                        selectedTab = 3
+                        showGroupsScreen = true
+                        selectedGroupId = groupId
+                        showGroupChat = true
+                    }
+                }
                 com.kyant.backdrop.catalog.notifications.VormexMessagingService.ACTION_POST -> {
                     // Navigate to specific post (like, comment, mention notifications)
                     link.postId?.let { postId ->
@@ -820,7 +855,7 @@ fun LinkedInContent(
     }
 
     // Stagger background prefetches so cold start is not a thundering herd competing with
-    // FeedViewModel (feed + user + socket). Reels prefetch (video bytes) runs last.
+    // FeedViewModel (feed + user + socket). Reels metadata + poster warmup runs last.
     LaunchedEffect(uiState.isLoggedIn) {
         if (!uiState.isLoggedIn) {
             rewardCardsViewModel.maybeLoadOnAppOpen(false)
@@ -1012,6 +1047,7 @@ fun LinkedInContent(
             // Solid color background for White/Dark themes
             Box(
                 Modifier
+                    .layerBackdrop(backdrop)
                     .fillMaxSize()
                     .background(appearance.backgroundColor)
             )
@@ -1260,11 +1296,18 @@ fun LinkedInContent(
                                     storyGroups = uiState.storyGroups,
                                     accentColor = accentColor,
                                     initialGroupIndex = uiState.currentStoryGroupIndex,
+                                    initialStoryIndex = uiState.currentStoryIndex,
                                     onDismiss = { viewModel.closeStoryViewer() },
                                     onStoryViewed = { storyId -> viewModel.viewStory(storyId) },
                                     onReact = { storyId, reaction -> viewModel.reactToStory(storyId, reaction) },
                                     onReply = { storyId, content -> viewModel.replyToStory(storyId, content) },
-                                    onGetViewers = { storyId, callback -> viewModel.getStoryViewers(storyId, callback) }
+                                    onGetViewers = { storyId, callback ->
+                                        viewModel.getStoryViewers(storyId, callback)
+                                    },
+                                    onAddStory = {
+                                        viewModel.closeStoryViewer()
+                                        viewModel.openStoryCreator()
+                                    }
                                 )
                             }
                             
@@ -1505,97 +1548,107 @@ fun LinkedInContent(
                 exit = fadeOut() + slideOutHorizontally { it / 2 },
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
-                LiquidBottomTabs(
-                    selectedTabIndex = { selectedTab },
-                    onTabSelected = {
-                        selectedTab = it
-                        if (it == 3) {
-                            showFullMoreScreen = false
-                        }
-                    },
-                    backdrop = backdrop,
-                    tabsCount = 5,
+                Column(
                     modifier = Modifier
-                        .padding(horizontal = 36.dp)
-                        .navigationBarsPadding()
                         .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(bottom = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                LiquidBottomTab(onClick = { selectedTab = 0 }) {
-                    FooterHomeIcon(
-                        color = contentColor,
-                        size = 22.dp
-                    )
-                    BasicText("Home", style = TextStyle(contentColor, 10.sp))
-                }
-                LiquidBottomTab(onClick = { 
-                    viewModel.clearError() // Clear feed errors when switching tabs
-                    selectedTab = 1 
-                }) {
-                    // Find tab - only show badge when streak is at risk
-                    Box {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            FooterFindIcon(
+                    LiquidBottomTabs(
+                        selectedTabIndex = { selectedTab },
+                        onTabSelected = {
+                            selectedTab = it
+                            if (it == 3) {
+                                showFullMoreScreen = false
+                            }
+                        },
+                        backdrop = backdrop,
+                        tabsCount = 5,
+                        useGlassEffects = true,
+                        lightTheme = isLightTheme,
+                        accentColor = accentColor,
+                        modifier = Modifier
+                            .padding(horizontal = 36.dp)
+                            .fillMaxWidth()
+                    ) {
+                        LiquidBottomTab(onClick = { selectedTab = 0 }) {
+                            FooterHomeIcon(
                                 color = contentColor,
-                                size = 22.dp
+                                size = footerIconSize
                             )
-                            BasicText("Find", style = TextStyle(contentColor, 10.sp))
+                            BasicText("Home", style = footerTextStyle)
                         }
-                        
-                        // Only show badge when streak is AT RISK (not always)
-                        if (uiState.isStreakAtRisk && uiState.connectionStreak > 0) {
-                            Box(
-                                Modifier
-                                    .align(Alignment.TopEnd)
-                                    .offset(x = 8.dp, y = (-4).dp)
-                                    .size(18.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFFFF6B6B)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                BasicText(
-                                    "!",
-                                    style = TextStyle(
-                                        color = Color.White,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
+                        LiquidBottomTab(onClick = {
+                            viewModel.clearError() // Clear feed errors when switching tabs
+                            selectedTab = 1
+                        }) {
+                            // Find tab - only show badge when streak is at risk
+                            Box {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    FooterFindIcon(
+                                        color = contentColor,
+                                        size = footerIconSize
                                     )
-                                )
+                                    BasicText("Find", style = footerTextStyle)
+                                }
+
+                                // Only show badge when streak is AT RISK (not always)
+                                if (uiState.isStreakAtRisk && uiState.connectionStreak > 0) {
+                                    Box(
+                                        Modifier
+                                            .align(Alignment.TopEnd)
+                                            .offset(x = 8.dp, y = (-4).dp)
+                                            .size(18.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFFFF6B6B)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        BasicText(
+                                            "!",
+                                            style = TextStyle(
+                                                color = Color.White,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        )
+                                    }
+                                }
                             }
                         }
-                    }
+                        LiquidBottomTab(onClick = { selectedTab = 2 }) {
+                            FooterCreateIcon(
+                                color = contentColor,
+                                size = footerIconSize
+                            )
+                            BasicText("Post", style = footerTextStyle)
+                        }
+                        LiquidBottomTab(onClick = {
+                            moreHubAnimationKey += 1
+                            showFullMoreScreen = false
+                            selectedTab = 3
+                        }) {
+                            FooterMoreIcon(
+                                color = contentColor,
+                                size = footerIconSize
+                            )
+                            BasicText("More", style = footerTextStyle)
+                        }
+                        LiquidBottomTab(onClick = { selectedTab = 4 }) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                FooterProfileIcon(
+                                    color = contentColor,
+                                    size = footerIconSize
+                                )
+                                BasicText("Profile", style = footerTextStyle)
+                            }
+                        }
+                    } // End LiquidBottomTabs
                 }
-                LiquidBottomTab(onClick = { selectedTab = 2 }) {
-                    FooterCreateIcon(
-                        color = contentColor,
-                        size = 22.dp
-                    )
-                    BasicText("Post", style = TextStyle(contentColor, 10.sp))
-                }
-                LiquidBottomTab(onClick = {
-                    moreHubAnimationKey += 1
-                    showFullMoreScreen = false
-                    selectedTab = 3
-                }) {
-                    FooterMoreIcon(
-                        color = contentColor,
-                        size = 22.dp
-                    )
-                    BasicText("More", style = TextStyle(contentColor, 10.sp))
-                }
-                LiquidBottomTab(onClick = { selectedTab = 4 }) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        FooterProfileIcon(
-                            color = contentColor,
-                            size = 22.dp
-                        )
-                        BasicText("Profile", style = TextStyle(contentColor, 10.sp))
-                    }
-                }
-            } // End LiquidBottomTabs
             } // End AnimatedVisibility
 
             val openInlineProfile: (String) -> Unit = { userId ->
@@ -1691,12 +1744,14 @@ fun LinkedInContent(
                 modifier = Modifier.align(Alignment.BottomEnd)
             ) {
                 Box(
-                    modifier = Modifier.padding(end = 20.dp, bottom = if (isInChatThread) 20.dp else 84.dp)
+                    modifier = Modifier
+                        .navigationBarsPadding()
+                        .padding(end = 20.dp, bottom = if (isInChatThread) 20.dp else 84.dp)
                 ) {
                     Box(
                         modifier = Modifier
                             .size(64.dp)
-                            .clickable {
+                            .noRippleClickable {
                                 minimizeAgentSheetForVoice = false
                                 showAgentSheet = true
                             },
@@ -1795,6 +1850,13 @@ fun LinkedInContent(
                         onTrackView = { reelId, watchTime, completed ->
                             reelsViewModel.trackView(reelId, watchTime, completed)
                         },
+                        onReelChanged = { index -> reelsViewModel.onReelChanged(index) },
+                        playerForIndex = { index -> reelsViewModel.playerForIndex(index) },
+                        onPlaybackError = { index -> reelsViewModel.handlePlaybackError(index) },
+                        onRetryPlayback = { index -> reelsViewModel.retryPlayback(index) },
+                        onPausePlayback = { reset -> reelsViewModel.pausePlayback(reset) },
+                        onResumePlayback = { index -> reelsViewModel.resumePlayback(index) },
+                        onReleasePlayback = { reelsViewModel.releasePlayback() },
                         onLoadMore = { reelsViewModel.loadMoreReels() }
                     )
 
@@ -1961,7 +2023,8 @@ fun LinkedInContent(
                     glassBackgroundKey = glassBackgroundKey,
                     accentColor = accentColor,
                     glassMotionStyleKey = glassMotionStyleKey,
-                    reduceAnimations = reduceAnimations
+                    reduceAnimations = reduceAnimations,
+                    applyStatusBarPadding = false
                 ) {
                     Column(Modifier.fillMaxSize()) {
                         // Header with back button - hidden when in chat thread
@@ -1969,6 +2032,7 @@ fun LinkedInContent(
                             Row(
                                 Modifier
                                     .fillMaxWidth()
+                                    .statusBarsPadding()
                                     .padding(horizontal = 16.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -2733,7 +2797,7 @@ private fun LinkedInTopBar(
         ) {
             Row(
                 modifier = Modifier
-                    .clickable(onClick = onStreakClick)
+                    .noRippleClickable(onClick = onStreakClick)
                     .padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -2776,7 +2840,7 @@ private fun LinkedInTopBar(
                 Box(
                     Modifier
                         .size(40.dp)
-                        .clickable { onNotificationsClick() },
+                        .noRippleClickable { onNotificationsClick() },
                     contentAlignment = Alignment.Center
                 ) {
                     NotificationBellIcon(
@@ -2809,7 +2873,7 @@ private fun LinkedInTopBar(
                 Box(
                     Modifier
                         .size(40.dp)
-                        .clickable { onMessagesClick() },
+                        .noRippleClickable { onMessagesClick() },
                     contentAlignment = Alignment.Center
                 ) {
                     HeaderMessageIcon(
@@ -3311,11 +3375,7 @@ private fun StoriesRow(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.clickable {
                 if (hasMyStory) {
-                    // Find the index of my story in the original list
-                    val myStoryIndex = storyGroups.indexOfFirst { it.isOwnStory }
-                    if (myStoryIndex >= 0) {
-                        onMyStoryClick()
-                    }
+                    onMyStoryClick()
                 } else {
                     onAddStoryClick()
                 }
@@ -3337,7 +3397,7 @@ private fun StoriesRow(
                                 blur(8f.dp.toPx())
                             },
                             onDrawSurface = {
-                                if (hasMyStory && myStoryGroup?.hasUnviewed == true) {
+                                if (hasMyStory && myStoryGroup.hasUnviewed) {
                                     drawRect(accentColor.copy(alpha = 0.4f))
                                 } else if (hasMyStory) {
                                     drawRect(Color.Gray.copy(alpha = 0.3f))
@@ -3396,14 +3456,21 @@ private fun StoriesRow(
                         .border(2.dp, Color.White, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    BasicText(
-                        "+",
-                        style = TextStyle(
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .clickable { onAddStoryClick() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        BasicText(
+                            "+",
+                            style = TextStyle(
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         )
-                    )
+                    }
                 }
             }
             Spacer(Modifier.height(4.dp))
@@ -5902,7 +5969,7 @@ private fun MoreQuickAccessHub(
                         }
                     )
                     .border(1.dp, actionBorderColor, RoundedCornerShape(18.dp))
-                    .clickable {
+                    .noRippleClickable {
                         launchHubAction(openFullMore = false) {
                             action.onClick()
                         }
@@ -6079,7 +6146,7 @@ private fun MoreRadialShortcutBubble(
                         }
                     )
                     .border(1.dp, borderColor, CircleShape)
-                    .clickable(onClick = onClick),
+                    .noRippleClickable(onClick = onClick),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -6173,7 +6240,7 @@ private fun MoreRadialCenterButton(
                     }
                 )
                 .border(1.dp, accentColor.copy(alpha = 0.35f), CircleShape)
-                .clickable(onClick = onClick),
+                .noRippleClickable(onClick = onClick),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -6883,7 +6950,7 @@ private fun MoreCurrentUserCard(
                 }
             )
             .border(1.dp, borderColor, RoundedCornerShape(18.dp))
-            .clickable(onClick = onClick)
+            .noRippleClickable(onClick = onClick)
             .padding(16.dp)
     ) {
         Row(
@@ -7336,7 +7403,7 @@ private fun MoreConnectionRequestActionButton(
                 color = if (filled) accentColor else borderColor,
                 shape = RoundedCornerShape(999.dp)
             )
-            .clickable(onClick = onClick)
+            .noRippleClickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 8.dp)
     ) {
         BasicText(
@@ -7368,7 +7435,7 @@ private fun MoreSettingsRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = item.onClick)
+            .noRippleClickable(onClick = item.onClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
@@ -8993,6 +9060,7 @@ private fun ApiPostCard(
     reduceAnimations: Boolean = false
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    var menuAnchorBounds by remember(post.id) { mutableStateOf<Rect?>(null) }
     var showImageViewer by remember { mutableStateOf(false) }
     var selectedImageIndex by remember { mutableIntStateOf(0) }
     var showFullScreenVideo by remember { mutableStateOf(false) }
@@ -9013,76 +9081,47 @@ private fun ApiPostCard(
     }
     
     // Red color for active likes
+    val appearance = currentVormexAppearance()
     val likeActiveColor = Color(0xFFE53935)
-    val useCrystalPureGlass = glassBackgroundKey == "crystal"
+    val useCrystalPureGlass = appearance.isGlassTheme && glassBackgroundKey == "crystal"
     val containerShape = RoundedCornerShape(0.dp)
     val innerSectionShape = RoundedCornerShape(0.dp)
-    val subtleTextColor = contentColor.copy(alpha = 0.62f)
+    val subtleTextColor = appearance.mutedContentColor
     val hasMedia = !post.videoUrl.isNullOrEmpty() || post.mediaUrls.isNotEmpty()
     val hasLinkPreview = !post.linkUrl.isNullOrEmpty()
     val showContentBlock = !post.content.isNullOrBlank()
-    val cardBorderColor = if (useCrystalPureGlass) {
-        Color.White.copy(alpha = 0.22f)
-    } else {
-        Color.White.copy(alpha = 0.16f)
+    val cardSurfaceColor = when {
+        !appearance.isGlassTheme -> appearance.cardColor
+        useCrystalPureGlass -> Color.White.copy(alpha = 0.08f)
+        else -> Color.White.copy(alpha = 0.12f)
     }
-    val mediaContainerColor = if (useCrystalPureGlass) {
-        Color.White.copy(alpha = 0.05f)
-    } else {
-        Color.Black.copy(alpha = 0.08f)
+    val cardBorderColor = when {
+        !appearance.isGlassTheme -> appearance.cardBorderColor
+        useCrystalPureGlass -> Color.White.copy(alpha = 0.22f)
+        else -> Color.White.copy(alpha = 0.16f)
     }
+    val mediaContainerColor =
+        if (appearance.isGlassTheme) Color.Black.copy(alpha = 0.08f) else appearance.mediaSurfaceColor
+    val metricChipColor =
+        if (appearance.isGlassTheme) Color.White.copy(alpha = 0.08f) else appearance.subtleColor
+    val privateMetricChipColor =
+        if (appearance.isGlassTheme) Color.White.copy(alpha = 0.06f) else appearance.subtleColor
     val imageCrossfadeMs = if (reduceAnimations) 0 else 300
     
     Box(
         Modifier
             .fillMaxWidth()
             .clip(containerShape)
-            .then(
-                if (reduceAnimations) {
-                    if (useCrystalPureGlass) {
-                        Modifier.background(Color.White.copy(alpha = 0.08f), containerShape)
-                    } else {
-                        Modifier.background(
-                            brush = Brush.verticalGradient(
-                                listOf(
-                                    Color.White.copy(alpha = 0.14f),
-                                    Color.White.copy(alpha = 0.10f),
-                                    Color.White.copy(alpha = 0.08f)
-                                )
-                            ),
-                            shape = containerShape
-                        )
-                    }
-                } else {
-                    Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { RoundedRectangle(0f.dp) },
-                        effects = {
-                            vibrancy()
-                            if (useCrystalPureGlass) {
-                                lens(16f.dp.toPx(), 32f.dp.toPx())
-                            } else {
-                                blur(18f.dp.toPx())
-                                lens(8f.dp.toPx(), 16f.dp.toPx())
-                            }
-                        },
-                        onDrawSurface = {
-                            if (useCrystalPureGlass) {
-                                drawRect(Color.White.copy(alpha = 0.06f))
-                            } else {
-                                drawRect(
-                                    Brush.verticalGradient(
-                                        listOf(
-                                            Color.White.copy(alpha = 0.16f),
-                                            Color.White.copy(alpha = 0.10f),
-                                            Color.White.copy(alpha = 0.08f)
-                                        )
-                                    )
-                                )
-                            }
-                        }
-                    )
-                }
+            .vormexSurface(
+                backdrop = backdrop,
+                tone = VormexSurfaceTone.Card,
+                cornerRadius = 0.dp,
+                blurRadius = if (useCrystalPureGlass) 0.dp else 18.dp,
+                lensRadius = if (useCrystalPureGlass) 16.dp else 8.dp,
+                lensDepth = if (useCrystalPureGlass) 32.dp else 16.dp,
+                useBackdropEffects = !reduceAnimations,
+                surfaceColor = cardSurfaceColor,
+                borderColor = Color.Transparent
             )
             // Only left/right strokes — a full .border() also draws top+bottom, so when cards
             // stack flush the adjacent top+bottom borders read as a gray seam between posts.
@@ -9126,7 +9165,7 @@ private fun ApiPostCard(
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(16.dp))
-                        .clickable { onProfileClick() },
+                        .noRippleClickable { onProfileClick() },
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
@@ -9190,7 +9229,7 @@ private fun ApiPostCard(
                             ApiMetricChip(
                                 label = relativeTimeLabel,
                                 contentColor = subtleTextColor,
-                                containerColor = Color.White.copy(alpha = 0.08f)
+                                containerColor = metricChipColor
                             )
                             when (post.visibility) {
                                 "CONNECTIONS" -> ApiMetricChip(
@@ -9202,7 +9241,7 @@ private fun ApiPostCard(
                                 "PRIVATE" -> ApiMetricChip(
                                     label = "Only me",
                                     contentColor = subtleTextColor,
-                                    containerColor = Color.White.copy(alpha = 0.06f)
+                                    containerColor = privateMetricChipColor
                                 )
                             }
                         }
@@ -9212,8 +9251,11 @@ private fun ApiPostCard(
                 // Menu button (three dots) with SVG icon
                 Box(
                     Modifier
+                        .onGloballyPositioned { coordinates ->
+                            menuAnchorBounds = coordinates.boundsInWindow()
+                        }
                         .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White.copy(alpha = 0.08f))
+                        .background(metricChipColor)
                         .clickable { showMenu = true }
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     contentAlignment = Alignment.Center
@@ -9232,6 +9274,7 @@ private fun ApiPostCard(
                     onDismissRequest = { showMenu = false },
                     backdrop = backdrop,
                     contentColor = contentColor,
+                    anchorBounds = menuAnchorBounds,
                     useGlassBackdropEffects = false
                 ) {
                     GlassMenuItem(

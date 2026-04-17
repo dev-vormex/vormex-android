@@ -2,10 +2,13 @@ package com.kyant.backdrop.catalog.linkedin
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.pm.PackageManager
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.drawable.BitmapDrawable
+import android.view.MotionEvent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -57,6 +60,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -71,6 +75,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -99,6 +104,18 @@ import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.shapes.RoundedRectangle
+import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.CustomZoomButtonsController
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Polygon
+import kotlin.math.asin
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 // ==================== Main FindPeople Screen ====================
 
@@ -120,8 +137,9 @@ fun FindPeopleScreenNew(
     
     // Theme preference: "glass", "light", "dark"
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
-    val isGlassTheme = themeMode == "glass"
-    val isLightTheme = !isSystemInDarkTheme()
+    val appearance = currentVormexAppearance(themeMode)
+    val isGlassTheme = appearance.isGlassTheme
+    val isLightTheme = appearance.isLightTheme
     // One shimmer for all Find skeletons (avoids N× infinite transitions).
     val listShimmerBrush = findPeopleShimmerBrush(isLightTheme)
     
@@ -631,23 +649,14 @@ private fun Modifier.findPeopleGlassSurface(
     reduceAnimations: Boolean,
     onDrawSurfaceColor: Color = Color.White.copy(alpha = 0.1f)
 ): Modifier {
-    val shape = RoundedCornerShape(cornerDp.dp)
-    return this.clip(shape).then(
-        if (reduceAnimations) {
-            Modifier.background(
-                if (isLightTheme) Color.White.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.09f)
-            )
-        } else {
-            Modifier.drawBackdrop(
-                backdrop = backdrop,
-                shape = { RoundedRectangle(cornerDp.dp) },
-                effects = {
-                    vibrancy()
-                    blur(blurDp.dp.toPx())
-                },
-                onDrawSurface = { drawRect(onDrawSurfaceColor) }
-            )
-        }
+    return this.vormexSurface(
+        backdrop = backdrop,
+        tone = VormexSurfaceTone.Card,
+        cornerRadius = cornerDp.dp,
+        blurRadius = blurDp.dp,
+        lensRadius = 0.dp,
+        lensDepth = 0.dp,
+        useBackdropEffects = !reduceAnimations
     )
 }
 
@@ -2809,7 +2818,7 @@ private fun AnimatedNearbyCardSkeleton(
 
 // ==================== Nearby Map View ====================
 
-@SuppressLint("SetJavaScriptEnabled")
+@SuppressLint("ClickableViewAccessibility")
 @Composable
 private fun NearbyMapView(
     currentLat: Double,
@@ -2822,8 +2831,35 @@ private fun NearbyMapView(
     reduceAnimations: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val mapHtml = remember(currentLat, currentLng, nearbyPeople, selectedRadius) {
-        buildMapHtml(currentLat, currentLng, nearbyPeople, selectedRadius)
+    val context = LocalContext.current
+    val mapView = remember(context) {
+        Configuration.getInstance().userAgentValue = context.packageName
+        MapView(context).apply {
+            setTileSource(TileSourceFactory.MAPNIK)
+            setMultiTouchControls(true)
+            setTilesScaledToDpi(true)
+            setUseDataConnection(true)
+            zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
+            minZoomLevel = 3.0
+            maxZoomLevel = 19.0
+            setOnTouchListener { view, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN,
+                    MotionEvent.ACTION_MOVE -> view.parent?.requestDisallowInterceptTouchEvent(true)
+                    MotionEvent.ACTION_UP,
+                    MotionEvent.ACTION_CANCEL -> view.parent?.requestDisallowInterceptTouchEvent(false)
+                }
+                false
+            }
+        }
+    }
+
+    DisposableEffect(mapView) {
+        mapView.onResume()
+        onDispose {
+            mapView.onPause()
+            mapView.onDetach()
+        }
     }
     
     Box(
@@ -2838,124 +2874,182 @@ private fun NearbyMapView(
             )
     ) {
         AndroidView(
-            factory = { context ->
-                WebView(context).apply {
-                    webViewClient = WebViewClient()
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.cacheMode = WebSettings.LOAD_DEFAULT
-                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                }
-            },
-            update = { webView ->
-                webView.loadDataWithBaseURL(
-                    "https://unpkg.com/",
-                    mapHtml,
-                    "text/html",
-                    "UTF-8",
-                    null
+            factory = { mapView },
+            update = { view ->
+                updateNearbyMap(
+                    context = context,
+                    mapView = view,
+                    currentLat = currentLat,
+                    currentLng = currentLng,
+                    nearbyPeople = nearbyPeople,
+                    selectedRadius = selectedRadius,
+                    accentColor = accentColor,
+                    isLightTheme = isLightTheme
                 )
             },
             modifier = Modifier
                 .fillMaxSize()
                 .clip(RoundedCornerShape(16.dp))
         )
+
+        BasicText(
+            "(C) OpenStreetMap contributors",
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(8.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (isLightTheme) Color.White.copy(alpha = 0.82f) else Color.Black.copy(alpha = 0.58f))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            style = TextStyle(
+                color = if (isLightTheme) Color.Black.copy(alpha = 0.68f) else Color.White.copy(alpha = 0.78f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium
+            )
+        )
     }
 }
 
-private fun buildMapHtml(
+private fun updateNearbyMap(
+    context: Context,
+    mapView: MapView,
+    currentLat: Double,
+    currentLng: Double,
+    nearbyPeople: List<NearbyUser>,
+    selectedRadius: Int,
+    accentColor: Color,
+    isLightTheme: Boolean
+) {
+    val center = GeoPoint(currentLat, currentLng)
+    val density = context.resources.displayMetrics.density
+    val accentArgb = accentColor.toArgb()
+    val whiteArgb = android.graphics.Color.WHITE
+    val peopleArgb = Color(0xFF10B981).toArgb()
+
+    mapView.setBackgroundColor(
+        if (isLightTheme) android.graphics.Color.rgb(232, 238, 242) else android.graphics.Color.rgb(26, 32, 38)
+    )
+    mapView.controller.setZoom(nearbyMapZoomForRadius(selectedRadius))
+    mapView.controller.setCenter(center)
+    mapView.overlays.clear()
+
+    val radiusOverlay = Polygon(mapView).apply {
+        setPoints(buildMapCirclePoints(currentLat, currentLng, selectedRadius * 1000.0))
+        fillPaint.color = accentColor.copy(alpha = if (isLightTheme) 0.12f else 0.18f).toArgb()
+        fillPaint.style = Paint.Style.FILL
+        outlinePaint.color = accentColor.copy(alpha = 0.78f).toArgb()
+        outlinePaint.style = Paint.Style.STROKE
+        outlinePaint.strokeWidth = 2f * density
+    }
+    mapView.overlays.add(radiusOverlay)
+
+    mapView.overlays.add(
+        Marker(mapView).apply {
+            position = center
+            title = "You"
+            icon = circleMarkerDrawable(
+                context = context,
+                fillColor = accentArgb,
+                strokeColor = whiteArgb,
+                sizeDp = 22f,
+                strokeDp = 3f
+            )
+            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+        }
+    )
+
+    nearbyPeople.forEach { user ->
+        val location = user.location ?: return@forEach
+        mapView.overlays.add(
+            Marker(mapView).apply {
+                position = GeoPoint(location.lat, location.lng)
+                title = user.name ?: user.username ?: "Nearby person"
+                subDescription = "${formatDistance(user.distance)} away"
+                icon = circleMarkerDrawable(
+                    context = context,
+                    fillColor = peopleArgb,
+                    strokeColor = whiteArgb,
+                    sizeDp = if (user.isOnline) 19f else 16f,
+                    strokeDp = 2f
+                )
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+            }
+        )
+    }
+
+    mapView.invalidate()
+}
+
+private fun nearbyMapZoomForRadius(radiusKm: Int): Double {
+    return when {
+        radiusKm <= 10 -> 12.2
+        radiusKm <= 25 -> 11.1
+        radiusKm <= 50 -> 10.0
+        radiusKm <= 100 -> 9.0
+        else -> 8.0
+    }
+}
+
+private fun circleMarkerDrawable(
+    context: Context,
+    fillColor: Int,
+    strokeColor: Int,
+    sizeDp: Float,
+    strokeDp: Float
+): BitmapDrawable {
+    val density = context.resources.displayMetrics.density
+    val sizePx = (sizeDp * density).roundToInt().coerceAtLeast(1)
+    val strokePx = strokeDp * density
+    val center = sizePx / 2f
+    val radius = center - strokePx / 2f
+    val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = fillColor
+    }
+
+    canvas.drawCircle(center, center, radius, paint)
+    paint.style = Paint.Style.STROKE
+    paint.strokeWidth = strokePx
+    paint.color = strokeColor
+    canvas.drawCircle(center, center, radius, paint)
+
+    return BitmapDrawable(context.resources, bitmap).apply {
+        setBounds(0, 0, sizePx, sizePx)
+    }
+}
+
+private fun buildMapCirclePoints(
     centerLat: Double,
     centerLng: Double,
-    nearbyPeople: List<NearbyUser>,
-    radiusKm: Int
-): String {
-    val markersJs = nearbyPeople.mapNotNull { user ->
-        user.location?.let { loc ->
-            val name = user.name ?: user.username ?: "User"
-            val distance = String.format("%.1f", user.distance)
-            """
-            L.marker([${loc.lat}, ${loc.lng}], {icon: personIcon})
-                .addTo(map)
-                .bindPopup('<div style="text-align:center;"><b>$name</b><br/>${distance}km away</div>');
-            """.trimIndent()
-        }
-    }.joinToString("\n")
-    
-    return """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <style>
-        body { margin: 0; padding: 0; background: transparent; }
-        #map { width: 100%; height: 100vh; border-radius: 16px; }
-        .leaflet-popup-content-wrapper {
-            background: rgba(0, 0, 0, 0.8);
-            color: white;
-            border-radius: 12px;
-        }
-        .leaflet-popup-tip { background: rgba(0, 0, 0, 0.8); }
-        .leaflet-popup-content { margin: 8px 12px; }
-        .you-marker {
-            background: #3B82F6;
-            border: 3px solid white;
-            border-radius: 50%;
-            width: 20px;
-            height: 20px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        }
-    </style>
-</head>
-<body>
-    <div id="map"></div>
-    <script>
-        var map = L.map('map', {
-            zoomControl: false,
-            attributionControl: false
-        }).setView([$centerLat, $centerLng], 12);
-        
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19
-        }).addTo(map);
-        
-        // Your location marker
-        var youIcon = L.divIcon({
-            className: 'you-marker-wrapper',
-            html: '<div class="you-marker"></div>',
-            iconSize: [20, 20],
-            iconAnchor: [10, 10]
-        });
-        
-        L.marker([$centerLat, $centerLng], {icon: youIcon})
-            .addTo(map)
-            .bindPopup('<div style="text-align:center;"><b>You</b></div>');
-        
-        // Radius circle
-        L.circle([$centerLat, $centerLng], {
-            radius: ${radiusKm * 1000},
-            color: '#3B82F6',
-            fillColor: '#3B82F6',
-            fillOpacity: 0.1,
-            weight: 2,
-            dashArray: '5, 5'
-        }).addTo(map);
-        
-        // Person icon
-        var personIcon = L.divIcon({
-            className: 'person-marker',
-            html: '<div style="background: #10B981; border: 2px solid white; border-radius: 50%; width: 16px; height: 16px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);"></div>',
-            iconSize: [16, 16],
-            iconAnchor: [8, 8]
-        });
-        
-        // Add nearby people markers
-        $markersJs
-    </script>
-</body>
-</html>
-    """.trimIndent()
+    radiusMeters: Double,
+    steps: Int = 96
+): List<GeoPoint> {
+    val earthRadiusMeters = 6_371_000.0
+    val centerLatRad = Math.toRadians(centerLat)
+    val centerLngRad = Math.toRadians(centerLng)
+    val angularDistance = radiusMeters / earthRadiusMeters
+
+    return (0..steps).map { index ->
+        val bearing = 2.0 * Math.PI * index / steps
+        val pointLatRad = asin(
+            sin(centerLatRad) * cos(angularDistance) +
+                cos(centerLatRad) * sin(angularDistance) * cos(bearing)
+        )
+        val pointLngRad = centerLngRad + atan2(
+            sin(bearing) * sin(angularDistance) * cos(centerLatRad),
+            cos(angularDistance) - sin(centerLatRad) * sin(pointLatRad)
+        )
+
+        GeoPoint(Math.toDegrees(pointLatRad), normalizeMapLongitude(Math.toDegrees(pointLngRad)))
+    }
+}
+
+private fun normalizeMapLongitude(longitude: Double): Double {
+    var normalized = longitude
+    while (normalized < -180.0) normalized += 360.0
+    while (normalized > 180.0) normalized -= 360.0
+    return normalized
 }
 
 @Composable

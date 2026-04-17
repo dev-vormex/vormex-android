@@ -1,6 +1,8 @@
 package com.kyant.backdrop.catalog.components
 
 import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -12,6 +14,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.isSpecified
@@ -20,6 +23,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceAtMost
 import androidx.compose.ui.util.lerp
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.catalog.linkedin.VormexSurfaceTone
+import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
 import com.kyant.backdrop.catalog.utils.InteractiveHighlight
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -40,8 +45,23 @@ fun LiquidButton(
     isInteractive: Boolean = true,
     tint: Color = Color.Unspecified,
     surfaceColor: Color = Color.Unspecified,
+    borderColor: Color = Color.Unspecified,
+    useGlassEffects: Boolean? = null,
     content: @Composable RowScope.() -> Unit
 ) {
+    val appearance = currentVormexAppearance()
+    val shouldUseGlass = useGlassEffects ?: appearance.isGlassTheme
+    val resolvedSurfaceColor = when {
+        surfaceColor.isSpecified -> surfaceColor
+        tint.isSpecified -> tint
+        shouldUseGlass -> Color.Transparent
+        else -> appearance.surfaceColor(VormexSurfaceTone.Control)
+    }
+    val resolvedBorderColor = when {
+        borderColor.isSpecified -> borderColor
+        shouldUseGlass -> Color.Transparent
+        else -> appearance.borderColor(VormexSurfaceTone.Control)
+    }
     val animationScope = rememberCoroutineScope()
 
     val interactiveHighlight = remember(animationScope) {
@@ -50,54 +70,70 @@ fun LiquidButton(
         )
     }
 
-    Row(
-        modifier
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = { Capsule() },
-                effects = {
-                    vibrancy()
-                    blur(2f.dp.toPx())
-                    lens(12f.dp.toPx(), 24f.dp.toPx())
-                },
-                layerBlock = if (isInteractive) {
-                    {
-                        val width = size.width
-                        val height = size.height
+    val shape = Capsule()
+    val surfaceModifier = if (shouldUseGlass) {
+        Modifier.drawBackdrop(
+            backdrop = backdrop,
+            shape = { shape },
+            effects = {
+                vibrancy()
+                blur(2f.dp.toPx())
+                lens(12f.dp.toPx(), 24f.dp.toPx())
+            },
+            layerBlock = if (isInteractive) {
+                {
+                    val width = size.width
+                    val height = size.height
 
-                        val progress = interactiveHighlight.pressProgress
-                        val scale = lerp(1f, 1f + 4f.dp.toPx() / size.height, progress)
+                    val progress = interactiveHighlight.pressProgress
+                    val scale = lerp(1f, 1f + 4f.dp.toPx() / size.height, progress)
 
-                        val maxOffset = size.minDimension
-                        val initialDerivative = 0.05f
-                        val offset = interactiveHighlight.offset
-                        translationX = maxOffset * tanh(initialDerivative * offset.x / maxOffset)
-                        translationY = maxOffset * tanh(initialDerivative * offset.y / maxOffset)
+                    val maxOffset = size.minDimension
+                    val initialDerivative = 0.05f
+                    val offset = interactiveHighlight.offset
+                    translationX = maxOffset * tanh(initialDerivative * offset.x / maxOffset)
+                    translationY = maxOffset * tanh(initialDerivative * offset.y / maxOffset)
 
-                        val maxDragScale = 4f.dp.toPx() / size.height
-                        val offsetAngle = atan2(offset.y, offset.x)
-                        scaleX =
-                            scale +
-                                    maxDragScale * abs(cos(offsetAngle) * offset.x / size.maxDimension) *
-                                    (width / height).fastCoerceAtMost(1f)
-                        scaleY =
-                            scale +
-                                    maxDragScale * abs(sin(offsetAngle) * offset.y / size.maxDimension) *
-                                    (height / width).fastCoerceAtMost(1f)
-                    }
+                    val maxDragScale = 4f.dp.toPx() / size.height
+                    val offsetAngle = atan2(offset.y, offset.x)
+                    scaleX =
+                        scale +
+                                maxDragScale * abs(cos(offsetAngle) * offset.x / size.maxDimension) *
+                                (width / height).fastCoerceAtMost(1f)
+                    scaleY =
+                        scale +
+                                maxDragScale * abs(sin(offsetAngle) * offset.y / size.maxDimension) *
+                                (height / width).fastCoerceAtMost(1f)
+                }
+            } else {
+                null
+            },
+            onDrawSurface = {
+                if (tint.isSpecified) {
+                    drawRect(tint, blendMode = BlendMode.Hue)
+                    drawRect(tint.copy(alpha = 0.75f))
+                }
+                if (surfaceColor.isSpecified) {
+                    drawRect(surfaceColor)
+                }
+            }
+        )
+    } else {
+        Modifier
+            .clip(shape)
+            .background(resolvedSurfaceColor, shape)
+            .then(
+                if (resolvedBorderColor.alpha > 0f) {
+                    Modifier.border(1.dp, resolvedBorderColor, shape)
                 } else {
-                    null
-                },
-                onDrawSurface = {
-                    if (tint.isSpecified) {
-                        drawRect(tint, blendMode = BlendMode.Hue)
-                        drawRect(tint.copy(alpha = 0.75f))
-                    }
-                    if (surfaceColor.isSpecified) {
-                        drawRect(surfaceColor)
-                    }
+                    Modifier
                 }
             )
+    }
+
+    Row(
+        modifier
+            .then(surfaceModifier)
             .clickable(
                 interactionSource = null,
                 indication = if (isInteractive) null else LocalIndication.current,

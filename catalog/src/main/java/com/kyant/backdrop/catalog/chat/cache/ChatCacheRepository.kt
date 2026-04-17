@@ -136,9 +136,7 @@ class ChatCacheRepository(
     ) {
         withContext(Dispatchers.IO) {
             val conversationId = conversation?.id ?: return@withContext
-            val existingConversation = conversation?.let {
-                dao.getConversation(cacheOwnerId, it.id)
-            }
+            val existingConversation = dao.getConversation(cacheOwnerId, conversationId)
             val persistedMessages = dedupeAndSort(messages).takeLast(RECENT_MESSAGE_LIMIT)
             val effectiveNextCursor = if (messages.size > RECENT_MESSAGE_LIMIT) {
                 existingConversation?.cachedNextCursor
@@ -152,22 +150,20 @@ class ChatCacheRepository(
             }
 
             database.withTransaction {
-                conversation?.let {
-                    val conversationWithFreshSummary = it.copy(
-                        lastMessage = persistedMessages.lastOrNull()?.toConversationLastMessage() ?: it.lastMessage,
-                        lastMessageAt = persistedMessages.lastOrNull()?.createdAt ?: it.lastMessageAt,
-                        updatedAt = persistedMessages.lastOrNull()?.updatedAt ?: it.updatedAt
-                    )
-                    val entity = conversationToEntity(
-                        cacheOwnerId = cacheOwnerId,
-                        conversation = conversationWithFreshSummary,
-                        existing = existingConversation,
-                        messagesCachedAt = System.currentTimeMillis(),
-                        cachedNextCursor = effectiveNextCursor,
-                        hasMoreMessages = effectiveHasMore
-                    )
-                    dao.upsertConversations(listOf(entity))
-                }
+                val conversationWithFreshSummary = conversation.copy(
+                    lastMessage = persistedMessages.lastOrNull()?.toConversationLastMessage() ?: conversation.lastMessage,
+                    lastMessageAt = persistedMessages.lastOrNull()?.createdAt ?: conversation.lastMessageAt,
+                    updatedAt = persistedMessages.lastOrNull()?.updatedAt ?: conversation.updatedAt
+                )
+                val entity = conversationToEntity(
+                    cacheOwnerId = cacheOwnerId,
+                    conversation = conversationWithFreshSummary,
+                    existing = existingConversation,
+                    messagesCachedAt = System.currentTimeMillis(),
+                    cachedNextCursor = effectiveNextCursor,
+                    hasMoreMessages = effectiveHasMore
+                )
+                dao.upsertConversations(listOf(entity))
 
                 dao.deleteMessagesForConversation(cacheOwnerId, conversationId)
                 if (persistedMessages.isNotEmpty()) {
@@ -357,6 +353,15 @@ class ChatCacheRepository(
         }
     }
 
+    suspend fun clearAll(cacheOwnerId: String) {
+        withContext(Dispatchers.IO) {
+            database.withTransaction {
+                dao.deleteAllMessages(cacheOwnerId)
+                dao.deleteAllConversations(cacheOwnerId)
+            }
+        }
+    }
+
     private suspend fun cacheConversations(
         cacheOwnerId: String,
         conversations: List<Conversation>,
@@ -374,6 +379,7 @@ class ChatCacheRepository(
             dao.upsertConversations(entities)
             if (replaceAll) {
                 if (conversations.isEmpty()) {
+                    dao.deleteAllMessages(cacheOwnerId)
                     dao.deleteAllConversations(cacheOwnerId)
                 } else {
                     dao.deleteConversationsNotIn(cacheOwnerId, conversations.map { it.id })

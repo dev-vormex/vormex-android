@@ -14,7 +14,8 @@ val releaseKeyAlias = secret("VORMEX_RELEASE_KEY_ALIAS")
 val releaseKeyPassword = secret("VORMEX_RELEASE_KEY_PASSWORD")
 val releaseApiBaseUrl = secret("VORMEX_RELEASE_API_BASE_URL") ?: "https://vormex-backend.onrender.com/api"
 val releaseSocketBaseUrl = secret("VORMEX_RELEASE_SOCKET_BASE_URL") ?: "https://vormex-backend.onrender.com"
-// Physical devices can reach the host machine through adb reverse on localhost.
+// Physical devices and emulators can reach the host machine through adb reverse on 127.0.0.1.
+// If you prefer the emulator-only host bridge, override with VORMEX_DEBUG_* = http://10.0.2.2:5000.
 val localDebugApiBaseUrl = "http://127.0.0.1:5000/api"
 val localDebugSocketBaseUrl = "http://127.0.0.1:5000"
 val debugApiBaseUrl = secret("VORMEX_DEBUG_API_BASE_URL") ?: localDebugApiBaseUrl
@@ -156,6 +157,9 @@ dependencies {
     
     // Google Play Services Location
     implementation(libs.google.play.services.location)
+
+    // Free/open map rendering for Nearby
+    implementation(libs.osmdroid.android)
     
     // Image Loading
     implementation(libs.coil.compose)
@@ -182,6 +186,9 @@ dependencies {
     
     // Media3 (ExoPlayer) for video playback
     implementation(libs.media3.exoplayer)
+    implementation(libs.media3.exoplayer.hls)
+    implementation(libs.media3.datasource)
+    implementation(libs.media3.database)
     implementation(libs.media3.ui)
 
     // Socket.IO for real-time chat
