@@ -43,6 +43,8 @@ data class CirclesUiState(
     // Actions
     val joiningCircleIds: Set<String> = emptySet(),
     val leavingCircleIds: Set<String> = emptySet(),
+    val isSavingCircleSettings: Boolean = false,
+    val circleSettingsError: String? = null,
     
     // Free plan limit
     val showUpgradePrompt: Boolean = false,
@@ -355,6 +357,57 @@ class CirclesViewModel(private val context: Context) : ViewModel() {
             circlePosts = emptyList()
         )
     }
+
+    fun clearCircleSettingsError() {
+        _uiState.value = _uiState.value.copy(circleSettingsError = null)
+    }
+
+    fun updateCircle(
+        circleId: String,
+        name: String,
+        description: String?,
+        emoji: String?,
+        category: String?,
+        tags: List<String>,
+        isPrivate: Boolean,
+        requiresApproval: Boolean,
+        maxMembers: Int
+    ) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isSavingCircleSettings = true,
+                circleSettingsError = null
+            )
+
+            GroupsApiService.updateCircle(
+                context = context,
+                circleId = circleId,
+                name = name,
+                description = description,
+                emoji = emoji,
+                category = category,
+                tags = tags,
+                isPrivate = isPrivate,
+                requiresApproval = requiresApproval,
+                maxMembers = maxMembers
+            ).fold(
+                onSuccess = { updatedCircle ->
+                    _uiState.value = _uiState.value.copy(
+                        isSavingCircleSettings = false,
+                        selectedCircle = updatedCircle,
+                        myCircles = _uiState.value.myCircles.replaceCircle(updatedCircle),
+                        discoverCircles = _uiState.value.discoverCircles.replaceCircle(updatedCircle)
+                    )
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isSavingCircleSettings = false,
+                        circleSettingsError = e.message ?: "Failed to update circle"
+                    )
+                }
+            )
+        }
+    }
     
     fun dismissUpgradePrompt() {
         _uiState.value = _uiState.value.copy(showUpgradePrompt = false)
@@ -370,5 +423,11 @@ class CirclesViewModel(private val context: Context) : ViewModel() {
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             return CirclesViewModel(context) as T
         }
+    }
+}
+
+private fun List<Circle>.replaceCircle(updatedCircle: Circle): List<Circle> {
+    return map { circle ->
+        if (circle.id == updatedCircle.id) updatedCircle else circle
     }
 }

@@ -162,6 +162,16 @@ data class UpdateGroupRequest(
 )
 
 @Serializable
+data class GroupIconUploadResponse(
+    val iconUrl: String
+)
+
+@Serializable
+data class GroupCoverUploadResponse(
+    val coverUrl: String
+)
+
+@Serializable
 data class GroupsResponse(
     val groups: List<Group>,
     val pagination: PaginationMeta? = null
@@ -247,6 +257,8 @@ data class Circle(
     val tags: List<String> = emptyList(),
     val type: String? = null,
     val isPrivate: Boolean = false,
+    val requiresApproval: Boolean = false,
+    val maxMembers: Int = 500,
     val memberCount: Int = 0,
     val activeMembers: Int = 0,
     val postsCount: Int = 0,
@@ -311,6 +323,18 @@ data class CreateCircleRequest(
     val tags: List<String> = emptyList(),
     val emoji: String? = null,
     val isPrivate: Boolean = false
+)
+
+@Serializable
+data class UpdateCircleRequest(
+    val name: String,
+    val description: String? = null,
+    val category: String? = null,
+    val tags: List<String> = emptyList(),
+    val emoji: String? = null,
+    val isPrivate: Boolean = false,
+    val requiresApproval: Boolean = false,
+    val maxMembers: Int
 )
 
 @Serializable

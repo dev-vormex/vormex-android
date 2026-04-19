@@ -541,8 +541,9 @@ object GroupsApiService {
         context: Context,
         groupId: String,
         imageBytes: ByteArray,
-        filename: String = "icon.jpg"
-    ): Result<Group> {
+        filename: String = "icon.jpg",
+        mimeType: String = "image/jpeg"
+    ): Result<GroupIconUploadResponse> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val response = client.post("$BASE_URL/groups/$groupId/upload/icon") {
@@ -552,7 +553,7 @@ object GroupsApiService {
                         "icon",
                         imageBytes,
                         Headers.build {
-                            append(HttpHeaders.ContentType, "image/jpeg")
+                            append(HttpHeaders.ContentType, mimeType)
                             append(HttpHeaders.ContentDisposition, "filename=$filename")
                         }
                     )
@@ -576,8 +577,9 @@ object GroupsApiService {
         context: Context,
         groupId: String,
         imageBytes: ByteArray,
-        filename: String = "cover.jpg"
-    ): Result<Group> {
+        filename: String = "cover.jpg",
+        mimeType: String = "image/jpeg"
+    ): Result<GroupCoverUploadResponse> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val response = client.post("$BASE_URL/groups/$groupId/upload/cover") {
@@ -587,7 +589,7 @@ object GroupsApiService {
                         "cover",
                         imageBytes,
                         Headers.build {
-                            append(HttpHeaders.ContentType, "image/jpeg")
+                            append(HttpHeaders.ContentType, mimeType)
                             append(HttpHeaders.ContentDisposition, "filename=$filename")
                         }
                     )
@@ -744,6 +746,49 @@ object GroupsApiService {
                     emoji = emoji,
                     isPrivate = isPrivate
                 ))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Update a circle
+     */
+    suspend fun updateCircle(
+        context: Context,
+        circleId: String,
+        name: String,
+        description: String? = null,
+        category: String? = null,
+        tags: List<String> = emptyList(),
+        emoji: String? = null,
+        isPrivate: Boolean = false,
+        requiresApproval: Boolean = false,
+        maxMembers: Int
+    ): Result<Circle> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.put("$BASE_URL/circles/$circleId") {
+                header("Authorization", "Bearer $token")
+                setBody(
+                    UpdateCircleRequest(
+                        name = name,
+                        description = description,
+                        category = category,
+                        tags = tags,
+                        emoji = emoji,
+                        isPrivate = isPrivate,
+                        requiresApproval = requiresApproval,
+                        maxMembers = maxMembers
+                    )
+                )
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())

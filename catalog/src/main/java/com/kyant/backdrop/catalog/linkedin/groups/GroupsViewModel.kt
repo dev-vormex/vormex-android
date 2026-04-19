@@ -1,19 +1,22 @@
 package com.kyant.backdrop.catalog.linkedin.groups
 
 import android.content.Context
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.kyant.backdrop.catalog.network.ApiClient
-import com.kyant.backdrop.catalog.network.GroupsApiService
 import com.kyant.backdrop.catalog.network.GroupSocketManager
+import com.kyant.backdrop.catalog.network.GroupsApiService
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.util.UUID
 
@@ -62,6 +65,8 @@ data class GroupsUiState(
     // Actions in progress
     val joiningGroupIds: Set<String> = emptySet(),
     val leavingGroupIds: Set<String> = emptySet(),
+    val isUpdatingGroupAppearance: Boolean = false,
+    val groupAppearanceError: String? = null,
     
     // Pagination
     val currentPage: Int = 1,
@@ -402,6 +407,121 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                     _uiState.value = _uiState.value.copy(groupMembers = response.members)
                 },
                 onFailure = { /* ignore */ }
+            )
+        }
+    }
+
+    fun uploadGroupIcon(
+        groupId: String,
+        uri: Uri,
+        fileName: String,
+        mimeType: String
+    ) {
+        uploadGroupAppearance(
+            groupId = groupId,
+            uri = uri,
+            fileName = fileName.ifBlank { "group-icon.jpg" },
+            mimeType = mimeType,
+            upload = { bytes, safeName, safeMimeType ->
+                GroupsApiService.uploadGroupIcon(
+                    context = context,
+                    groupId = groupId,
+                    imageBytes = bytes,
+                    filename = safeName,
+                    mimeType = safeMimeType
+                )
+            },
+            applyUrl = { group, url -> group.copy(iconImage = url) },
+            extractUrl = { response -> response.iconUrl },
+            defaultError = "Failed to upload group icon"
+        )
+    }
+
+    fun uploadGroupCover(
+        groupId: String,
+        uri: Uri,
+        fileName: String,
+        mimeType: String
+    ) {
+        uploadGroupAppearance(
+            groupId = groupId,
+            uri = uri,
+            fileName = fileName.ifBlank { "group-cover.jpg" },
+            mimeType = mimeType,
+            upload = { bytes, safeName, safeMimeType ->
+                GroupsApiService.uploadGroupCover(
+                    context = context,
+                    groupId = groupId,
+                    imageBytes = bytes,
+                    filename = safeName,
+                    mimeType = safeMimeType
+                )
+            },
+            applyUrl = { group, url -> group.copy(coverImage = url) },
+            extractUrl = { response -> response.coverUrl },
+            defaultError = "Failed to upload group cover"
+        )
+    }
+
+    private fun <T> uploadGroupAppearance(
+        groupId: String,
+        uri: Uri,
+        fileName: String,
+        mimeType: String,
+        upload: suspend (ByteArray, String, String) -> Result<T>,
+        applyUrl: (Group, String) -> Group,
+        extractUrl: (T) -> String,
+        defaultError: String
+    ) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isUpdatingGroupAppearance = true,
+                groupAppearanceError = null
+            )
+
+            val imageBytes = withContext(Dispatchers.IO) {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    input.readBytes()
+                }
+            }
+
+            if (imageBytes == null || imageBytes.isEmpty()) {
+                _uiState.value = _uiState.value.copy(
+                    isUpdatingGroupAppearance = false,
+                    groupAppearanceError = "Could not read the selected image"
+                )
+                return@launch
+            }
+
+            upload(imageBytes, fileName, mimeType).fold(
+                onSuccess = { response ->
+                    val updatedUrl = extractUrl(response)
+                    val currentState = _uiState.value
+                    val updatedSelectedGroup = currentState.selectedGroup
+                        ?.takeIf { it.id == groupId }
+                        ?.let { applyUrl(it, updatedUrl) }
+
+                    _uiState.value = currentState.copy(
+                        isUpdatingGroupAppearance = false,
+                        groupAppearanceError = null,
+                        selectedGroup = updatedSelectedGroup ?: currentState.selectedGroup,
+                        myGroups = currentState.myGroups
+                            .map { group -> if (group.id == groupId) applyUrl(group, updatedUrl) else group },
+                        discoverGroups = currentState.discoverGroups
+                            .map { group -> if (group.id == groupId) applyUrl(group, updatedUrl) else group }
+                    )
+
+                    val chatGroup = _chatState.value.group
+                    if (chatGroup?.id == groupId) {
+                        _chatState.value = _chatState.value.copy(group = applyUrl(chatGroup, updatedUrl))
+                    }
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isUpdatingGroupAppearance = false,
+                        groupAppearanceError = e.message ?: defaultError
+                    )
+                }
             )
         }
     }
