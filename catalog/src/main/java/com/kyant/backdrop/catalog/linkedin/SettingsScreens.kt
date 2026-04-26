@@ -729,12 +729,7 @@ fun AppearanceSettingsScreen(
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
     val glassBackgroundKey by SettingsPreferences.glassBackgroundPreset(context)
         .collectAsState(initial = DefaultGlassBackgroundPresetKey)
-    val accentPaletteKey by SettingsPreferences.accentPalette(context)
-        .collectAsState(initial = DefaultAccentPaletteKey)
-    val glassMotionStyleKey by SettingsPreferences.glassMotionStyle(context)
-        .collectAsState(initial = DefaultGlassMotionStyleKey)
     val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
-    val selectedAccentColor = glassAccentPalette(accentPaletteKey).color
     
     SettingsScreenContainer(backdrop = backdrop, contentColor = contentColor, accentColor = accentColor) {
         SettingsHeader(
@@ -854,7 +849,7 @@ fun AppearanceSettingsScreen(
                                 contentColor = contentColor,
                                 backdrop = backdrop,
                                 accentColor = accentColor,
-                                previewAccentColor = selectedAccentColor,
+                                previewAccentColor = accentColor,
                                 onClick = {
                                     coroutineScope.launch {
                                         SettingsPreferences.setGlassBackgroundPreset(context, preset.key)
@@ -862,97 +857,6 @@ fun AppearanceSettingsScreen(
                                 }
                             )
                         }
-                    }
-                }
-            }
-
-            item {
-                SettingsSubsectionHeader(
-                    title = "Accent Color",
-                    subtitle = "Color the active glass controls and highlights.",
-                    contentColor = contentColor
-                )
-            }
-
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    GlassAccentPalettes.forEach { palette ->
-                        GlassAccentChoiceCard(
-                            palette = palette,
-                            isSelected = accentPaletteKey == palette.key,
-                            contentColor = contentColor,
-                            backdrop = backdrop,
-                            selectionColor = accentColor,
-                            onClick = {
-                                coroutineScope.launch {
-                                    SettingsPreferences.setAccentPalette(context, palette.key)
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-
-            if (themeMode == "glass") {
-                item {
-                    SettingsSubsectionHeader(
-                        title = "Glass Motion",
-                        subtitle = "Choose how lively the background feels.",
-                        contentColor = contentColor
-                    )
-                }
-
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        GlassMotionStyles.forEach { motionStyle ->
-                            GlassMotionChoiceCard(
-                                motionStyle = motionStyle,
-                                isSelected = glassMotionStyleKey == motionStyle.key,
-                                reduceAnimations = reduceAnimations,
-                                contentColor = contentColor,
-                                backdrop = backdrop,
-                                accentColor = accentColor,
-                                onClick = {
-                                    coroutineScope.launch {
-                                        SettingsPreferences.setGlassMotionStyle(context, motionStyle.key)
-                                    }
-                                }
-                            )
-                        }
-                    }
-                }
-
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .settingsSurface(
-                                contentColor = contentColor,
-                                cornerRadius = 16.dp
-                            )
-                            .padding(horizontal = 14.dp, vertical = 12.dp)
-                    ) {
-                        BasicText(
-                            if (reduceAnimations) {
-                                "Reduce Animations is on, so the glass scene stays still until you turn motion back on."
-                            } else {
-                                "Background changes crossfade automatically, and the selected motion style drives the ambient drift."
-                            },
-                            style = TextStyle(
-                                color = contentColor.copy(alpha = 0.7f),
-                                fontSize = 12.sp
-                            )
-                        )
                     }
                 }
             }
@@ -1274,155 +1178,6 @@ private fun GlassBackgroundChoiceCard(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun GlassAccentChoiceCard(
-    palette: GlassAccentPalette,
-    isSelected: Boolean,
-    contentColor: Color,
-    backdrop: LayerBackdrop,
-    selectionColor: Color,
-    onClick: () -> Unit
-) {
-    val borderColor by animateColorAsState(
-        targetValue = if (isSelected) selectionColor else Color.Transparent,
-        label = "accentChoiceBorder"
-    )
-
-    Column(
-        modifier = Modifier
-            .width(112.dp)
-            .settingsSurface(
-                contentColor = contentColor,
-                cornerRadius = 18.dp
-            )
-            .border(
-                width = if (isSelected) 2.dp else 0.dp,
-                color = borderColor,
-                shape = RoundedCornerShape(18.dp)
-            )
-            .clip(RoundedCornerShape(18.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 14.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(56.dp)
-                .clip(CircleShape)
-                .background(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.9f),
-                            palette.color,
-                            palette.color.copy(alpha = 0.7f)
-                        )
-                    )
-                )
-        )
-
-        BasicText(
-            palette.name,
-            style = TextStyle(
-                color = contentColor,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.Center
-            )
-        )
-    }
-}
-
-@Composable
-private fun GlassMotionChoiceCard(
-    motionStyle: GlassMotionStyle,
-    isSelected: Boolean,
-    reduceAnimations: Boolean,
-    contentColor: Color,
-    backdrop: LayerBackdrop,
-    accentColor: Color,
-    onClick: () -> Unit
-) {
-    val borderColor by animateColorAsState(
-        targetValue = if (isSelected) accentColor else Color.Transparent,
-        label = "motionChoiceBorder"
-    )
-
-    Column(
-        modifier = Modifier
-            .width(144.dp)
-            .settingsSurface(
-                contentColor = contentColor,
-                cornerRadius = 18.dp
-            )
-            .border(
-                width = if (isSelected) 2.dp else 0.dp,
-                color = borderColor,
-                shape = RoundedCornerShape(18.dp)
-            )
-            .clip(RoundedCornerShape(18.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(70.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(
-                            accentColor.copy(alpha = 0.26f),
-                            accentColor.copy(alpha = 0.08f),
-                            Color.White.copy(alpha = 0.14f)
-                        )
-                    )
-                )
-                .padding(horizontal = 12.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                repeat(3) { index ->
-                    Box(
-                        modifier = Modifier
-                            .offset(x = if (motionStyle.key == "still") 0.dp else (index * 3).dp)
-                            .size(if (index == 1) 12.dp else 9.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (index == 1) accentColor else accentColor.copy(alpha = 0.55f)
-                            )
-                    )
-                }
-            }
-        }
-
-        BasicText(
-            motionStyle.name,
-            style = TextStyle(
-                color = contentColor,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-        )
-
-        BasicText(
-            if (reduceAnimations && motionStyle.key != "still") {
-                "Saved, but currently paused by Reduce Animations."
-            } else {
-                motionStyle.description
-            },
-            style = TextStyle(
-                color = contentColor.copy(alpha = 0.62f),
-                fontSize = 12.sp
-            )
-        )
     }
 }
 

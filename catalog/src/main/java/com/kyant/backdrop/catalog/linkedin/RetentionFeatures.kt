@@ -230,12 +230,12 @@ class RetentionViewModel(private val context: Context) : ViewModel() {
             val peopleLikeYouResult = ApiClient.getPeopleLikeYou(context)
             val dailyMatchesResult = ApiClient.getDailyMatches(context)
             
-            // Use API data with mock fallbacks
+            // Use empty states for authenticated progress data instead of fake streaks/goals.
             lastLoadedAtMillis = System.currentTimeMillis()
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
-                streakData = streaksResult.getOrDefault(mockStreakData),
-                weeklyGoals = goalsResult.getOrDefault(mockWeeklyGoals),
+                streakData = streaksResult.getOrDefault(StreakData()),
+                weeklyGoals = goalsResult.getOrDefault(WeeklyGoalsData()),
                 liveActivity = activityResult.getOrDefault(mockLiveActivity),
                 connectionLimit = limitResult.getOrDefault(mockConnectionLimit),
                 leaderboardData = leaderboardResult.getOrDefault(mockLeaderboard),
@@ -938,7 +938,7 @@ fun StreakDetailsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         RetentionHeader(
-            title = "Your Streaks",
+            title = "Daily Activity Streak",
             contentColor = contentColor,
             onNavigateBack = onNavigateBack
         )
@@ -961,7 +961,7 @@ fun StreakDetailsScreen(
                     modifier = Modifier.size(52.dp)
                 )
                 BasicText(
-                    "${streaks.connectionStreak}-day",
+                    "${streaks.dailyStreak}-day",
                     style = TextStyle(
                         color = contentColor,
                         fontSize = 40.sp,
@@ -969,16 +969,16 @@ fun StreakDetailsScreen(
                     )
                 )
                 BasicText(
-                    "Networking Streak",
+                    if (streaks.dailyQualifiedToday) "Preserved today" else "Daily Activity Streak",
                     style = TextStyle(
                         color = contentColor.copy(alpha = 0.7f),
                         fontSize = 16.sp
                     )
                 )
                 
-                if (streaks.longestConnectionStreak > streaks.connectionStreak) {
+                if (streaks.longestDailyStreak > streaks.dailyStreak) {
                     BasicText(
-                        "Best: ${streaks.longestConnectionStreak} days",
+                        "Best: ${streaks.longestDailyStreak} days",
                         style = TextStyle(
                             color = contentColor.copy(alpha = 0.5f),
                             fontSize = 13.sp
@@ -988,7 +988,7 @@ fun StreakDetailsScreen(
             }
         }
         
-        // 4 Streak bars (like Duolingo)
+        // Category streaks
         LazyColumn(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -2311,14 +2311,9 @@ fun EngagementDashboardCard(
                     .clickable { onStreakDetailsClick() },
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Compute current best streak and streaks at risk
-                val currentStreak = maxOf(
-                    streakData.connectionStreak,
-                    streakData.loginStreak,
-                    streakData.postingStreak,
-                    streakData.messagingStreak
-                )
+                val currentStreak = streakData.dailyStreak
                 val streaksAtRisk = listOf(
+                    streakData.dailyIsAtRisk || streakData.isAtRisk.daily,
                     streakData.isAtRisk.connection,
                     streakData.isAtRisk.login,
                     streakData.isAtRisk.posting,
@@ -2351,7 +2346,7 @@ fun EngagementDashboardCard(
                             modifier = Modifier.size((18 * scale).dp)
                         )
                         BasicText(
-                            "${currentStreak}-day streak!",
+                            "Daily streak: $currentStreak days",
                             style = TextStyle(
                                 color = contentColor,
                                 fontSize = 15.sp,

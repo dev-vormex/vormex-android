@@ -51,6 +51,11 @@ enum class SmartMatchFilter {
     FIND_MENTOR
 }
 
+enum class AllPeopleDisplayMode(val columns: Int) {
+    TWO_PER_ROW(2),
+    ONE_PER_ROW(1)
+}
+
 data class FindPeopleUiState(
     val selectedTab: FindPeopleTab = FindPeopleTab.ALL_PEOPLE,
 
@@ -81,6 +86,7 @@ data class FindPeopleUiState(
     val allPeoplePage: Int = 1,
     val hasMoreAllPeople: Boolean = false,
     val totalPeopleCount: Int = 0,
+    val allPeopleDisplayMode: AllPeopleDisplayMode = AllPeopleDisplayMode.TWO_PER_ROW,
     
     // Filters
     val filterOptions: FilterOptions = FilterOptions(),
@@ -763,7 +769,11 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
     }
     
     fun updateSearchQuery(query: String) {
-        _uiState.value = _uiState.value.copy(searchQuery = query)
+        val state = _uiState.value
+        _uiState.value = state.copy(
+            searchQuery = query,
+            isFilterExpanded = if (query.isNotBlank()) false else state.isFilterExpanded
+        )
         
         // Debounce search
         searchJob?.cancel()
@@ -790,6 +800,11 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(selectedGraduationYear = year)
         loadAllPeople(resetPage = true, forceRefresh = true)
     }
+
+    fun setAllPeopleDisplayMode(mode: AllPeopleDisplayMode) {
+        if (_uiState.value.allPeopleDisplayMode == mode) return
+        _uiState.value = _uiState.value.copy(allPeopleDisplayMode = mode)
+    }
     
     fun clearFilters() {
         _uiState.value = _uiState.value.copy(
@@ -801,7 +816,10 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
     }
     
     fun toggleFilterExpanded() {
-        _uiState.value = _uiState.value.copy(isFilterExpanded = !_uiState.value.isFilterExpanded)
+        val state = _uiState.value
+        _uiState.value = state.copy(
+            isFilterExpanded = if (state.searchQuery.isNotBlank()) false else !state.isFilterExpanded
+        )
     }
     
     fun loadAllPeople(
@@ -1199,8 +1217,6 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
     fun sendConnectionRequest(userId: String) {
         if (_uiState.value.connectionActionInProgress.contains(userId)) return
         
-        // Find the person info to use in celebration
-        val person = findPersonById(userId)
         val oldStreak = _uiState.value.connectionStreak
         
         viewModelScope.launch {
@@ -1225,16 +1241,6 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
                                 isNewStreakMilestone = isNewMilestone
                             )
                         }
-                    
-                    // Trigger celebration (Habit Loop: Reward) 
-                    // Variable reward: Random reply rate creates anticipation
-                    val mockReplyRate = (60..95).random()
-                    _uiState.value = _uiState.value.copy(
-                        showConnectionCelebration = true,
-                        celebrationRecipientName = person?.name ?: "User",
-                        celebrationRecipientImage = person?.profileImage,
-                        celebrationReplyRate = mockReplyRate
-                    )
                 }
                 .onFailure {
                     // Handle error

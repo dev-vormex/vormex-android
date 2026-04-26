@@ -159,7 +159,7 @@ private fun appearanceForTheme(themeMode: String): VormexAppearance =
         )
         VormexThemeMode.Light -> VormexAppearance(
             mode = VormexThemeMode.Light,
-            backgroundColor = Color(0xFFF5F7FB),
+            backgroundColor = Color.White,
             contentColor = Color(0xFF0F1720),
             cardColor = Color.White,
             cardBorderColor = Color(0xFFDCE4EF),

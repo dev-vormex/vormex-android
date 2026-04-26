@@ -169,7 +169,7 @@ object GrowthApiService {
         }
     }
 
-    suspend fun getXpBalance(context: Context): Result<Int> {
+    suspend fun getCoinsBalance(context: Context): Result<Int> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
             val response = client.get("$baseUrl/store/balance") {
@@ -181,6 +181,9 @@ object GrowthApiService {
             Result.failure(e)
         }
     }
+
+    @Deprecated("Use getCoinsBalance; store/balance now returns spendable Coins.")
+    suspend fun getXpBalance(context: Context): Result<Int> = getCoinsBalance(context)
 
     suspend fun getBadges(): Result<List<BadgeSummary>> {
         return try {

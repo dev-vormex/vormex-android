@@ -21,6 +21,9 @@ import com.kyant.backdrop.catalog.MainActivity
 import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.data.ChatMutePreferences
 import com.kyant.backdrop.catalog.data.SettingsPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.runBlocking
 import java.net.URL
 
@@ -43,6 +46,8 @@ object MessageNotificationManager {
 
     private val conversationNotificationIds = mutableMapOf<String, Int>()
     private val conversationMessages = mutableMapOf<String, MutableList<CachedMessage>>()
+    private val _pendingGroupConversationKeys = MutableStateFlow<Set<String>>(emptySet())
+    val pendingGroupConversationKeys: StateFlow<Set<String>> = _pendingGroupConversationKeys.asStateFlow()
 
     private data class CachedMessage(
         val senderName: String,
@@ -50,6 +55,12 @@ object MessageNotificationManager {
         val timestamp: Long,
         val senderBitmap: Bitmap? = null
     )
+
+    private fun refreshPendingGroupConversationKeys() {
+        _pendingGroupConversationKeys.value = conversationMessages.keys
+            .filter { it.startsWith(GROUP_CONVERSATION_PREFIX) }
+            .toSet()
+    }
 
     fun showMessageNotification(
         context: Context,
@@ -148,6 +159,7 @@ object MessageNotificationManager {
         val messages = conversationMessages.getOrPut(conversationKey) { mutableListOf() }
         messages.add(cached)
         if (messages.size > 8) messages.removeAt(0)
+        refreshPendingGroupConversationKeys()
 
         val messagingStyle = NotificationCompat.MessagingStyle(
             Person.Builder().setName("Me").build()
@@ -210,6 +222,7 @@ object MessageNotificationManager {
      */
     fun clearConversationNotification(context: Context, conversationId: String) {
         conversationMessages.remove(conversationId)
+        refreshPendingGroupConversationKeys()
         val id = conversationNotificationIds.remove(conversationId) ?: return
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(id)
@@ -221,6 +234,7 @@ object MessageNotificationManager {
     fun clearAll(context: Context) {
         conversationMessages.clear()
         conversationNotificationIds.clear()
+        refreshPendingGroupConversationKeys()
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancelAll()
     }

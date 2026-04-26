@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.kyant.backdrop.catalog.network.AgentApiService
+import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.GrowthApiService
 import com.kyant.backdrop.catalog.network.models.AccountabilityPartnerSummary
 import com.kyant.backdrop.catalog.network.models.BadgeSummary
@@ -16,6 +17,7 @@ import com.kyant.backdrop.catalog.network.models.InterviewCategorySummary
 import com.kyant.backdrop.catalog.network.models.InterviewStatsSummary
 import com.kyant.backdrop.catalog.network.models.LearningPathSummary
 import com.kyant.backdrop.catalog.network.models.MentorshipSummary
+import com.kyant.backdrop.catalog.network.models.ProgressData
 import com.kyant.backdrop.catalog.network.models.ReferralShareLinks
 import com.kyant.backdrop.catalog.network.models.ReferralStatsSummary
 import com.kyant.backdrop.catalog.network.models.StoreItemSummary
@@ -46,7 +48,8 @@ data class GrowthHubUiState(
     val interviewCategories: List<InterviewCategorySummary> = emptyList(),
     val interviewStats: InterviewStatsSummary? = null,
     val storeItems: List<StoreItemSummary> = emptyList(),
-    val xpBalance: Int = 0,
+    val coinsBalance: Int = 0,
+    val progress: ProgressData? = null,
     val badges: List<BadgeSummary> = emptyList(),
     val badgeCategories: List<String> = emptyList(),
     val referralCode: String? = null,
@@ -98,7 +101,7 @@ class GrowthHubViewModel(
                 val interviewCategoriesDeferred = async { GrowthApiService.getInterviewCategories() }
                 val interviewStatsDeferred = async { GrowthApiService.getInterviewStats(applicationContext) }
                 val storeItemsDeferred = async { GrowthApiService.getStoreItems() }
-                val xpBalanceDeferred = async { GrowthApiService.getXpBalance(applicationContext) }
+                val progressDeferred = async { ApiClient.getProgressMe(applicationContext) }
                 val badgesDeferred = async { GrowthApiService.getBadges() }
                 val badgeCategoriesDeferred = async { GrowthApiService.getBadgeCategories() }
                 val referralCodeDeferred = async { GrowthApiService.getReferralCode(applicationContext) }
@@ -120,6 +123,16 @@ class GrowthHubViewModel(
                 val dailyHooksResponse = dailyHooksDeferred.await().orDefault(
                     com.kyant.backdrop.catalog.network.models.DailyHooksResponse()
                 )
+                val progressResult = progressDeferred.await()
+                val progressData = progressResult.fold(
+                    onSuccess = { it },
+                    onFailure = {
+                    it.message?.takeIf(String::isNotBlank)?.let(errors::add)
+                    null
+                    }
+                )
+                val coinsBalance = progressData?.coins?.balance
+                    ?: GrowthApiService.getCoinsBalance(applicationContext).orDefault(0)
 
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
@@ -134,7 +147,8 @@ class GrowthHubViewModel(
                     interviewCategories = interviewCategoriesDeferred.await().orDefault(emptyList()),
                     interviewStats = interviewStatsDeferred.await().getOrNull(),
                     storeItems = storeItemsDeferred.await().orDefault(emptyList()),
-                    xpBalance = xpBalanceDeferred.await().orDefault(0),
+                    coinsBalance = coinsBalance,
+                    progress = progressData,
                     badges = badgesDeferred.await().orDefault(emptyList()),
                     badgeCategories = badgeCategoriesDeferred.await().orDefault(emptyList()),
                     referralCode = referralCodeDeferred.await().getOrNull(),

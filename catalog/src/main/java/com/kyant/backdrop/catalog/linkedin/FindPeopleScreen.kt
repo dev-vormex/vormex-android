@@ -20,8 +20,6 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -41,6 +39,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -54,11 +53,11 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -143,19 +142,9 @@ fun FindPeopleScreenNew(
     // One shimmer for all Find skeletons (avoids N× infinite transitions).
     val listShimmerBrush = findPeopleShimmerBrush(isLightTheme)
     
-    // Scroll state for collapsing header
-    val scrollState = rememberScrollState()
-    val isScrolled = scrollState.value > 50
-    
-    // Animated header height and alpha
-    val headerHeight by animateDpAsState(
-        targetValue = if (isScrolled) 0.dp else 56.dp,
-        label = "headerHeight"
-    )
-    val headerAlpha by animateFloatAsState(
-        targetValue = if (isScrolled) 0f else 1f,
-        label = "headerAlpha"
-    )
+    val isScrolled = false
+    val hideTabsForSearch =
+        uiState.selectedTab == FindPeopleTab.ALL_PEOPLE && uiState.searchQuery.isNotBlank()
     val navigateToProfile: (String) -> Unit = { userId ->
         keyboardController?.hide()
         focusManager.clearFocus(force = true)
@@ -181,29 +170,18 @@ fun FindPeopleScreenNew(
                 .padding(horizontal = 12.dp)
         ) {
             Spacer(Modifier.height(4.dp))
-            
-            // Collapsing Header
-            if (headerHeight > 0.dp) {
-                FindPeopleHeader(
+
+            if (!hideTabsForSearch) {
+                FindPeopleTabs(
                     backdrop = backdrop,
                     contentColor = contentColor,
+                    accentColor = accentColor,
                     selectedTab = uiState.selectedTab,
-                    totalCount = if (uiState.selectedTab == FindPeopleTab.ALL_PEOPLE) uiState.totalPeopleCount else null,
-                    alpha = headerAlpha
+                    onTabSelected = { findPeopleViewModel.selectTab(it) }
                 )
+                
                 Spacer(Modifier.height(8.dp))
             }
-            
-            // Tabs (always visible)
-            FindPeopleTabs(
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                selectedTab = uiState.selectedTab,
-                onTabSelected = { findPeopleViewModel.selectTab(it) }
-            )
-            
-            Spacer(Modifier.height(8.dp))
             
             // Connection Limit Indicator (only show if not scrolled)
             AnimatedVisibility(visible = !isScrolled) {
@@ -299,12 +277,14 @@ fun FindPeopleScreenNew(
                 error = uiState.allPeopleError,
                 searchQuery = uiState.searchQuery,
                 onSearchQueryChange = { findPeopleViewModel.updateSearchQuery(it) },
+                displayMode = uiState.allPeopleDisplayMode,
                 filterOptions = uiState.filterOptions,
                 selectedCollege = uiState.selectedCollege,
                 selectedBranch = uiState.selectedBranch,
                 selectedGraduationYear = uiState.selectedGraduationYear,
                 isFilterExpanded = uiState.isFilterExpanded,
                 onToggleFilter = { findPeopleViewModel.toggleFilterExpanded() },
+                onDisplayModeSelected = { findPeopleViewModel.setAllPeopleDisplayMode(it) },
                 onCollegeSelected = { findPeopleViewModel.setCollegeFilter(it) },
                 onBranchSelected = { findPeopleViewModel.setBranchFilter(it) },
                 onYearSelected = { findPeopleViewModel.setGraduationYearFilter(it) },
@@ -402,66 +382,10 @@ fun FindPeopleScreenNew(
             }
         }
         
-        // Connection sent celebration overlay (Habit Loop: Reward)
-        ConnectionSentCelebration(
-            isVisible = uiState.showConnectionCelebration,
-            recipientName = uiState.celebrationRecipientName,
-            recipientImage = uiState.celebrationRecipientImage,
-            replyRate = uiState.celebrationReplyRate,
-            connectionStreak = uiState.connectionStreak,
-            isNewStreakMilestone = uiState.isNewStreakMilestone,
-            backdrop = backdrop,
-            onDismiss = { findPeopleViewModel.dismissConnectionCelebration() }
-        )
     }
 }
 
 // ==================== Header ====================
-
-@Composable
-private fun FindPeopleHeader(
-    backdrop: LayerBackdrop,
-    contentColor: Color,
-    selectedTab: FindPeopleTab,
-    totalCount: Int?,
-    alpha: Float = 1f
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        BasicText(
-            "Find People",
-            style = TextStyle(
-                color = contentColor.copy(alpha = alpha),
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-        )
-        
-        // Show total count for All People tab
-        if (selectedTab == FindPeopleTab.ALL_PEOPLE && totalCount != null && totalCount > 0) {
-            BasicText(
-                "${formatCount(totalCount)} people",
-                style = TextStyle(
-                    color = contentColor.copy(alpha = 0.5f * alpha),
-                    fontSize = 12.sp
-                )
-            )
-        }
-    }
-}
-
-private fun formatCount(count: Int): String {
-    return when {
-        count >= 1000000 -> "${count / 1000000}M"
-        count >= 1000 -> "${count / 1000}K"
-        else -> count.toString()
-    }
-}
 
 // ==================== Tabs ====================
 
@@ -477,7 +401,7 @@ private fun FindPeopleTabs(
         Modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         FindPeopleTabItem(
             icon = { color ->
@@ -579,27 +503,44 @@ private fun FindPeopleTabItem(
     
     Box(
         Modifier
-            .clip(RoundedCornerShape(20.dp))
+            .clip(if (isSelected) RoundedCornerShape(24.dp) else RoundedCornerShape(18.dp))
             .background(
                 if (isSelected) accentColor.copy(alpha = 0.15f)
-                else contentColor.copy(alpha = 0.06f)
+                else contentColor.copy(alpha = 0.05f)
             )
             .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .padding(
+                horizontal = if (isSelected) 12.dp else 10.dp,
+                vertical = 10.dp
+            )
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            icon(iconColor)
-            BasicText(
-                label,
-                style = TextStyle(
-                    color = if (isSelected) accentColor else contentColor.copy(alpha = 0.7f),
-                    fontSize = 12.sp,
-                    fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
+            Box(
+                Modifier
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (isSelected) accentColor.copy(alpha = 0.16f)
+                        else contentColor.copy(alpha = 0.08f)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                icon(iconColor)
+            }
+
+            if (isSelected) {
+                BasicText(
+                    label,
+                    style = TextStyle(
+                        color = accentColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 )
-            )
+            }
         }
     }
 }
@@ -839,51 +780,62 @@ fun PersonCard(
     reduceAnimations: Boolean = false
 ) {
     val imageCrossfadeMs = if (reduceAnimations) 0 else 300
+    val statusLabel = when {
+        person.isInContacts -> "Contacts"
+        person.connectionStatus == "connected" -> "Connected"
+        person.connectionStatus == "pending_received" -> "Reply"
+        person.isOnline -> "Active now"
+        else -> null
+    }
+    val statusBackground = when (person.connectionStatus) {
+        "connected" -> contentColor.copy(alpha = 0.10f)
+        "pending_sent" -> Color(0xFFF59E0B).copy(alpha = 0.18f)
+        "pending_received" -> Color(0xFF22C55E).copy(alpha = 0.18f)
+        else -> accentColor.copy(alpha = 0.14f)
+    }
+    val statusContent = when (person.connectionStatus) {
+        "connected" -> contentColor.copy(alpha = 0.72f)
+        "pending_sent" -> Color(0xFFD97706)
+        "pending_received" -> Color(0xFF15803D)
+        else -> accentColor
+    }
+    val subtitle = listOfNotNull(person.college, person.branch).joinToString(" · ")
+
     Box(
         Modifier
             .fillMaxWidth()
-            .then(
-                if (isGlassTheme) {
-                    if (reduceAnimations) {
-                        Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(
-                                if (isLightTheme) Color.White.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.08f)
-                            )
-                    } else {
-                        Modifier
-                            .drawBackdrop(
-                                backdrop = backdrop,
-                                shape = { RoundedRectangle(16f.dp) },
-                                effects = {
-                                    vibrancy()
-                                },
-                                onDrawSurface = {
-                                    drawRect(if (isLightTheme) Color.White.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f))
-                                }
-                            )
-                    }
+            .vormexSurface(
+                backdrop = backdrop,
+                tone = if (person.isInContacts || person.connectionStatus == "connected") {
+                    VormexSurfaceTone.Selected
                 } else {
-                    Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(contentColor.copy(alpha = 0.04f))
-                }
+                    VormexSurfaceTone.Card
+                },
+                cornerRadius = 20.dp,
+                blurRadius = 18.dp,
+                lensRadius = 0.dp,
+                lensDepth = 0.dp,
+                useBackdropEffects = isGlassTheme && !reduceAnimations,
+                surfaceColor = when {
+                    person.isInContacts -> accentColor.copy(alpha = if (isLightTheme) 0.10f else 0.18f)
+                    isLightTheme -> Color.White.copy(alpha = 0.48f)
+                    else -> Color.White.copy(alpha = 0.07f)
+                },
+                borderColor = if (isLightTheme) Color.White.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.08f)
             )
             .clickable(onClick = onCardClick)
-            .padding(10.dp)
+            .padding(12.dp)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            // Top row: Avatar + Name + Online indicator
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Avatar
                 Box(
                     Modifier
-                        .size(42.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
-                        .background(accentColor.copy(alpha = 0.15f)),
+                        .background(accentColor.copy(alpha = 0.16f)),
                     contentAlignment = Alignment.Center
                 ) {
                     if (!person.profileImage.isNullOrEmpty()) {
@@ -906,24 +858,25 @@ fun PersonCard(
                             .joinToString("")
                         BasicText(
                             initials,
-                            style = TextStyle(accentColor, 14.sp, FontWeight.SemiBold)
+                            style = TextStyle(accentColor, 15.sp, FontWeight.SemiBold)
                         )
                     }
                 }
-                
-                Spacer(Modifier.width(8.dp))
-                
-                // Name + Username
-                Column(modifier = Modifier.weight(1f)) {
+
+                Spacer(Modifier.width(10.dp))
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         BasicText(
                             person.name ?: "Unknown",
-                            style = TextStyle(contentColor, 13.sp, FontWeight.SemiBold),
+                            style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        
-                        // Online indicator
+
                         if (person.isOnline) {
                             Spacer(Modifier.width(4.dp))
                             Box(
@@ -933,84 +886,106 @@ fun PersonCard(
                                     .background(Color(0xFF22C55E))
                             )
                         }
-
-                        if (person.isInContacts) {
-                            Spacer(Modifier.width(6.dp))
-                            Box(
-                                Modifier
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .background(accentColor.copy(alpha = 0.14f))
-                                    .padding(horizontal = 8.dp, vertical = 3.dp)
-                            ) {
-                                BasicText(
-                                    "In your contacts",
-                                    style = TextStyle(accentColor, 9.sp, FontWeight.Medium)
-                                )
-                            }
-                        }
                     }
-                    
+
                     person.username?.let { username ->
                         BasicText(
                             "@$username",
-                            style = TextStyle(contentColor.copy(alpha = 0.5f), 11.sp),
+                            style = TextStyle(contentColor.copy(alpha = 0.5f), 11.sp, FontWeight.Medium),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                }
-            }
-            
-            // Headline
-            person.headline?.let { headline ->
-                BasicText(
-                    headline,
-                    style = TextStyle(contentColor.copy(alpha = 0.7f), 11.sp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            
-            // College + Branch (compact)
-            if (person.college != null || person.branch != null) {
-                BasicText(
-                    listOfNotNull(person.college, person.branch).joinToString(" · "),
-                    style = TextStyle(contentColor.copy(alpha = 0.5f), 11.sp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            
-            // Skills (max 3, compact)
-            if (person.skills.isNotEmpty()) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    person.skills.take(2).forEach { skill ->
-                        SkillChip(skill, contentColor)
+
+                    person.headline?.let { headline ->
+                        BasicText(
+                            headline,
+                            style = TextStyle(contentColor.copy(alpha = 0.72f), 11.sp),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
-                    if (person.skills.size > 2) {
-                        SkillChip("+${person.skills.size - 2}", contentColor)
+                }
+
+                if (statusLabel != null) {
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(statusBackground)
+                            .padding(horizontal = 9.dp, vertical = 5.dp)
+                    ) {
+                        BasicText(
+                            statusLabel,
+                            style = TextStyle(
+                                color = statusContent,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
                     }
                 }
             }
-            
-            // Mutual connections (if any)
-            if (person.mutualConnections > 0) {
+
+            if (subtitle.isNotBlank()) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    UsersIcon(color = contentColor.copy(alpha = 0.4f), size = 12.dp)
+                    GraduationCapIcon(
+                        color = contentColor.copy(alpha = 0.42f),
+                        size = 12.dp
+                    )
                     BasicText(
-                        "${person.mutualConnections} mutual",
-                        style = TextStyle(contentColor.copy(alpha = 0.5f), 11.sp)
+                        subtitle,
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.54f),
+                            fontSize = 11.sp
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
-            
-            // Connection button
+
+            if (person.skills.isNotEmpty() || person.interests.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    person.skills.take(2).forEach { skill ->
+                        SkillChip(skill, contentColor, accentColor)
+                    }
+                    if (person.skills.isEmpty()) {
+                        person.interests.take(2).forEach { interest ->
+                            InterestChip(interest, accentColor)
+                        }
+                    } else if (person.skills.size > 2) {
+                        SkillChip("+${person.skills.size - 2}", contentColor, accentColor)
+                    } else if (person.interests.isNotEmpty()) {
+                        InterestChip(person.interests.first(), accentColor)
+                    }
+                }
+            }
+
+            if (person.isOnline) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        Modifier
+                            .size(4.dp)
+                            .clip(CircleShape)
+                            .background(contentColor.copy(alpha = 0.18f))
+                    )
+                    BasicText(
+                        "Online right now",
+                        style = TextStyle(contentColor.copy(alpha = 0.48f), 10.sp)
+                    )
+                }
+            }
+
             ConnectionButton(
                 status = person.connectionStatus,
                 contentColor = contentColor,
@@ -1023,16 +998,20 @@ fun PersonCard(
 }
 
 @Composable
-private fun SkillChip(text: String, contentColor: Color) {
+private fun SkillChip(text: String, contentColor: Color, accentColor: Color) {
     Box(
         Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(contentColor.copy(alpha = 0.08f))
-            .padding(horizontal = 7.dp, vertical = 3.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(accentColor.copy(alpha = 0.10f))
+            .padding(horizontal = 9.dp, vertical = 5.dp)
     ) {
         BasicText(
             text,
-            style = TextStyle(contentColor.copy(alpha = 0.7f), 9.sp)
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.76f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium
+            )
         )
     }
 }
@@ -1041,13 +1020,13 @@ private fun SkillChip(text: String, contentColor: Color) {
 private fun InterestChip(text: String, accentColor: Color) {
     Box(
         Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(accentColor.copy(alpha = 0.15f))
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(accentColor.copy(alpha = 0.16f))
+            .padding(horizontal = 9.dp, vertical = 5.dp)
     ) {
         BasicText(
             text,
-            style = TextStyle(accentColor, 10.sp)
+            style = TextStyle(accentColor, 10.sp, FontWeight.Medium)
         )
     }
 }
@@ -1061,19 +1040,19 @@ private fun ConnectionButton(
     onConnect: () -> Unit
 ) {
     val (text, bgColor, textColor, enabled) = when (status) {
-        "connected" -> listOf("Connected", contentColor.copy(alpha = 0.1f), contentColor.copy(alpha = 0.5f), false)
-        "pending_sent" -> listOf("Pending", Color(0xFFFFA500).copy(alpha = 0.2f), Color(0xFFFFA500), true)
-        "pending_received" -> listOf("Accept", Color(0xFF22C55E).copy(alpha = 0.2f), Color(0xFF22C55E), true)
-        else -> listOf("Connect", accentColor.copy(alpha = 0.2f), accentColor, true)
+        "connected" -> listOf("Connected", contentColor.copy(alpha = 0.10f), contentColor.copy(alpha = 0.56f), false)
+        "pending_sent" -> listOf("Pending", Color(0xFFF59E0B).copy(alpha = 0.18f), Color(0xFFD97706), true)
+        "pending_received" -> listOf("Accept", Color(0xFF22C55E).copy(alpha = 0.18f), Color(0xFF15803D), true)
+        else -> listOf("Connect", accentColor.copy(alpha = 0.18f), accentColor, true)
     }
     
     Box(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(bgColor as Color)
             .clickable(enabled = enabled as Boolean && !isLoading, onClick = onConnect)
-            .padding(vertical = 7.dp),
+            .padding(vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
         if (isLoading) {
@@ -1085,7 +1064,7 @@ private fun ConnectionButton(
         } else {
             BasicText(
                 text as String,
-                style = TextStyle(textColor as Color, 12.sp, FontWeight.Medium)
+                style = TextStyle(textColor as Color, 12.sp, FontWeight.SemiBold)
             )
         }
     }
@@ -1363,12 +1342,14 @@ private fun AllPeopleContent(
     error: String?,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
+    displayMode: AllPeopleDisplayMode,
     filterOptions: com.kyant.backdrop.catalog.network.models.FilterOptions,
     selectedCollege: String?,
     selectedBranch: String?,
     selectedGraduationYear: Int?,
     isFilterExpanded: Boolean,
     onToggleFilter: () -> Unit,
+    onDisplayModeSelected: (AllPeopleDisplayMode) -> Unit,
     onCollegeSelected: (String?) -> Unit,
     onBranchSelected: (String?) -> Unit,
     onYearSelected: (Int?) -> Unit,
@@ -1381,103 +1362,47 @@ private fun AllPeopleContent(
     onRetry: () -> Unit,
     onDismissError: () -> Unit = {}
 ) {
-    Column(Modifier.fillMaxSize()) {
-        val normalizedQuery = searchQuery.trim().lowercase()
-
-        // Search bar
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .findPeopleGlassSurface(
-                    backdrop = backdrop,
-                    cornerDp = 16f,
-                    blurDp = 8f,
-                    isLightTheme = isLightTheme,
-                    reduceAnimations = reduceAnimations,
-                    onDrawSurfaceColor = Color.White.copy(alpha = 0.1f)
-                )
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-        ) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                androidx.compose.foundation.Image(
-                    painter = painterResource(R.drawable.ic_search),
-                    contentDescription = "Search",
-                    modifier = Modifier.size(16.dp),
-                    colorFilter = ColorFilter.tint(contentColor)
-                )
-                Spacer(Modifier.width(8.dp))
-                
-                BasicTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    textStyle = TextStyle(contentColor, 14.sp),
-                    cursorBrush = SolidColor(accentColor),
-                    modifier = Modifier.weight(1f),
-                    decorationBox = { innerTextField ->
-                        if (searchQuery.isEmpty()) {
-                            BasicText(
-                                "Search by name, username, college, skills...",
-                                style = TextStyle(contentColor.copy(alpha = 0.4f), 14.sp)
-                            )
-                        }
-                        innerTextField()
-                    }
-                )
-
-                if (isLoading && normalizedQuery.isNotBlank()) {
-                    Spacer(Modifier.width(8.dp))
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        color = accentColor,
-                        strokeWidth = 2.dp
-                    )
-                }
-                
-                if (searchQuery.isNotEmpty()) {
-                    Spacer(Modifier.width(8.dp))
-                    Box(
-                        Modifier
-                            .clip(CircleShape)
-                            .clickable { onSearchQueryChange("") }
-                            .padding(4.dp)
-                    ) {
-                        BasicText("✕", style = TextStyle(contentColor.copy(alpha = 0.5f), 12.sp))
-                    }
-                }
-                
-                Spacer(Modifier.width(8.dp))
-                
-                // Filter button
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            if (isFilterExpanded || selectedCollege != null || selectedBranch != null || selectedGraduationYear != null)
-                                accentColor.copy(alpha = 0.2f)
-                            else Color.Transparent
-                        )
-                        .clickable(onClick = onToggleFilter)
-                        .padding(8.dp)
-                ) {
-                    androidx.compose.foundation.Image(
-                        painter = painterResource(R.drawable.ic_list),
-                        contentDescription = "Filters",
-                        modifier = Modifier.size(16.dp),
-                        colorFilter = ColorFilter.tint(
-                            if (isFilterExpanded || selectedCollege != null || selectedBranch != null || selectedGraduationYear != null)
-                                contentColor
-                            else
-                                contentColor.copy(alpha = 0.7f)
-                        )
-                    )
-                }
+    val normalizedQuery = searchQuery.trim().lowercase()
+    val gridColumns = GridCells.Fixed(displayMode.columns)
+    val displayedPeople = remember(people, normalizedQuery) {
+        if (normalizedQuery.isBlank()) {
+            people
+        } else {
+            people.filter { person ->
+                person.name.orEmpty().lowercase().contains(normalizedQuery) ||
+                    person.username.orEmpty().lowercase().contains(normalizedQuery) ||
+                    person.headline.orEmpty().lowercase().contains(normalizedQuery) ||
+                    person.college.orEmpty().lowercase().contains(normalizedQuery) ||
+                    person.branch.orEmpty().lowercase().contains(normalizedQuery) ||
+                    person.skills.any { it.lowercase().contains(normalizedQuery) } ||
+                    person.interests.any { it.lowercase().contains(normalizedQuery) }
             }
         }
-        
-        // Filter panel
+    }
+    val activeFilterCount = listOf(selectedCollege, selectedBranch, selectedGraduationYear).count { it != null }
+    val activeFilters = listOfNotNull(
+        selectedCollege?.let { "College · $it" to { onCollegeSelected(null) } },
+        selectedBranch?.let { "Branch · $it" to { onBranchSelected(null) } },
+        selectedGraduationYear?.let { "Year · $it" to { onYearSelected(null) } }
+    )
+    val showInitialLoading = isLoading && people.isEmpty()
+
+    Column(Modifier.fillMaxSize()) {
+        AllPeopleSearchControls(
+            backdrop = backdrop,
+            contentColor = contentColor,
+            accentColor = accentColor,
+            isLightTheme = isLightTheme,
+            reduceAnimations = reduceAnimations,
+            searchQuery = searchQuery,
+            normalizedQuery = normalizedQuery,
+            isLoading = isLoading,
+            activeFilterCount = activeFilterCount,
+            isFilterExpanded = isFilterExpanded,
+            onSearchQueryChange = onSearchQueryChange,
+            onToggleFilter = onToggleFilter
+        )
+
         AnimatedVisibility(
             visible = isFilterExpanded,
             enter = expandVertically(),
@@ -1488,83 +1413,61 @@ private fun AllPeopleContent(
                 contentColor = contentColor,
                 accentColor = accentColor,
                 filterOptions = filterOptions,
+                displayMode = displayMode,
                 selectedCollege = selectedCollege,
                 selectedBranch = selectedBranch,
                 selectedGraduationYear = selectedGraduationYear,
+                isLightTheme = isLightTheme,
+                reduceAnimations = reduceAnimations,
+                onDisplayModeSelected = onDisplayModeSelected,
                 onCollegeSelected = onCollegeSelected,
                 onBranchSelected = onBranchSelected,
                 onYearSelected = onYearSelected,
                 onClearFilters = onClearFilters
             )
         }
-        
-        // Active filter chips
-        val activeFilters = listOfNotNull(
-            selectedCollege?.let { "College: $it" to { onCollegeSelected(null) } },
-            selectedBranch?.let { "Branch: $it" to { onBranchSelected(null) } },
-            selectedGraduationYear?.let { "Year: $it" to { onYearSelected(null) } }
-        )
-        val displayedPeople = remember(people, normalizedQuery) {
-            if (normalizedQuery.isBlank()) {
-                people
-            } else {
-                people.filter { person ->
-                    person.name.orEmpty().lowercase().contains(normalizedQuery) ||
-                        person.username.orEmpty().lowercase().contains(normalizedQuery) ||
-                        person.headline.orEmpty().lowercase().contains(normalizedQuery) ||
-                        person.college.orEmpty().lowercase().contains(normalizedQuery) ||
-                        person.branch.orEmpty().lowercase().contains(normalizedQuery) ||
-                        person.skills.any { it.lowercase().contains(normalizedQuery) } ||
-                        person.interests.any { it.lowercase().contains(normalizedQuery) }
-                }
-            }
-        }
+
         if (activeFilters.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            Spacer(Modifier.height(10.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 activeFilters.forEach { (label, onRemove) ->
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(accentColor.copy(alpha = 0.15f))
-                            .padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            BasicText(
-                                label,
-                                style = TextStyle(accentColor, 11.sp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Box(
-                                Modifier
-                                    .clip(CircleShape)
-                                    .clickable(onClick = onRemove)
-                                    .padding(2.dp)
-                            ) {
-                                BasicText("✕", style = TextStyle(accentColor, 10.sp))
-                            }
-                        }
-                    }
+                    ActiveFilterPill(
+                        label = label,
+                        accentColor = accentColor,
+                        onRemove = onRemove
+                    )
+                }
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(contentColor.copy(alpha = 0.08f))
+                        .clickable(onClick = onClearFilters)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    BasicText(
+                        "Reset all",
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.68f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
                 }
             }
         }
-        
-        Spacer(Modifier.height(12.dp))
-        val showInitialLoading = isLoading && people.isEmpty()
-        
-        // People grid
+
+        Spacer(Modifier.height(14.dp))
+
         when {
             showInitialLoading -> {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    contentPadding = PaddingValues(bottom = 88.dp),
+                    columns = gridColumns,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(top = 2.dp, bottom = 100.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(count = 8, key = { "all_people_sk_$it" }) {
@@ -1600,10 +1503,10 @@ private fun AllPeopleContent(
             }
             else -> {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    contentPadding = PaddingValues(bottom = 88.dp),
+                    columns = gridColumns,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(top = 2.dp, bottom = 100.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(items = displayedPeople, key = { it.id }) { person ->
@@ -1620,7 +1523,7 @@ private fun AllPeopleContent(
                             reduceAnimations = reduceAnimations
                         )
                     }
-                    
+
                     if (hasMore) {
                         item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                             LaunchedEffect(displayedPeople.size, hasMore, normalizedQuery) {
@@ -1629,7 +1532,7 @@ private fun AllPeopleContent(
                             Box(
                                 Modifier
                                     .fillMaxWidth()
-                                    .padding(16.dp),
+                                    .padding(18.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 CircularProgressIndicator(
@@ -1646,76 +1549,161 @@ private fun AllPeopleContent(
 }
 
 @Composable
-private fun FilterPanel(
+private fun AllPeopleSearchControls(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
-    filterOptions: com.kyant.backdrop.catalog.network.models.FilterOptions,
-    selectedCollege: String?,
-    selectedBranch: String?,
-    selectedGraduationYear: Int?,
-    onCollegeSelected: (String?) -> Unit,
-    onBranchSelected: (String?) -> Unit,
-    onYearSelected: (Int?) -> Unit,
-    onClearFilters: () -> Unit
+    isLightTheme: Boolean,
+    reduceAnimations: Boolean,
+    searchQuery: String,
+    normalizedQuery: String,
+    isLoading: Boolean,
+    activeFilterCount: Int,
+    isFilterExpanded: Boolean,
+    onSearchQueryChange: (String) -> Unit,
+    onToggleFilter: () -> Unit
 ) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(top = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        // Dropdowns row
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Box(
+            Modifier
+                .weight(1f)
+                .vormexSurface(
+                    backdrop = backdrop,
+                    tone = VormexSurfaceTone.Sheet,
+                    cornerRadius = 20.dp,
+                    blurRadius = 16.dp,
+                    lensRadius = 0.dp,
+                    lensDepth = 0.dp,
+                    useBackdropEffects = !reduceAnimations,
+                    surfaceColor = if (isLightTheme) Color.White.copy(alpha = 0.42f) else Color.White.copy(alpha = 0.06f),
+                    borderColor = if (isLightTheme) Color.White.copy(alpha = 0.20f) else Color.White.copy(alpha = 0.10f)
+                )
+                .padding(horizontal = 14.dp, vertical = 12.dp)
         ) {
-            // College dropdown
-            FilterDropdown(
-                label = "College",
-                selectedValue = selectedCollege,
-                options = filterOptions.colleges,
-                onSelected = onCollegeSelected,
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                androidx.compose.foundation.Image(
+                    painter = painterResource(R.drawable.ic_search),
+                    contentDescription = "Search",
+                    modifier = Modifier.size(16.dp),
+                    colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.72f))
+                )
+                Spacer(Modifier.width(10.dp))
+
+                BasicTextField(
+                    value = searchQuery,
+                    onValueChange = onSearchQueryChange,
+                    textStyle = TextStyle(contentColor, 14.sp),
+                    cursorBrush = SolidColor(accentColor),
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    decorationBox = { innerTextField ->
+                        if (searchQuery.isEmpty()) {
+                            BasicText(
+                                "Search people, colleges, skills",
+                                style = TextStyle(contentColor.copy(alpha = 0.4f), 14.sp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        innerTextField()
+                    }
+                )
+
+                if (isLoading && normalizedQuery.isNotBlank()) {
+                    Spacer(Modifier.width(8.dp))
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        color = accentColor,
+                        strokeWidth = 2.dp
+                    )
+                }
+
+                if (searchQuery.isNotEmpty()) {
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        Modifier
+                            .clip(CircleShape)
+                            .background(contentColor.copy(alpha = 0.08f))
+                            .clickable { onSearchQueryChange("") }
+                            .padding(4.dp)
+                    ) {
+                        BasicText(
+                            "✕",
+                            style = TextStyle(
+                                color = contentColor.copy(alpha = 0.55f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        AnimatedVisibility(visible = searchQuery.isBlank()) {
+            FilterToggleButton(
                 contentColor = contentColor,
                 accentColor = accentColor,
-                modifier = Modifier.weight(1f)
-            )
-            
-            // Branch dropdown  
-            FilterDropdown(
-                label = "Branch",
-                selectedValue = selectedBranch,
-                options = filterOptions.branches,
-                onSelected = onBranchSelected,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                modifier = Modifier.weight(1f)
-            )
-            
-            // Year dropdown
-            FilterDropdown(
-                label = "Year",
-                selectedValue = selectedGraduationYear?.toString(),
-                options = filterOptions.graduationYears.map { it.toString() },
-                onSelected = { onYearSelected(it?.toIntOrNull()) },
-                contentColor = contentColor,
-                accentColor = accentColor,
-                modifier = Modifier.weight(1f)
+                isExpanded = isFilterExpanded,
+                activeFilterCount = activeFilterCount,
+                onClick = onToggleFilter
             )
         }
-        
-        // Clear filters button
-        if (selectedCollege != null || selectedBranch != null || selectedGraduationYear != null) {
+    }
+}
+
+@Composable
+private fun FilterToggleButton(
+    contentColor: Color,
+    accentColor: Color,
+    isExpanded: Boolean,
+    activeFilterCount: Int,
+    onClick: () -> Unit
+) {
+    val active = isExpanded || activeFilterCount > 0
+
+    Box(
+        Modifier
+            .size(48.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(
+                if (active) accentColor.copy(alpha = 0.16f)
+                else contentColor.copy(alpha = 0.06f)
+            )
+            .clickable(onClick = onClick)
+            .padding(12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        androidx.compose.foundation.Image(
+            painter = painterResource(R.drawable.ic_list),
+            contentDescription = "Filters",
+            modifier = Modifier.size(18.dp),
+            colorFilter = ColorFilter.tint(if (active) accentColor else contentColor.copy(alpha = 0.72f))
+        )
+
+        if (activeFilterCount > 0) {
             Box(
                 Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color.Red.copy(alpha = 0.15f))
-                    .clickable(onClick = onClearFilters)
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .align(Alignment.TopEnd)
+                    .offset(x = 4.dp, y = (-4).dp)
+                    .clip(CircleShape)
+                    .background(accentColor)
+                    .padding(horizontal = 5.dp, vertical = 2.dp)
             ) {
                 BasicText(
-                    "Clear All Filters",
-                    style = TextStyle(Color.Red.copy(alpha = 0.8f), 12.sp)
+                    activeFilterCount.toString(),
+                    style = TextStyle(
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 )
             }
         }
@@ -1723,68 +1711,729 @@ private fun FilterPanel(
 }
 
 @Composable
-private fun FilterDropdown(
+private fun ActiveFilterPill(
     label: String,
-    selectedValue: String?,
-    options: List<String>,
-    onSelected: (String?) -> Unit,
+    accentColor: Color,
+    onRemove: () -> Unit
+) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(accentColor.copy(alpha = 0.14f))
+            .clickable(onClick = onRemove)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Box(
+                Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(accentColor)
+            )
+            BasicText(
+                label,
+                style = TextStyle(
+                    color = accentColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            )
+            BasicText(
+                "✕",
+                style = TextStyle(
+                    color = accentColor.copy(alpha = 0.86f),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun FilterPanel(
+    backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
-    modifier: Modifier = Modifier
+    filterOptions: com.kyant.backdrop.catalog.network.models.FilterOptions,
+    displayMode: AllPeopleDisplayMode,
+    selectedCollege: String?,
+    selectedBranch: String?,
+    selectedGraduationYear: Int?,
+    isLightTheme: Boolean,
+    reduceAnimations: Boolean,
+    onDisplayModeSelected: (AllPeopleDisplayMode) -> Unit,
+    onCollegeSelected: (String?) -> Unit,
+    onBranchSelected: (String?) -> Unit,
+    onYearSelected: (Int?) -> Unit,
+    onClearFilters: () -> Unit
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    
-    Box(modifier) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .background(contentColor.copy(alpha = 0.08f))
-                .clickable { expanded = true }
-                .padding(horizontal = 12.dp, vertical = 10.dp)
+    val activeFilterCount = listOf(selectedCollege, selectedBranch, selectedGraduationYear).count { it != null }
+    var isCollegeSheetVisible by remember { mutableStateOf(false) }
+    var isBranchSheetVisible by remember { mutableStateOf(false) }
+    var isYearSheetVisible by remember { mutableStateOf(false) }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp)
+            .vormexSurface(
+                backdrop = backdrop,
+                tone = VormexSurfaceTone.Overlay,
+                cornerRadius = 22.dp,
+                blurRadius = 16.dp,
+                lensRadius = 0.dp,
+                lensDepth = 0.dp,
+                useBackdropEffects = !reduceAnimations,
+                surfaceColor = if (isLightTheme) Color.White.copy(alpha = 0.42f) else Color.White.copy(alpha = 0.05f),
+                borderColor = if (isLightTheme) Color.White.copy(alpha = 0.20f) else Color.White.copy(alpha = 0.08f)
+            )
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             BasicText(
-                selectedValue ?: label,
+                "Filters",
                 style = TextStyle(
-                    if (selectedValue != null) contentColor else contentColor.copy(alpha = 0.5f),
-                    12.sp
+                    color = contentColor,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (activeFilterCount > 0) {
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(accentColor.copy(alpha = 0.14f))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        BasicText(
+                            "$activeFilterCount active",
+                            style = TextStyle(
+                                color = accentColor,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                    }
+                }
+
+                if (activeFilterCount > 0) {
+                    BasicText(
+                        "Clear",
+                        style = TextStyle(
+                            color = Color(0xFFF97316),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable(onClick = onClearFilters)
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+                }
+            }
+        }
+
+        FilterChipSection(
+            label = "Display",
+            selectedValue = when (displayMode) {
+                AllPeopleDisplayMode.TWO_PER_ROW -> "2 cards"
+                AllPeopleDisplayMode.ONE_PER_ROW -> "1 card"
+            },
+            contentColor = contentColor,
+            accentColor = accentColor
+        ) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    FilterOptionChip(
+                        label = "2 cards",
+                        isSelected = displayMode == AllPeopleDisplayMode.TWO_PER_ROW,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onClick = { onDisplayModeSelected(AllPeopleDisplayMode.TWO_PER_ROW) }
+                    )
+                }
+                item {
+                    FilterOptionChip(
+                        label = "1 card",
+                        isSelected = displayMode == AllPeopleDisplayMode.ONE_PER_ROW,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onClick = { onDisplayModeSelected(AllPeopleDisplayMode.ONE_PER_ROW) }
+                    )
+                }
+            }
+        }
+
+        FilterSelectionCard(
+            title = "College",
+            value = selectedCollege,
+            placeholder = "Choose your campus from a searchable list",
+            contentColor = contentColor,
+            accentColor = accentColor,
+            onClick = { isCollegeSheetVisible = true },
+            icon = {
+                GraduationCapIcon(color = accentColor, size = 18.dp)
+            }
+        )
+
+        FilterSelectionCard(
+            title = "Branch",
+            value = selectedBranch,
+            placeholder = "Pick a branch from the full list",
+            contentColor = contentColor,
+            accentColor = accentColor,
+            onClick = { isBranchSheetVisible = true },
+            icon = {
+                FindPeopleVectorTabIcon(
+                    drawableRes = R.drawable.ic_list,
+                    color = accentColor,
+                    size = 18.dp
+                )
+            }
+        )
+
+        FilterSelectionCard(
+            title = "Graduation year",
+            value = selectedGraduationYear?.toString(),
+            placeholder = "Choose the passing year",
+            contentColor = contentColor,
+            accentColor = accentColor,
+            onClick = { isYearSheetVisible = true },
+            icon = {
+                FindPeopleVectorTabIcon(
+                    drawableRes = R.drawable.ic_calendar,
+                    color = accentColor,
+                    size = 18.dp
+                )
+            }
+        )
+
+        if (activeFilterCount > 0) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xFFF97316).copy(alpha = 0.14f))
+                    .clickable(onClick = onClearFilters)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                BasicText(
+                    "Reset all filters",
+                    style = TextStyle(
+                        color = Color(0xFFF97316),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+            }
+        }
+    }
+
+    if (isCollegeSheetVisible) {
+        CollegePickerSheet(
+            colleges = filterOptions.colleges,
+            selectedCollege = selectedCollege,
+            contentColor = contentColor,
+            accentColor = accentColor,
+            isLightTheme = isLightTheme,
+            onDismiss = { isCollegeSheetVisible = false },
+            onSelected = {
+                isCollegeSheetVisible = false
+                onCollegeSelected(it)
+            }
+        )
+    }
+
+    if (isBranchSheetVisible) {
+        BranchPickerSheet(
+            branches = filterOptions.branches,
+            selectedBranch = selectedBranch,
+            contentColor = contentColor,
+            accentColor = accentColor,
+            isLightTheme = isLightTheme,
+            onDismiss = { isBranchSheetVisible = false },
+            onSelected = {
+                isBranchSheetVisible = false
+                onBranchSelected(it)
+            }
+        )
+    }
+
+    if (isYearSheetVisible) {
+        GraduationYearPickerSheet(
+            years = filterOptions.graduationYears,
+            selectedYear = selectedGraduationYear,
+            contentColor = contentColor,
+            accentColor = accentColor,
+            isLightTheme = isLightTheme,
+            onDismiss = { isYearSheetVisible = false },
+            onSelected = {
+                isYearSheetVisible = false
+                onYearSelected(it)
+            }
+        )
+    }
+}
+
+@Composable
+private fun FilterChipSection(
+    label: String,
+    selectedValue: String,
+    contentColor: Color,
+    accentColor: Color,
+    content: @Composable () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText(
+                label.uppercase(),
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.50f),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+
+            BasicText(
+                selectedValue,
+                style = TextStyle(
+                    color = accentColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
                 ),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
-        
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            DropdownMenuItem(
-                text = {
-                    BasicText(
-                        "All $label",
-                        style = TextStyle(contentColor, 14.sp)
-                    )
-                },
-                onClick = {
-                    onSelected(null)
-                    expanded = false
-                }
+
+        content()
+    }
+}
+
+@Composable
+private fun FilterOptionChip(
+    label: String,
+    isSelected: Boolean,
+    contentColor: Color,
+    accentColor: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        Modifier
+            .widthIn(max = 180.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(
+                if (isSelected) accentColor.copy(alpha = 0.15f)
+                else contentColor.copy(alpha = 0.06f)
             )
-            options.forEach { option ->
-                DropdownMenuItem(
-                    text = {
-                        BasicText(
-                            option,
-                            style = TextStyle(
-                                if (option == selectedValue) accentColor else contentColor,
-                                14.sp
-                            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 9.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (isSelected) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(accentColor)
+                )
+            }
+            BasicText(
+                label,
+                style = TextStyle(
+                    color = if (isSelected) accentColor else contentColor.copy(alpha = 0.82f),
+                    fontSize = 12.sp,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun FilterSelectionCard(
+    title: String,
+    value: String?,
+    placeholder: String,
+    contentColor: Color,
+    accentColor: Color,
+    onClick: () -> Unit,
+    icon: @Composable () -> Unit
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(contentColor.copy(alpha = 0.06f))
+            .clickable(onClick = onClick)
+            .padding(16.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(accentColor.copy(alpha = 0.14f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    icon()
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    BasicText(
+                        title,
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.56f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
                         )
-                    },
-                    onClick = {
-                        onSelected(option)
-                        expanded = false
+                    )
+                    BasicText(
+                        value ?: placeholder,
+                        style = TextStyle(
+                            color = if (value != null) accentColor else contentColor,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            BasicText(
+                if (value != null) "Change" else "Browse",
+                style = TextStyle(
+                    color = accentColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CollegePickerSheet(
+    colleges: List<String>,
+    selectedCollege: String?,
+    contentColor: Color,
+    accentColor: Color,
+    isLightTheme: Boolean,
+    onDismiss: () -> Unit,
+    onSelected: (String?) -> Unit
+) {
+    OptionPickerSheet(
+        title = "Select college",
+        subtitle = "Search the campus list and pick the one that fits best.",
+        searchPlaceholder = "Search colleges",
+        allLabel = "All colleges",
+        options = colleges.distinct().sorted(),
+        selectedOption = selectedCollege,
+        contentColor = contentColor,
+        accentColor = accentColor,
+        isLightTheme = isLightTheme,
+        onDismiss = onDismiss,
+        onSelected = onSelected
+    )
+}
+
+@Composable
+private fun BranchPickerSheet(
+    branches: List<String>,
+    selectedBranch: String?,
+    contentColor: Color,
+    accentColor: Color,
+    isLightTheme: Boolean,
+    onDismiss: () -> Unit,
+    onSelected: (String?) -> Unit
+) {
+    OptionPickerSheet(
+        title = "Select branch",
+        subtitle = "Browse the available branches and narrow the people list cleanly.",
+        searchPlaceholder = "Search branches",
+        allLabel = "All branches",
+        options = branches.distinct().sorted(),
+        selectedOption = selectedBranch,
+        contentColor = contentColor,
+        accentColor = accentColor,
+        isLightTheme = isLightTheme,
+        onDismiss = onDismiss,
+        onSelected = onSelected
+    )
+}
+
+@Composable
+private fun GraduationYearPickerSheet(
+    years: List<Int>,
+    selectedYear: Int?,
+    contentColor: Color,
+    accentColor: Color,
+    isLightTheme: Boolean,
+    onDismiss: () -> Unit,
+    onSelected: (Int?) -> Unit
+) {
+    OptionPickerSheet(
+        title = "Select graduation year",
+        subtitle = "Choose the year you want to focus on from the available graduating batches.",
+        searchPlaceholder = "Search graduation year",
+        allLabel = "All years",
+        options = years.distinct().sortedDescending().map(Int::toString),
+        selectedOption = selectedYear?.toString(),
+        contentColor = contentColor,
+        accentColor = accentColor,
+        isLightTheme = isLightTheme,
+        onDismiss = onDismiss,
+        onSelected = { value ->
+            onSelected(value?.toIntOrNull())
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OptionPickerSheet(
+    title: String,
+    subtitle: String,
+    searchPlaceholder: String,
+    allLabel: String,
+    options: List<String>,
+    selectedOption: String?,
+    contentColor: Color,
+    accentColor: Color,
+    isLightTheme: Boolean,
+    onDismiss: () -> Unit,
+    onSelected: (String?) -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    val visibleOptions = remember(options, searchQuery) {
+        val normalizedQuery = searchQuery.trim().lowercase()
+        options.filter { option ->
+            normalizedQuery.isBlank() || option.lowercase().contains(normalizedQuery)
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = if (isLightTheme) Color.White else Color(0xFF101114),
+        contentColor = contentColor
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                BasicText(
+                    title,
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+                BasicText(
+                    subtitle,
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.58f),
+                        fontSize = 12.sp
+                    )
+                )
+            }
+
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(contentColor.copy(alpha = 0.06f))
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    androidx.compose.foundation.Image(
+                        painter = painterResource(R.drawable.ic_search),
+                        contentDescription = searchPlaceholder,
+                        modifier = Modifier.size(16.dp),
+                        colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.72f))
+                    )
+                    Spacer(Modifier.width(10.dp))
+
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        textStyle = TextStyle(contentColor, 14.sp),
+                        cursorBrush = SolidColor(accentColor),
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        decorationBox = { innerTextField ->
+                            if (searchQuery.isEmpty()) {
+                                BasicText(
+                                    searchPlaceholder,
+                                    style = TextStyle(contentColor.copy(alpha = 0.4f), 14.sp)
+                                )
+                            }
+                            innerTextField()
+                        }
+                    )
+
+                    if (searchQuery.isNotEmpty()) {
+                        Spacer(Modifier.width(8.dp))
+                        Box(
+                            Modifier
+                                .clip(CircleShape)
+                                .background(contentColor.copy(alpha = 0.08f))
+                                .clickable { searchQuery = "" }
+                                .padding(4.dp)
+                        ) {
+                            BasicText(
+                                "✕",
+                                style = TextStyle(
+                                    color = contentColor.copy(alpha = 0.55f),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
                     }
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(360.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    OptionSheetRow(
+                        label = allLabel,
+                        isSelected = selectedOption == null,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onClick = { onSelected(null) }
+                    )
+                }
+
+                if (visibleOptions.isEmpty()) {
+                    item {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(contentColor.copy(alpha = 0.04f))
+                                .padding(20.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            BasicText(
+                                "No results found for \"$searchQuery\"",
+                                style = TextStyle(
+                                    color = contentColor.copy(alpha = 0.58f),
+                                    fontSize = 13.sp
+                                )
+                            )
+                        }
+                    }
+                } else {
+                    items(visibleOptions, key = { it }) { option ->
+                        OptionSheetRow(
+                            label = option,
+                            isSelected = option == selectedOption,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            onClick = { onSelected(option) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OptionSheetRow(
+    label: String,
+    isSelected: Boolean,
+    contentColor: Color,
+    accentColor: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                if (isSelected) accentColor.copy(alpha = 0.14f)
+                else contentColor.copy(alpha = 0.05f)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText(
+                label,
+                style = TextStyle(
+                    color = if (isSelected) accentColor else contentColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+
+            if (isSelected) {
+                Spacer(Modifier.width(10.dp))
+                Box(
+                    Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(accentColor)
                 )
             }
         }

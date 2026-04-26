@@ -63,6 +63,7 @@ fun LiquidToggle(
     val appearance = currentVormexAppearance()
     val shouldUseGlass = useGlassEffects ?: appearance.isGlassTheme
     val isLightTheme = lightTheme ?: !appearance.isDarkTheme
+    val thumbHighlightColor = if (isLightTheme) Color.White else Color(0xFFD5DEE9)
     val resolvedAccentColor = accentColor ?: if (isLightTheme) Color(0xFF34C759) else Color(0xFF30D158)
     val resolvedTrackColor = trackColor ?: if (isLightTheme) {
         Color(0xFF787878).copy(0.2f)
@@ -196,7 +197,8 @@ fun LiquidToggle(
                 },
                 onDrawSurface = {
                     val progress = dampedDragAnimation.pressProgress
-                    drawRect(Color.White.copy(alpha = 1f - progress))
+                    val alpha = if (isLightTheme) 1f - progress else 0.86f * (1f - progress)
+                    drawRect(thumbHighlightColor.copy(alpha = alpha))
                 }
             )
         } else {

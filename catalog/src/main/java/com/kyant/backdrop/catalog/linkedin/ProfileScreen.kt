@@ -46,6 +46,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -76,11 +77,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
@@ -272,6 +276,7 @@ fun ProfileScreen(
                     onOpenConnections = { screenViewModel.openConnectionsSheet() },
                     onOpenFollowers = { screenViewModel.openFollowersSheet() },
                     onMessage = onMessage,
+                    onOpenProfile = onOpenProfile,
                     onOpenFeedItem = onOpenFeedItem,
                     onVotePoll = { postId, optionId -> screenViewModel.votePoll(postId, optionId) },
                     onUploadAvatar = { screenViewModel.uploadAvatar(it) },
@@ -765,6 +770,7 @@ private fun ProfileContent(
     onOpenConnections: () -> Unit,
     onOpenFollowers: () -> Unit,
     onMessage: (String) -> Unit,
+    onOpenProfile: ((String) -> Unit)? = null,
     onOpenFeedItem: (FeedItem) -> Unit,
     onVotePoll: (String, String) -> Unit,
     onUploadAvatar: (ByteArray) -> Unit,
@@ -865,6 +871,7 @@ private fun ProfileContent(
                 onOpenConnections = onOpenConnections,
                 onOpenFollowers = onOpenFollowers,
                 onMessage = onMessage,
+                onOpenMutualProfile = onOpenProfile,
                 onUploadAvatar = onUploadAvatar,
                 onUploadBanner = onUploadBanner
             )
@@ -1047,6 +1054,7 @@ private fun ProfileContent(
 // ==================== Profile Header ====================
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun ProfileHeader(
     user: ProfileUser,
     stats: ProfileStats,
@@ -1075,6 +1083,7 @@ private fun ProfileHeader(
     onOpenConnections: () -> Unit,
     onOpenFollowers: () -> Unit,
     onMessage: (String) -> Unit,
+    onOpenMutualProfile: ((String) -> Unit)? = null,
     onUploadAvatar: (ByteArray) -> Unit = {},
     onUploadBanner: (ByteArray) -> Unit = {}
 ) {
@@ -1082,6 +1091,7 @@ private fun ProfileHeader(
     val profileFrameEnabled by SettingsPreferences.profileFrameEnabled(context).collectAsState(initial = false)
     val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
     var showShareMenu by remember { mutableStateOf(false) }
+    var shareMenuAnchorBounds by remember { mutableStateOf<Rect?>(null) }
     
     // Image editor state
     var showAvatarEditor by remember { mutableStateOf(false) }
@@ -1104,6 +1114,7 @@ private fun ProfileHeader(
     val avatarOffsetX = if (showProfileFrame) 10.dp else 0.dp
     val isCurrentlyOnline = isProfileCurrentlyOnline(user, stats)
     val presenceLabel = buildProfilePresenceLabel(user, stats, isOwner)
+    val bannerImageUrl = user.bannerImageUrl?.takeIf { it.isNotBlank() }
     
     // Image pickers
     val avatarPicker = rememberLauncherForActivityResult(
@@ -1204,40 +1215,17 @@ private fun ProfileHeader(
                 Modifier
                     .fillMaxWidth()
                     .height(140.dp)
-                    .then(
-                        if (user.bannerImageUrl != null)
-                            Modifier.background(Color.Transparent)
-                        else when {
-                            isGlassTheme -> Modifier.drawBackdrop(
-                                backdrop = backdrop,
-                                shape = { RoundedRectangle(0f.dp) },
-                                effects = {
-                                    vibrancy()
-                                    blur(20f.dp.toPx())
-                                    lens(10f.dp.toPx(), 20f.dp.toPx())
-                                },
-                                onDrawSurface = {
-                                    drawRect(
-                                        Brush.verticalGradient(
-                                            listOf(accentColor.copy(alpha = 0.3f), Color.White.copy(alpha = 0.08f))
-                                        )
-                                    )
-                                }
-                            )
-                            isDarkTheme -> Modifier.background(
-                                Brush.verticalGradient(
-                                    listOf(accentColor.copy(alpha = 0.4f), Color(0xFF2D2D2D))
-                                )
-                            )
-                            else -> Modifier.background(
-                                Brush.verticalGradient(
-                                    listOf(accentColor.copy(alpha = 0.3f), Color(0xFFF0F0F0))
-                                )
-                            )
-                        }
-                    )
+                    .background(Color.Transparent)
             ) {
-                user.bannerImageUrl?.let { url ->
+                Image(
+                    painter = painterResource(R.drawable.profile_default_banner_vx),
+                    contentDescription = "Default banner",
+                    contentScale = ContentScale.Crop,
+                    alignment = androidx.compose.ui.BiasAlignment(horizontalBias = 0.65f, verticalBias = 0f),
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                bannerImageUrl?.let { url ->
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(url)
@@ -1424,35 +1412,70 @@ private fun ProfileHeader(
                                     Modifier
                                         .clip(CircleShape)
                                         .background(contentColor.copy(alpha = 0.1f))
-                                        .clickable { showShareMenu = true }
+                                        .onGloballyPositioned { shareMenuAnchorBounds = it.boundsInWindow() }
+                                        .clickable {
+                                            showShareMenu = true
+                                        }
                                         .padding(10.dp)
                                 ) {
                                     BasicText("↗", style = TextStyle(contentColor, 16.sp))
                                 }
-                                
-                                DropdownMenu(
-                                    expanded = showShareMenu,
-                                    onDismissRequest = { showShareMenu = false }
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { BasicText("Copy profile link", style = TextStyle(contentColor)) },
-                                        onClick = {
-                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                            clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
-                                            showShareMenu = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { BasicText("Share profile", style = TextStyle(contentColor)) },
-                                        onClick = {
-                                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                                type = "text/plain"
-                                                putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
+
+                                if (isGlassTheme) {
+                                    GlassDropdownMenu(
+                                        expanded = showShareMenu,
+                                        onDismissRequest = { showShareMenu = false },
+                                        backdrop = backdrop,
+                                        contentColor = contentColor,
+                                        anchorBounds = shareMenuAnchorBounds
+                                    ) {
+                                        GlassMenuItem(
+                                            onClick = {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
+                                                showShareMenu = false
+                                            },
+                                            contentColor = contentColor,
+                                            text = "Copy profile link"
+                                        )
+                                        GlassMenuItem(
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
+                                                }
+                                                context.startActivity(Intent.createChooser(intent, "Share profile"))
+                                                showShareMenu = false
+                                            },
+                                            contentColor = contentColor,
+                                            text = "Share profile"
+                                        )
+                                    }
+                                } else {
+                                    DropdownMenu(
+                                        expanded = showShareMenu,
+                                        onDismissRequest = { showShareMenu = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { BasicText("Copy profile link", style = TextStyle(contentColor)) },
+                                            onClick = {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
+                                                showShareMenu = false
                                             }
-                                            context.startActivity(Intent.createChooser(intent, "Share profile"))
-                                            showShareMenu = false
-                                        }
-                                    )
+                                        )
+                                        DropdownMenuItem(
+                                            text = { BasicText("Share profile", style = TextStyle(contentColor)) },
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
+                                                }
+                                                context.startActivity(Intent.createChooser(intent, "Share profile"))
+                                                showShareMenu = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         } else {
@@ -1523,7 +1546,10 @@ private fun ProfileHeader(
                                                 else -> Modifier.background(Color.Black.copy(alpha = 0.05f))
                                             }
                                         )
-                                        .clickable { showShareMenu = true },
+                                        .onGloballyPositioned { shareMenuAnchorBounds = it.boundsInWindow() }
+                                        .clickable {
+                                            showShareMenu = true
+                                        },
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Image(
@@ -1534,172 +1560,303 @@ private fun ProfileHeader(
                                     )
                                 }
                                 
-                                DropdownMenu(
-                                    expanded = showShareMenu,
-                                    onDismissRequest = { showShareMenu = false }
-                                ) {
-                                    DropdownMenuItem(
-                                        text = {
-                                            BasicText(
-                                                text = when (connectionStatus) {
-                                                    "connected" -> "Connection: Connected"
-                                                    "pending_sent" -> "Connection: Request sent"
-                                                    "pending_received" -> "Connection: Request received"
-                                                    else -> "Connection: Not connected"
-                                                },
-                                                style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp)
-                                            )
-                                        },
-                                        enabled = false,
-                                        onClick = {}
-                                    )
-                                    when (connectionStatus) {
-                                        "connected" -> {
-                                            DropdownMenuItem(
-                                                text = {
-                                                    BasicText(
-                                                        "Remove Connection",
-                                                        style = TextStyle(Color.Red, 14.sp)
-                                                    )
-                                                },
-                                                enabled = !connectionActionInProgress,
-                                                onClick = {
-                                                    onRemoveConnection()
-                                                    showShareMenu = false
-                                                }
-                                            )
+                                if (isGlassTheme) {
+                                    GlassDropdownMenu(
+                                        expanded = showShareMenu,
+                                        onDismissRequest = { showShareMenu = false },
+                                        backdrop = backdrop,
+                                        contentColor = contentColor,
+                                        anchorBounds = shareMenuAnchorBounds
+                                    ) {
+                                        GlassMenuItem(
+                                            onClick = {},
+                                            contentColor = contentColor,
+                                            text = when (connectionStatus) {
+                                                "connected" -> "Connection: Connected"
+                                                "pending_sent" -> "Connection: Request sent"
+                                                "pending_received" -> "Connection: Request received"
+                                                else -> "Connection: Not connected"
+                                            },
+                                            textColor = contentColor.copy(alpha = 0.7f),
+                                            enabled = false
+                                        )
+                                        GlassMenuDivider(contentColor = contentColor)
+                                        when (connectionStatus) {
+                                            "connected" -> {
+                                                GlassMenuItem(
+                                                    onClick = {
+                                                        onRemoveConnection()
+                                                        showShareMenu = false
+                                                    },
+                                                    contentColor = contentColor,
+                                                    text = "Remove Connection",
+                                                    textColor = Color.Red,
+                                                    enabled = !connectionActionInProgress
+                                                )
+                                            }
+                                            "pending_sent" -> {
+                                                GlassMenuItem(
+                                                    onClick = {
+                                                        onCancelRequest()
+                                                        showShareMenu = false
+                                                    },
+                                                    contentColor = contentColor,
+                                                    text = "Cancel Request",
+                                                    enabled = !connectionActionInProgress
+                                                )
+                                            }
+                                            "pending_received" -> {
+                                                GlassMenuItem(
+                                                    onClick = {
+                                                        onAcceptRequest()
+                                                        showShareMenu = false
+                                                    },
+                                                    contentColor = contentColor,
+                                                    text = "Accept Request",
+                                                    enabled = !connectionActionInProgress
+                                                )
+                                                GlassMenuItem(
+                                                    onClick = {
+                                                        onRejectRequest()
+                                                        showShareMenu = false
+                                                    },
+                                                    contentColor = contentColor,
+                                                    text = "Ignore Request",
+                                                    enabled = !connectionActionInProgress
+                                                )
+                                            }
+                                            else -> {
+                                                GlassMenuItem(
+                                                    onClick = {
+                                                        onConnect()
+                                                        showShareMenu = false
+                                                    },
+                                                    contentColor = contentColor,
+                                                    text = "Connect",
+                                                    enabled = !connectionActionInProgress
+                                                )
+                                            }
                                         }
-                                        "pending_sent" -> {
-                                            DropdownMenuItem(
-                                                text = {
-                                                    BasicText(
-                                                        "Cancel Request",
-                                                        style = TextStyle(contentColor, 14.sp)
-                                                    )
-                                                },
-                                                enabled = !connectionActionInProgress,
-                                                onClick = {
-                                                    onCancelRequest()
-                                                    showShareMenu = false
-                                                }
-                                            )
-                                        }
-                                        "pending_received" -> {
-                                            DropdownMenuItem(
-                                                text = {
-                                                    BasicText(
-                                                        "Accept Request",
-                                                        style = TextStyle(contentColor, 14.sp)
-                                                    )
-                                                },
-                                                enabled = !connectionActionInProgress,
-                                                onClick = {
-                                                    onAcceptRequest()
-                                                    showShareMenu = false
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = {
-                                                    BasicText(
-                                                        "Ignore Request",
-                                                        style = TextStyle(contentColor, 14.sp)
-                                                    )
-                                                },
-                                                enabled = !connectionActionInProgress,
-                                                onClick = {
-                                                    onRejectRequest()
-                                                    showShareMenu = false
-                                                }
-                                            )
-                                        }
-                                        else -> {
-                                            DropdownMenuItem(
-                                                text = {
-                                                    BasicText(
-                                                        "Connect",
-                                                        style = TextStyle(contentColor, 14.sp)
-                                                    )
-                                                },
-                                                enabled = !connectionActionInProgress,
-                                                onClick = {
-                                                    onConnect()
-                                                    showShareMenu = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                    // Follow option
-                                    DropdownMenuItem(
-                                        text = {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
+                                        GlassMenuItem(
+                                            onClick = {
+                                                onToggleFollow()
+                                                showShareMenu = false
+                                            },
+                                            contentColor = contentColor,
+                                            leadingIcon = {
                                                 Image(
                                                     painter = painterResource(R.drawable.ic_users),
                                                     contentDescription = null,
                                                     modifier = Modifier.size(18.dp),
                                                     colorFilter = ColorFilter.tint(contentColor)
                                                 )
-                                                BasicText(
-                                                    if (isFollowing) "Unfollow" else "Follow",
-                                                    style = TextStyle(contentColor, 14.sp)
-                                                )
-                                            }
-                                        },
-                                        enabled = !followActionInProgress,
-                                        onClick = {
-                                            onToggleFollow()
-                                            showShareMenu = false
-                                        }
-                                    )
-                                    // Copy profile link
-                                    DropdownMenuItem(
-                                        text = {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
+                                            },
+                                            text = if (isFollowing) "Unfollow" else "Follow",
+                                            enabled = !followActionInProgress
+                                        )
+                                        GlassMenuItem(
+                                            onClick = {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
+                                                showShareMenu = false
+                                            },
+                                            contentColor = contentColor,
+                                            leadingIcon = {
                                                 Image(
                                                     painter = painterResource(R.drawable.ic_link),
                                                     contentDescription = null,
                                                     modifier = Modifier.size(18.dp),
                                                     colorFilter = ColorFilter.tint(contentColor)
                                                 )
-                                                BasicText("Copy profile link", style = TextStyle(contentColor, 14.sp))
-                                            }
-                                        },
-                                        onClick = {
-                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                            clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
-                                            showShareMenu = false
-                                        }
-                                    )
-                                    // Share profile
-                                    DropdownMenuItem(
-                                        text = {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
+                                            },
+                                            text = "Copy profile link"
+                                        )
+                                        GlassMenuItem(
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
+                                                }
+                                                context.startActivity(Intent.createChooser(intent, "Share profile"))
+                                                showShareMenu = false
+                                            },
+                                            contentColor = contentColor,
+                                            leadingIcon = {
                                                 Image(
                                                     painter = painterResource(R.drawable.ic_share),
                                                     contentDescription = null,
                                                     modifier = Modifier.size(18.dp),
                                                     colorFilter = ColorFilter.tint(contentColor)
                                                 )
-                                                BasicText("Share profile", style = TextStyle(contentColor, 14.sp))
+                                            },
+                                            text = "Share profile"
+                                        )
+                                    }
+                                } else {
+                                    DropdownMenu(
+                                        expanded = showShareMenu,
+                                        onDismissRequest = { showShareMenu = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                BasicText(
+                                                    text = when (connectionStatus) {
+                                                        "connected" -> "Connection: Connected"
+                                                        "pending_sent" -> "Connection: Request sent"
+                                                        "pending_received" -> "Connection: Request received"
+                                                        else -> "Connection: Not connected"
+                                                    },
+                                                    style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp)
+                                                )
+                                            },
+                                            enabled = false,
+                                            onClick = {}
+                                        )
+                                        when (connectionStatus) {
+                                            "connected" -> {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        BasicText(
+                                                            "Remove Connection",
+                                                            style = TextStyle(Color.Red, 14.sp)
+                                                        )
+                                                    },
+                                                    enabled = !connectionActionInProgress,
+                                                    onClick = {
+                                                        onRemoveConnection()
+                                                        showShareMenu = false
+                                                    }
+                                                )
                                             }
-                                        },
-                                        onClick = {
-                                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                                type = "text/plain"
-                                                putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
+                                            "pending_sent" -> {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        BasicText(
+                                                            "Cancel Request",
+                                                            style = TextStyle(contentColor, 14.sp)
+                                                        )
+                                                    },
+                                                    enabled = !connectionActionInProgress,
+                                                    onClick = {
+                                                        onCancelRequest()
+                                                        showShareMenu = false
+                                                    }
+                                                )
                                             }
-                                            context.startActivity(Intent.createChooser(intent, "Share profile"))
-                                            showShareMenu = false
+                                            "pending_received" -> {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        BasicText(
+                                                            "Accept Request",
+                                                            style = TextStyle(contentColor, 14.sp)
+                                                        )
+                                                    },
+                                                    enabled = !connectionActionInProgress,
+                                                    onClick = {
+                                                        onAcceptRequest()
+                                                        showShareMenu = false
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        BasicText(
+                                                            "Ignore Request",
+                                                            style = TextStyle(contentColor, 14.sp)
+                                                        )
+                                                    },
+                                                    enabled = !connectionActionInProgress,
+                                                    onClick = {
+                                                        onRejectRequest()
+                                                        showShareMenu = false
+                                                    }
+                                                )
+                                            }
+                                            else -> {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        BasicText(
+                                                            "Connect",
+                                                            style = TextStyle(contentColor, 14.sp)
+                                                        )
+                                                    },
+                                                    enabled = !connectionActionInProgress,
+                                                    onClick = {
+                                                        onConnect()
+                                                        showShareMenu = false
+                                                    }
+                                                )
+                                            }
                                         }
-                                    )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Image(
+                                                        painter = painterResource(R.drawable.ic_users),
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp),
+                                                        colorFilter = ColorFilter.tint(contentColor)
+                                                    )
+                                                    BasicText(
+                                                        if (isFollowing) "Unfollow" else "Follow",
+                                                        style = TextStyle(contentColor, 14.sp)
+                                                    )
+                                                }
+                                            },
+                                            enabled = !followActionInProgress,
+                                            onClick = {
+                                                onToggleFollow()
+                                                showShareMenu = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Image(
+                                                        painter = painterResource(R.drawable.ic_link),
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp),
+                                                        colorFilter = ColorFilter.tint(contentColor)
+                                                    )
+                                                    BasicText("Copy profile link", style = TextStyle(contentColor, 14.sp))
+                                                }
+                                            },
+                                            onClick = {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
+                                                showShareMenu = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Image(
+                                                        painter = painterResource(R.drawable.ic_share),
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp),
+                                                        colorFilter = ColorFilter.tint(contentColor)
+                                                    )
+                                                    BasicText("Share profile", style = TextStyle(contentColor, 14.sp))
+                                                }
+                                            },
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
+                                                }
+                                                context.startActivity(Intent.createChooser(intent, "Share profile"))
+                                                showShareMenu = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1883,60 +2040,68 @@ private fun ProfileHeader(
                     isDarkTheme = isDarkTheme
                 )
                 
-                // Mutual info (visitor only)
-                if (!isOwner && mutualConnectionsCount > 0) {
-                    Row(
-                        Modifier.padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                if (!isOwner && (mutualConnectionsCount > 0 || isFollowedBy)) {
+                    Column(
+                        modifier = Modifier.padding(vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Mutual avatars
-                        Row {
-                            mutualConnections.take(3).forEachIndexed { index, mutual ->
-                                Box(
-                                    Modifier
-                                        .offset(x = (-index * 8).dp)
-                                        .size(24.dp)
-                                        .clip(CircleShape)
-                                        .background(accentColor.copy(alpha = 0.8f)),
-                                    contentAlignment = Alignment.Center
+                        if (mutualConnectionsCount > 0) {
+                            BasicText(
+                                "$mutualConnectionsCount mutual connections",
+                                style = TextStyle(contentColor.copy(alpha = 0.6f), 12.sp)
+                            )
+
+                            if (mutualConnections.isNotEmpty()) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    if (!mutual.avatar.isNullOrEmpty()) {
-                                        AsyncImage(
-                                            model = mutual.avatar,
-                                            contentDescription = null,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize()
+                                    mutualConnections.forEach { mutual ->
+                                        MutualConnectionChip(
+                                            mutual = mutual,
+                                            contentColor = contentColor,
+                                            accentColor = accentColor,
+                                            onClick = onOpenMutualProfile?.let { callback ->
+                                                { callback(mutual.id) }
+                                            }
                                         )
-                                    } else {
-                                        BasicText(
-                                            mutual.name?.firstOrNull()?.uppercase() ?: "?",
-                                            style = TextStyle(Color.White, 10.sp, FontWeight.Bold)
-                                        )
+                                    }
+
+                                    val remainingMutuals =
+                                        (mutualConnectionsCount - mutualConnections.size).coerceAtLeast(0)
+                                    if (remainingMutuals > 0) {
+                                        Box(
+                                            Modifier
+                                                .clip(RoundedCornerShape(999.dp))
+                                                .background(contentColor.copy(alpha = 0.08f))
+                                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                        ) {
+                                            BasicText(
+                                                "+$remainingMutuals more",
+                                                style = TextStyle(
+                                                    color = contentColor.copy(alpha = 0.7f),
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Medium
+                                                )
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                        
-                        Spacer(Modifier.width(8.dp))
-                        
-                        BasicText(
-                            "$mutualConnectionsCount mutual connections",
-                            style = TextStyle(contentColor.copy(alpha = 0.6f), 12.sp)
-                        )
-                    }
-                    
-                    // Follows you badge
-                    if (isFollowedBy) {
-                        Box(
-                            Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(contentColor.copy(alpha = 0.1f))
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            BasicText(
-                                "Follows you",
-                                style = TextStyle(contentColor.copy(alpha = 0.6f), 11.sp)
-                            )
+
+                        if (isFollowedBy) {
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(contentColor.copy(alpha = 0.1f))
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                BasicText(
+                                    "Follows you",
+                                    style = TextStyle(contentColor.copy(alpha = 0.6f), 11.sp)
+                                )
+                            }
                         }
                     }
                 }
@@ -1944,6 +2109,67 @@ private fun ProfileHeader(
                 Spacer(Modifier.height(8.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun MutualConnectionChip(
+    mutual: MutualConnection,
+    contentColor: Color,
+    accentColor: Color,
+    onClick: (() -> Unit)? = null
+) {
+    val label = mutual.name?.takeIf { it.isNotBlank() }
+        ?: mutual.username?.takeIf { it.isNotBlank() }?.let { "@$it" }
+        ?: "Vormex member"
+
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(contentColor.copy(alpha = 0.08f))
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(accentColor.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (!mutual.avatar.isNullOrBlank()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(mutual.avatar)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = label,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                BasicText(
+                    mutual.name?.firstOrNull()?.uppercase()
+                        ?: mutual.username?.firstOrNull()?.uppercase()
+                        ?: "?",
+                    style = TextStyle(accentColor, 11.sp, FontWeight.Bold)
+                )
+            }
+        }
+
+        BasicText(
+            label,
+            modifier = Modifier.widthIn(max = 140.dp),
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.84f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

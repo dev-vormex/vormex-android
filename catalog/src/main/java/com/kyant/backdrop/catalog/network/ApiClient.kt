@@ -433,7 +433,48 @@ object ApiClient {
             Result.failure(e)
         }
     }
-    
+
+    suspend fun getProfileViewStats(context: Context, userId: String): Result<ProfileViewStats> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/social-proof/profile-views/$userId") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body<ProfileViewStatsApiResponse>().data)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getProfileViewHistory(
+        context: Context,
+        userId: String,
+        page: Int = 1,
+        limit: Int = 50
+    ): Result<ProfileViewHistory> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/social-proof/profile-views/$userId/history") {
+                header("Authorization", "Bearer $token")
+                parameter("page", page)
+                parameter("limit", limit)
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body<ProfileViewHistoryApiResponse>().data)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     // Comments APIs
     suspend fun getComments(context: Context, postId: String, cursor: String? = null): Result<CommentsResponse> {
         return try {
@@ -1281,6 +1322,24 @@ object ApiClient {
                 Result.success(streakResponse.data)
             } else {
                 Result.failure(Exception("Failed to record login"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getProgressMe(context: Context): Result<ProgressData> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/progress/me") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                val progressResponse: ProgressResponse = response.body()
+                Result.success(progressResponse.data)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
             }
         } catch (e: Exception) {
             Result.failure(e)

@@ -63,6 +63,7 @@ import com.kyant.backdrop.catalog.network.models.InterviewCategorySummary
 import com.kyant.backdrop.catalog.network.models.InterviewStatsSummary
 import com.kyant.backdrop.catalog.network.models.LearningPathSummary
 import com.kyant.backdrop.catalog.network.models.MentorshipSummary
+import com.kyant.backdrop.catalog.network.models.ProgressData
 import com.kyant.backdrop.catalog.network.models.ReferralShareLinks
 import com.kyant.backdrop.catalog.network.models.ReferralStatsSummary
 import com.kyant.backdrop.catalog.network.models.StoreItemSummary
@@ -151,6 +152,18 @@ fun GrowthHubScreen(
                             }
 
                             item {
+                                if (uiState.progress != null || uiState.coinsBalance > 0) {
+                                    ProgressSnapshotCard(
+                                        progress = uiState.progress,
+                                        coinsBalance = uiState.coinsBalance,
+                                        backdrop = backdrop,
+                                        contentColor = contentColor,
+                                        accentColor = accentColor
+                                    )
+                                }
+                            }
+
+                            item {
                                 DailyHooksCard(
                                     hooks = uiState.dailyHooks,
                                     date = uiState.hooksDate,
@@ -225,7 +238,7 @@ fun GrowthHubScreen(
 
                             item {
                                 RewardsCard(
-                                    xpBalance = uiState.xpBalance,
+                                    coinsBalance = uiState.coinsBalance,
                                     badges = uiState.badges.take(3),
                                     badgeCategories = uiState.badgeCategories.take(6),
                                     storeItems = uiState.storeItems.take(3),
@@ -321,17 +334,120 @@ private fun GrowthHeroCard(
                 accentColor = accentColor
             )
             GrowthStatChip(
-                value = uiState.xpBalance.toString(),
-                label = "XP",
+                value = uiState.coinsBalance.toString(),
+                label = "Coins",
                 contentColor = contentColor,
                 accentColor = accentColor
             )
             GrowthStatChip(
-                value = (uiState.referralStats?.successfulReferrals ?: 0).toString(),
-                label = "Referrals",
+                value = (uiState.progress?.xp?.level ?: 1).toString(),
+                label = "Level",
                 contentColor = contentColor,
                 accentColor = accentColor
             )
+        }
+    }
+}
+
+@Composable
+private fun ProgressSnapshotCard(
+    progress: ProgressData?,
+    coinsBalance: Int,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color
+) {
+    val xp = progress?.xp
+    val streak = progress?.streak
+
+    GrowthSurfaceCard(
+        backdrop = backdrop,
+        accentColor = accentColor,
+        contentColor = contentColor,
+        tint = accentColor.copy(alpha = 0.06f)
+    ) {
+        GrowthSectionTitle(
+            title = "Progress",
+            subtitle = "Lifetime XP builds levels. Coins are spendable.",
+            contentColor = contentColor
+        )
+        Spacer(Modifier.height(12.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (xp != null) {
+                GrowthStatChip(
+                    value = xp.level.toString(),
+                    label = xp.levelName,
+                    contentColor = contentColor,
+                    accentColor = accentColor
+                )
+                GrowthStatChip(
+                    value = xp.lifetimeXp.toString(),
+                    label = "Lifetime XP",
+                    contentColor = contentColor,
+                    accentColor = accentColor
+                )
+            }
+            GrowthStatChip(
+                value = coinsBalance.toString(),
+                label = "Coins",
+                contentColor = contentColor,
+                accentColor = accentColor
+            )
+        }
+
+        if (xp != null) {
+            Spacer(Modifier.height(12.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(contentColor.copy(alpha = 0.12f))
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(xp.progressToNextLevel.coerceIn(0f, 1f))
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(accentColor)
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            BasicText(
+                "${xp.xpToNextLevel} XP to next level",
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.68f),
+                    fontSize = 12.sp
+                )
+            )
+        }
+
+        if (streak != null) {
+            Spacer(Modifier.height(10.dp))
+            GrowthStatChip(
+                value = "${streak.current} days",
+                label = if (streak.qualifiedToday) "Daily streak active" else "Daily streak",
+                contentColor = contentColor,
+                accentColor = accentColor
+            )
+        }
+
+        val rules = xp?.rules.orEmpty().take(4)
+        if (rules.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                rules.forEach { rule ->
+                    val amount = rule.amount?.let { "+$it XP" } ?: "Variable XP"
+                    BasicText(
+                        "${rule.action}: $amount",
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.76f),
+                            fontSize = 12.sp
+                        )
+                    )
+                }
+            }
         }
     }
 }
@@ -735,7 +851,7 @@ private fun InterviewsCard(
 
 @Composable
 private fun RewardsCard(
-    xpBalance: Int,
+    coinsBalance: Int,
     badges: List<BadgeSummary>,
     badgeCategories: List<String>,
     storeItems: List<StoreItemSummary>,
@@ -750,14 +866,14 @@ private fun RewardsCard(
     ) {
         GrowthSectionTitle(
             title = "Rewards and unlocks",
-            subtitle = "XP balance, early badges, and store previews.",
+            subtitle = "Coins, early badges, and store previews.",
             contentColor = contentColor
         )
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             GrowthStatChip(
-                value = xpBalance.toString(),
-                label = "XP balance",
+                value = coinsBalance.toString(),
+                label = "Coins",
                 contentColor = contentColor,
                 accentColor = accentColor
             )
@@ -783,7 +899,7 @@ private fun RewardsCard(
             )
         }
         Spacer(Modifier.height(12.dp))
-        if (badges.isEmpty() && storeItems.isEmpty() && xpBalance == 0) {
+        if (badges.isEmpty() && storeItems.isEmpty() && coinsBalance == 0) {
             GrowthEmptyState(
                 text = "Rewards are wired up, but this account has not accumulated much here yet.",
                 contentColor = contentColor
@@ -806,7 +922,7 @@ private fun RewardsCard(
                     emoji = "🛍️",
                     title = item.name,
                     subtitle = item.description ?: item.category,
-                    supporting = item.price?.let { "$it coins" } ?: item.xpCost?.let { "$it XP" } ?: "Reward item"
+                    supporting = item.price?.let { "$it coins" } ?: item.xpCost?.let { "$it coins" } ?: "Reward item"
                 )
             }
         }
@@ -1398,6 +1514,8 @@ private fun hasGrowthContent(state: GrowthHubUiState): Boolean {
         state.featuredPaths.isNotEmpty() ||
         state.dailyChallenge != null ||
         state.interviewCategories.isNotEmpty() ||
+        state.progress != null ||
+        state.coinsBalance > 0 ||
         state.badges.isNotEmpty() ||
         state.storeItems.isNotEmpty() ||
         state.partners.isNotEmpty() ||

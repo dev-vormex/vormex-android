@@ -1108,6 +1108,7 @@ data class BannerUpdateRequest(
 
 @Serializable
 data class StreakIsAtRisk(
+    val daily: Boolean = false,
     val connection: Boolean = false,
     val login: Boolean = false,
     val posting: Boolean = false,
@@ -1116,6 +1117,11 @@ data class StreakIsAtRisk(
 
 @Serializable
 data class StreakData(
+    val dailyStreak: Int = 0,
+    val longestDailyStreak: Int = 0,
+    val dailyQualifiedToday: Boolean = false,
+    val dailyIsAtRisk: Boolean = false,
+    val dailyLastQualifiedDate: String? = null,
     val connectionStreak: Int = 0,
     val longestConnectionStreak: Int = 0,
     val loginStreak: Int = 0,
@@ -1138,6 +1144,91 @@ data class StreakData(
 @Serializable
 data class StreakResponse(
     val data: StreakData
+)
+
+// ==================== Canonical Progress Models ====================
+
+@Serializable
+data class ProgressXpRule(
+    val action: String = "",
+    val amount: Int? = null,
+    val description: String = ""
+)
+
+@Serializable
+data class ProgressCoinRule(
+    val action: String = "",
+    val description: String = ""
+)
+
+@Serializable
+data class ProgressTransaction(
+    val id: String = "",
+    val amount: Int = 0,
+    val type: String = "",
+    val source: String = "",
+    val sourceId: String? = null,
+    val description: String? = null,
+    val createdAt: String = ""
+)
+
+@Serializable
+data class ProgressXp(
+    val lifetimeXp: Int = 0,
+    val level: Int = 1,
+    val levelName: String = "Explorer",
+    val currentLevelXp: Int = 0,
+    val nextLevelXp: Int = 100,
+    val xpIntoLevel: Int = 0,
+    val xpToNextLevel: Int = 100,
+    val progressToNextLevel: Float = 0f,
+    val rules: List<ProgressXpRule> = emptyList()
+)
+
+@Serializable
+data class ProgressCoins(
+    val balance: Int = 0,
+    val rules: List<ProgressCoinRule> = emptyList(),
+    val recentTransactions: List<ProgressTransaction> = emptyList()
+)
+
+@Serializable
+data class ProgressStreakCategory(
+    val current: Int = 0,
+    val longest: Int = 0,
+    val lastDate: String? = null
+)
+
+@Serializable
+data class ProgressStreakCategories(
+    val login: ProgressStreakCategory = ProgressStreakCategory(),
+    val networking: ProgressStreakCategory = ProgressStreakCategory(),
+    val posting: ProgressStreakCategory = ProgressStreakCategory(),
+    val messaging: ProgressStreakCategory = ProgressStreakCategory()
+)
+
+@Serializable
+data class ProgressStreak(
+    val current: Int = 0,
+    val longest: Int = 0,
+    val qualifiedToday: Boolean = false,
+    val isAtRisk: Boolean = false,
+    val lastQualifiedDate: String? = null,
+    val totalActiveDays: Int = 0,
+    val rules: List<String> = emptyList(),
+    val categories: ProgressStreakCategories = ProgressStreakCategories()
+)
+
+@Serializable
+data class ProgressData(
+    val xp: ProgressXp = ProgressXp(),
+    val coins: ProgressCoins = ProgressCoins(),
+    val streak: ProgressStreak = ProgressStreak()
+)
+
+@Serializable
+data class ProgressResponse(
+    val data: ProgressData = ProgressData()
 )
 
 // ==================== Variable Rewards Models (Hook Model) ====================
@@ -1241,6 +1332,72 @@ data class TrendingStatus(
 @Serializable
 data class TrendingStatusResponse(
     val data: TrendingStatus
+)
+
+@Serializable
+data class ProfileViewStatsApiResponse(
+    val success: Boolean = true,
+    val data: ProfileViewStats = ProfileViewStats()
+)
+
+@Serializable
+data class ProfileViewStats(
+    val totalViews: Int = 0,
+    val todayViews: Int = 0,
+    val weeklyViews: Int = 0,
+    val trend: String = "stable",
+    val viewsToday: Int = 0,
+    val viewsLastHour: Int = 0,
+    val viewsThisWeek: Int = 0,
+    val trendPercent: Int = 0,
+    val trendDirection: String = "up",
+    val recentViewers: List<RecentProfileViewer> = emptyList(),
+    val viewerCount: Int = 0
+)
+
+@Serializable
+data class RecentProfileViewer(
+    val id: String,
+    val viewedAt: String,
+    val source: String? = null,
+    val viewer: ProfileViewerPerson
+)
+
+@Serializable
+data class ProfileViewHistoryApiResponse(
+    val success: Boolean = true,
+    val data: ProfileViewHistory = ProfileViewHistory()
+)
+
+@Serializable
+data class ProfileViewHistory(
+    val page: Int = 1,
+    val limit: Int = 50,
+    val totalCount: Int = 0,
+    val totalViews: Int = 0,
+    val hasMore: Boolean = false,
+    val viewers: List<ProfileViewHistoryItem> = emptyList()
+)
+
+@Serializable
+data class ProfileViewHistoryItem(
+    val viewerId: String,
+    val lastViewedAt: String,
+    val firstViewedAt: String,
+    val viewCount: Int = 1,
+    val isSameCollege: Boolean = false,
+    val viewer: ProfileViewerPerson? = null
+)
+
+@Serializable
+data class ProfileViewerPerson(
+    val id: String,
+    val name: String,
+    val username: String,
+    val profileImage: String? = null,
+    val college: String? = null,
+    val headline: String? = null,
+    val isSameCollege: Boolean = false
 )
 
 // ==================== Chat / Messaging Models ====================

@@ -98,6 +98,38 @@ val GlassBackgroundPresets = listOf(
         )
     ),
     GlassBackgroundPreset(
+        key = "circuit",
+        name = "Circuit Board",
+        description = "Dark hardware traces with ember orange details.",
+        imageResId = R.drawable.wallpaper_circuit_board,
+        baseColors = listOf(
+            Color(0xFF0E1218),
+            Color(0xFF141921),
+            Color(0xFF1C232C)
+        ),
+        orbColors = listOf(
+            Color(0xFFFF8A3D),
+            Color(0xFF596274),
+            Color(0xFF2B3440)
+        )
+    ),
+    GlassBackgroundPreset(
+        key = "neon_panel",
+        name = "Neon Panel",
+        description = "Graphite panels with soft silver light bars.",
+        imageResId = R.drawable.wallpaper_neon_panel,
+        baseColors = listOf(
+            Color(0xFF0D0F13),
+            Color(0xFF1D2127),
+            Color(0xFF373C43)
+        ),
+        orbColors = listOf(
+            Color(0xFFE6EEF3),
+            Color(0xFF6F7D8B),
+            Color(0xFF161B22)
+        )
+    ),
+    GlassBackgroundPreset(
         key = "lagoon",
         name = "Lagoon Drift",
         description = "Teal and blue layers with airy highlights.",
@@ -349,33 +381,6 @@ private fun GlassBackgroundVisual(
             )
         }
 
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.18f),
-                            Color.Transparent,
-                            Color.White.copy(alpha = 0.08f)
-                        )
-                    )
-                )
-        )
-
-        AmbientOrb(
-            alignment = Alignment.TopStart,
-            sizeDp = 320f,
-            offsetXDp = -118f + motion.primaryX,
-            offsetYDp = -40f + motion.primaryY,
-            scale = motion.pulse,
-            colors = listOf(
-                preset.orbColors[0].copy(alpha = 0.72f),
-                preset.orbColors[1].copy(alpha = 0.24f),
-                Color.Transparent
-            )
-        )
-
         AmbientOrb(
             alignment = Alignment.TopEnd,
             sizeDp = 228f,
@@ -419,9 +424,8 @@ private fun GlassBackgroundVisual(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    Brush.linearGradient(
+                    Brush.verticalGradient(
                         colors = listOf(
-                            Color.White.copy(alpha = 0.05f),
                             Color.Transparent,
                             Color.Black.copy(alpha = 0.06f)
                         )

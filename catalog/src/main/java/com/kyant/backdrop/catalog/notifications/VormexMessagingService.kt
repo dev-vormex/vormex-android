@@ -50,6 +50,7 @@ class VormexMessagingService : FirebaseMessagingService() {
         const val ACTION_POST = "post"
         const val ACTION_REEL = "reel"
         const val ACTION_PROFILE = "profile"
+        const val ACTION_PROFILE_VIEWS = "profile_views"
         const val ACTION_CONNECTIONS = "connections"
         const val ACTION_STREAK = "streak"
         const val ACTION_ENGAGEMENT = "engagement"
@@ -301,6 +302,10 @@ class VormexMessagingService : FirebaseMessagingService() {
                     }
                     type.contains("match", ignoreCase = true) || type == "find_people" -> {
                         putExtra(EXTRA_ACTION, ACTION_FIND_PEOPLE)
+                    }
+                    type.equals("profile_view", ignoreCase = true) ||
+                    data["screen"].equals("profile_views", ignoreCase = true) -> {
+                        putExtra(EXTRA_ACTION, ACTION_PROFILE_VIEWS)
                     }
                     type.contains("profile", ignoreCase = true) -> {
                         putExtra(EXTRA_ACTION, ACTION_PROFILE)

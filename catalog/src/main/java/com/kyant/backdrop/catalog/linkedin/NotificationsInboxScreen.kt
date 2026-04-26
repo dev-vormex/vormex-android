@@ -68,6 +68,7 @@ private enum class NotificationDestinationKind {
     Conversation,
     Post,
     Reel,
+    ProfileViews,
     Profile,
     Network,
     GrowthHub
@@ -104,6 +105,7 @@ fun NotificationsInboxScreen(
     accentColor: Color,
     onNavigateBack: () -> Unit,
     onUnreadCountChanged: (Int) -> Unit = {},
+    onOpenProfileViews: () -> Unit = {},
     onOpenProfile: (String) -> Unit = {},
     onOpenPost: (String) -> Unit = {},
     onOpenReel: (String) -> Unit = {},
@@ -204,6 +206,7 @@ fun NotificationsInboxScreen(
                                             viewModel.markAsRead(item.notificationIds)
                                             routeNotification(
                                                 notification = item.notification,
+                                                onOpenProfileViews = onOpenProfileViews,
                                                 onOpenProfile = onOpenProfile,
                                                 onOpenPost = onOpenPost,
                                                 onOpenReel = onOpenReel,
@@ -394,7 +397,11 @@ private fun NotificationAvatar(
     displayName: String,
     tone: Color
 ) {
-    val profileImage = notification.actor?.profileImage
+    val profileImage = if (notificationActionKey(notification.type) == "profile_view") {
+        null
+    } else {
+        notification.actor?.profileImage
+    }
 
     if (!profileImage.isNullOrBlank()) {
         AsyncImage(
@@ -684,6 +691,10 @@ private fun buildNotificationFeedItems(
 }
 
 private fun notificationGroupKey(notification: Notification): String {
+    if (notificationActionKey(notification.type) == "profile_view") {
+        return "profile_view:all"
+    }
+
     val actorKey = notification.actor?.id
         ?: notification.dataValue("viewerId")
         ?: notification.dataValue("userId")
@@ -734,6 +745,11 @@ private fun notificationTargetKey(notification: Notification): String {
 }
 
 private fun notificationDisplayName(notification: Notification): String {
+    if (notificationActionKey(notification.type) == "profile_view") {
+        val title = notificationDisplayTitle(notification.title)
+        return if (title.isNotBlank()) title else "Profile views"
+    }
+
     val actorName = notification.actor?.name?.trim().orEmpty()
     if (actorName.isNotBlank()) return actorName
 
@@ -751,10 +767,13 @@ private fun notificationActionSummary(notifications: List<Notification>): String
         "connect_request" -> "wants to connect"
         "connect_accepted" -> "accepted your connection"
         "follow" -> "followed you"
-        "profile_view" -> if (count > 1) {
-            "viewed your profile $count times"
-        } else {
-            "viewed your profile"
+        "profile_view" -> {
+            val body = notificationDisplayBody(notification.body)
+            if (body.isNotBlank()) body else if (count > 1) {
+                "$count profile view updates"
+            } else {
+                "Someone viewed your profile"
+            }
         }
         "message" -> quantityCopy(
             count = count,
@@ -976,6 +995,13 @@ private fun resolveNotificationDestination(notification: Notification): Notifica
         ?: notification.dataValue("actorId")
 
     return when {
+        normalizedType == "profile_view" -> NotificationDestination(
+            kind = NotificationDestinationKind.ProfileViews,
+            label = "See viewers",
+            hint = "Open everyone who viewed your profile",
+            badge = "Insights"
+        )
+
         notificationUsesVormexBranding(notification) || normalizedType == "admin_announcement" -> NotificationDestination(
             kind = NotificationDestinationKind.GrowthHub,
             label = "Open Vormex",
@@ -1111,6 +1137,7 @@ private fun compactTimestamp(createdAt: String): String {
 
 private fun routeNotification(
     notification: Notification,
+    onOpenProfileViews: () -> Unit,
     onOpenProfile: (String) -> Unit,
     onOpenPost: (String) -> Unit,
     onOpenReel: (String) -> Unit,
@@ -1130,6 +1157,7 @@ private fun routeNotification(
         NotificationDestinationKind.Reel -> {
             destination.targetId?.let(onOpenReel) ?: onOpenNetwork()
         }
+        NotificationDestinationKind.ProfileViews -> onOpenProfileViews()
         NotificationDestinationKind.Profile -> {
             destination.targetId?.let(onOpenProfile) ?: onOpenNetwork()
         }

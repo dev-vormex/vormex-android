@@ -103,6 +103,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
@@ -164,6 +165,7 @@ import com.kyant.backdrop.catalog.linkedin.reels.ReelsFeedScreen
 import com.kyant.backdrop.catalog.linkedin.reels.ReelCommentsSheet
 import com.kyant.backdrop.catalog.linkedin.reels.ReelsViewModel
 import com.kyant.backdrop.catalog.network.models.Reel
+import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
 import com.kyant.backdrop.catalog.onboarding.ProfileSetupWizard
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -448,6 +450,7 @@ fun LinkedInContent(
     val appScope = rememberCoroutineScope()
     val viewModel: FeedViewModel = viewModel(factory = FeedViewModel.Factory(context))
     val uiState by viewModel.uiState.collectAsState()
+    val pendingGroupConversationKeys by MessageNotificationManager.pendingGroupConversationKeys.collectAsState()
     
     // Theme preference: "glass", "light", "dark"
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
@@ -464,6 +467,7 @@ fun LinkedInContent(
     val isDarkTheme = appearance.isDarkTheme
     val contentColor = appearance.contentColor
     val accentColor = glassAccentPalette(accentPaletteKey).color
+    val hasPendingGroupMessages = pendingGroupConversationKeys.isNotEmpty()
     val footerIconSize = 28.dp
     val footerTextStyle = TextStyle(contentColor, 12.sp)
 
@@ -510,6 +514,7 @@ fun LinkedInContent(
     var showConnectionRequestsScreen by remember { mutableStateOf(false) }
     var showProfileCustomizationsScreen by remember { mutableStateOf(false) }
     var showNotificationsInbox by remember { mutableStateOf(false) }
+    var showProfileViewersScreen by remember { mutableStateOf(false) }
     var showNotificationSettingsScreen by remember { mutableStateOf(false) }
     var showPrivacySettingsScreen by remember { mutableStateOf(false) }
     var showAppearanceSettingsScreen by remember { mutableStateOf(false) }
@@ -518,6 +523,8 @@ fun LinkedInContent(
     var showAboutScreen by remember { mutableStateOf(false) }
     var showContactScreen by remember { mutableStateOf(false) }
     var showGrowthHubScreen by remember { mutableStateOf(false) }
+    var showSkillPassportScreen by remember { mutableStateOf(false) }
+    var showSkillSwapScreen by remember { mutableStateOf(false) }
     var showAgentSheet by remember { mutableStateOf(false) }
     var minimizeAgentSheetForVoice by remember { mutableStateOf(false) }
     var autoMinimizedAgentSheetForActiveVoice by remember { mutableStateOf(false) }
@@ -541,6 +548,7 @@ fun LinkedInContent(
             showConnectionRequestsScreen ||
             showProfileCustomizationsScreen ||
             showNotificationsInbox ||
+            showProfileViewersScreen ||
             showNotificationSettingsScreen ||
             showPrivacySettingsScreen ||
             showAppearanceSettingsScreen ||
@@ -548,7 +556,9 @@ fun LinkedInContent(
             showInviteFriendsScreen ||
             showAboutScreen ||
             showContactScreen ||
-            showGrowthHubScreen
+            showGrowthHubScreen ||
+            showSkillPassportScreen ||
+            showSkillSwapScreen
 
     // Handle system back button for all overlay screens
     // Priority: innermost overlays first, then outer overlays
@@ -584,6 +594,7 @@ fun LinkedInContent(
             showConnectionRequestsScreen -> showConnectionRequestsScreen = false
             showProfileCustomizationsScreen -> showProfileCustomizationsScreen = false
             showNotificationsInbox -> showNotificationsInbox = false
+            showProfileViewersScreen -> showProfileViewersScreen = false
             showNotificationSettingsScreen -> showNotificationSettingsScreen = false
             showPrivacySettingsScreen -> showPrivacySettingsScreen = false
             showAppearanceSettingsScreen -> showAppearanceSettingsScreen = false
@@ -592,6 +603,8 @@ fun LinkedInContent(
             showAboutScreen -> showAboutScreen = false
             showContactScreen -> showContactScreen = false
             showGrowthHubScreen -> showGrowthHubScreen = false
+            showSkillPassportScreen -> showSkillPassportScreen = false
+            showSkillSwapScreen -> showSkillSwapScreen = false
         }
     }
 
@@ -650,6 +663,9 @@ fun LinkedInContent(
                     link.userId?.let { userId ->
                         viewingProfileUserId = userId
                     }
+                }
+                com.kyant.backdrop.catalog.notifications.VormexMessagingService.ACTION_PROFILE_VIEWS -> {
+                    showProfileViewersScreen = true
                 }
                 com.kyant.backdrop.catalog.notifications.VormexMessagingService.ACTION_CHAT -> {
                     // Open the messages overlay instead of the Post tab.
@@ -773,6 +789,7 @@ fun LinkedInContent(
     val agentSurface = when {
         showGrowthHubScreen -> "growth_hub"
         showNotificationsInbox -> "notifications"
+        showProfileViewersScreen -> "profile_views"
         showMessagesScreen || isInChatThread -> "chat"
         showGroupsScreen || selectedGroupId != null || showGroupChat -> "groups"
         viewingProfileUserId != null || selectedTab == 4 -> "profile"
@@ -815,6 +832,7 @@ fun LinkedInContent(
             selectedGroupId != null ||
             showGroupChat ||
             showNotificationsInbox ||
+            showProfileViewersScreen ||
             showGrowthHubScreen
     val shouldShowInlineResultsOverlay =
         uiState.isLoggedIn &&
@@ -942,6 +960,7 @@ fun LinkedInContent(
             val hadOverlay =
                 showGrowthHubScreen ||
                     showNotificationsInbox ||
+                    showProfileViewersScreen ||
                     showMessagesScreen ||
                     isInChatThread ||
                     openChatWithUserId != null ||
@@ -952,6 +971,7 @@ fun LinkedInContent(
                     viewingProfileUserId != null
             showGrowthHubScreen = false
             showNotificationsInbox = false
+            showProfileViewersScreen = false
             showMessagesScreen = false
             isInChatThread = false
             openChatWithUserId = null
@@ -1419,6 +1439,7 @@ fun LinkedInContent(
                             connectionRequests = rewardsState.pendingConnectionRequests,
                             isLoadingConnectionRequests = rewardsState.isLoadingPendingConnectionRequests,
                             connectionRequestsError = rewardsState.pendingConnectionRequestsError,
+                            hasPendingGroupMessages = hasPendingGroupMessages,
                             showFullMoreScreen = showFullMoreScreen,
                             quickHubAnimationKey = moreHubAnimationKey,
                             onOpenFullMoreScreen = { showFullMoreScreen = true },
@@ -1446,6 +1467,8 @@ fun LinkedInContent(
                             onNavigateToOnboarding = { showOnboardingScreen = true },
                             onNavigateToSavedPosts = { showSavedPostsScreen = true },
                             onNavigateToGrowthHub = { showGrowthHubScreen = true },
+                            onNavigateToSkillPassport = { showSkillPassportScreen = true },
+                            onNavigateToSkillSwap = { showSkillSwapScreen = true },
                             onOpenAgent = openAgentPanel,
                             onNavigateToNotificationSettings = { showNotificationSettingsScreen = true },
                             onNavigateToPrivacySettings = { showPrivacySettingsScreen = true },
@@ -1565,7 +1588,7 @@ fun LinkedInContent(
                         },
                         backdrop = backdrop,
                         tabsCount = 5,
-                        useGlassEffects = true,
+                        useGlassEffects = isGlassTheme,
                         lightTheme = isLightTheme,
                         accentColor = accentColor,
                         modifier = Modifier
@@ -1630,11 +1653,28 @@ fun LinkedInContent(
                             showFullMoreScreen = false
                             selectedTab = 3
                         }) {
-                            FooterMoreIcon(
-                                color = contentColor,
-                                size = footerIconSize
-                            )
-                            BasicText("More", style = footerTextStyle)
+                            Box {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    FooterMoreIcon(
+                                        color = contentColor,
+                                        size = footerIconSize
+                                    )
+                                    BasicText("More", style = footerTextStyle)
+                                }
+
+                                if (hasPendingGroupMessages) {
+                                    Box(
+                                        Modifier
+                                            .align(Alignment.TopEnd)
+                                            .offset(x = 7.dp, y = (-3).dp)
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(accentColor)
+                                    )
+                                }
+                            }
                         }
                         LiquidBottomTab(onClick = { selectedTab = 4 }) {
                             Column(
@@ -2500,6 +2540,10 @@ fun LinkedInContent(
                         accentColor = accentColor,
                         onNavigateBack = { showNotificationsInbox = false },
                         onUnreadCountChanged = { notificationUnreadCount = it },
+                        onOpenProfileViews = {
+                            showNotificationsInbox = false
+                            showProfileViewersScreen = true
+                        },
                         onOpenProfile = { userId ->
                             showNotificationsInbox = false
                             viewingProfileUserId = userId
@@ -2529,6 +2573,32 @@ fun LinkedInContent(
                         onOpenGrowthHub = {
                             showNotificationsInbox = false
                             showGrowthHubScreen = true
+                        }
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = showProfileViewersScreen,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+            ) {
+                SectionOverlayContainer(
+                    backdrop = backdrop,
+                    themeMode = themeMode,
+                    glassBackgroundKey = glassBackgroundKey,
+                    accentColor = accentColor,
+                    glassMotionStyleKey = glassMotionStyleKey,
+                    reduceAnimations = reduceAnimations
+                ) {
+                    ProfileViewersScreen(
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onNavigateBack = { showProfileViewersScreen = false },
+                        onOpenProfile = { userId ->
+                            showProfileViewersScreen = false
+                            viewingProfileUserId = userId
                         }
                     )
                 }
@@ -2573,6 +2643,65 @@ fun LinkedInContent(
                         },
                         onOpenProfile = { userId ->
                             showGrowthHubScreen = false
+                            viewingProfileUserId = userId
+                        }
+                    )
+                }
+            }
+
+            // Skill Passport Overlay
+            AnimatedVisibility(
+                visible = showSkillPassportScreen,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+            ) {
+                SectionOverlayContainer(
+                    backdrop = backdrop,
+                    themeMode = themeMode,
+                    glassBackgroundKey = glassBackgroundKey,
+                    accentColor = accentColor,
+                    glassMotionStyleKey = glassMotionStyleKey,
+                    reduceAnimations = reduceAnimations
+                ) {
+                    SkillPassportScreen(
+                        userId = "me",
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onNavigateBack = { showSkillPassportScreen = false },
+                        onOpenSkillSwap = {
+                            showSkillPassportScreen = false
+                            showSkillSwapScreen = true
+                        },
+                        onOpenProfile = { userId ->
+                            showSkillPassportScreen = false
+                            viewingProfileUserId = userId
+                        }
+                    )
+                }
+            }
+
+            // Skill Swap Overlay
+            AnimatedVisibility(
+                visible = showSkillSwapScreen,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+            ) {
+                SectionOverlayContainer(
+                    backdrop = backdrop,
+                    themeMode = themeMode,
+                    glassBackgroundKey = glassBackgroundKey,
+                    accentColor = accentColor,
+                    glassMotionStyleKey = glassMotionStyleKey,
+                    reduceAnimations = reduceAnimations
+                ) {
+                    SkillSwapScreen(
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onNavigateBack = { showSkillSwapScreen = false },
+                        onOpenProfile = { userId ->
+                            showSkillSwapScreen = false
                             viewingProfileUserId = userId
                         }
                     )
@@ -4161,6 +4290,7 @@ private fun MoreScreen(
     connectionRequests: List<PendingConnectionRequest> = emptyList(),
     isLoadingConnectionRequests: Boolean = false,
     connectionRequestsError: String? = null,
+    hasPendingGroupMessages: Boolean = false,
     showFullMoreScreen: Boolean = false,
     quickHubAnimationKey: Int = 0,
     onOpenFullMoreScreen: () -> Unit = {},
@@ -4176,6 +4306,8 @@ private fun MoreScreen(
     onNavigateToOnboarding: () -> Unit = {},
     onNavigateToSavedPosts: () -> Unit = {},
     onNavigateToGrowthHub: () -> Unit = {},
+    onNavigateToSkillPassport: () -> Unit = {},
+    onNavigateToSkillSwap: () -> Unit = {},
     onOpenAgent: () -> Unit = {},
     onNavigateToNotificationSettings: () -> Unit = {},
     onNavigateToPrivacySettings: () -> Unit = {},
@@ -4226,7 +4358,24 @@ private fun MoreScreen(
                 title = "Groups",
                 label = "Groups",
                 icon = Icons.Outlined.Groups,
+                showIndicatorDot = hasPendingGroupMessages,
                 onClick = onNavigateToGroups
+            )
+        )
+        add(
+            MoreQuickAction(
+                title = "Skill Passport",
+                label = "Passport",
+                icon = Icons.Outlined.Verified,
+                onClick = onNavigateToSkillPassport
+            )
+        )
+        add(
+            MoreQuickAction(
+                title = "Skill Swap",
+                label = "Swap",
+                icon = Icons.Outlined.Groups,
+                onClick = onNavigateToSkillSwap
             )
         )
         add(
@@ -4281,6 +4430,7 @@ private fun MoreScreen(
             connectionRequests = connectionRequests,
             isLoadingConnectionRequests = isLoadingConnectionRequests,
             connectionRequestsError = connectionRequestsError,
+            hasPendingGroupMessages = hasPendingGroupMessages,
             hiddenQuickActionTitles = quickActions.mapTo(linkedSetOf()) { it.title },
             onOpenPremiumDetails = { showPremiumDetailsScreen = true },
             onNavigateToProfile = onNavigateToProfile,
@@ -4295,6 +4445,8 @@ private fun MoreScreen(
             onNavigateToOnboarding = onNavigateToOnboarding,
             onNavigateToSavedPosts = onNavigateToSavedPosts,
             onNavigateToGrowthHub = onNavigateToGrowthHub,
+            onNavigateToSkillPassport = onNavigateToSkillPassport,
+            onNavigateToSkillSwap = onNavigateToSkillSwap,
             onOpenAgent = onOpenAgent,
             onNavigateToNotificationSettings = onNavigateToNotificationSettings,
             onNavigateToPrivacySettings = onNavigateToPrivacySettings,
@@ -4329,6 +4481,7 @@ private fun MoreFullScreen(
     connectionRequests: List<PendingConnectionRequest> = emptyList(),
     isLoadingConnectionRequests: Boolean = false,
     connectionRequestsError: String? = null,
+    hasPendingGroupMessages: Boolean = false,
     hiddenQuickActionTitles: Set<String> = emptySet(),
     onOpenPremiumDetails: () -> Unit = {},
     onNavigateToProfile: () -> Unit = {},
@@ -4343,6 +4496,8 @@ private fun MoreFullScreen(
     onNavigateToOnboarding: () -> Unit = {},
     onNavigateToSavedPosts: () -> Unit = {},
     onNavigateToGrowthHub: () -> Unit = {},
+    onNavigateToSkillPassport: () -> Unit = {},
+    onNavigateToSkillSwap: () -> Unit = {},
     onOpenAgent: () -> Unit = {},
     onNavigateToNotificationSettings: () -> Unit = {},
     onNavigateToPrivacySettings: () -> Unit = {},
@@ -4359,20 +4514,20 @@ private fun MoreFullScreen(
     } else {
         "Start tracking"
     }
-    val isDarkSurface = contentColor == Color.White
+    val isDarkSurface = rememberMoreUsesDarkSurface(isGlassTheme = isGlassTheme)
     val pageBackground = Color.Transparent
     val sectionSurfaceColor = if (isDarkSurface) {
-        Color.White.copy(alpha = if (isGlassTheme) 0.09f else 0.06f)
+        Color.White.copy(alpha = if (isGlassTheme) 0.06f else 0.05f)
     } else {
         Color.White.copy(alpha = if (isGlassTheme) 0.22f else 0.68f)
     }
     val searchSurfaceColor = if (isDarkSurface) {
-        Color.White.copy(alpha = if (isGlassTheme) 0.12f else 0.08f)
+        Color.White.copy(alpha = if (isGlassTheme) 0.08f else 0.06f)
     } else {
         Color.White.copy(alpha = if (isGlassTheme) 0.26f else 0.58f)
     }
     val dividerColor = if (isDarkSurface) {
-        Color.White.copy(alpha = if (isGlassTheme) 0.14f else 0.08f)
+        Color.White.copy(alpha = if (isGlassTheme) 0.10f else 0.08f)
     } else {
         Color.Black.copy(alpha = if (isGlassTheme) 0.10f else 0.07f)
     }
@@ -4526,6 +4681,7 @@ private fun MoreFullScreen(
                         title = "Groups",
                         subtitle = "Connect with communities",
                         icon = Icons.Outlined.Groups,
+                        showIndicatorDot = hasPendingGroupMessages,
                         onClick = onNavigateToGroups
                     )
                 )
@@ -4820,15 +4976,15 @@ private fun MorePremiumDetailsScreen(
     onNavigateBack: () -> Unit,
     onOpenAgent: () -> Unit
 ) {
-    val isDarkSurface = contentColor == Color.White
+    val isDarkSurface = rememberMoreUsesDarkSurface(isGlassTheme = isGlassTheme)
     val pageBackground = Color.Transparent
     val sectionSurfaceColor = if (isDarkSurface) {
-        Color.White.copy(alpha = if (isGlassTheme) 0.09f else 0.06f)
+        Color.White.copy(alpha = if (isGlassTheme) 0.06f else 0.05f)
     } else {
         Color.White.copy(alpha = if (isGlassTheme) 0.22f else 0.68f)
     }
     val dividerColor = if (isDarkSurface) {
-        Color.White.copy(alpha = if (isGlassTheme) 0.14f else 0.08f)
+        Color.White.copy(alpha = if (isGlassTheme) 0.10f else 0.08f)
     } else {
         Color.Black.copy(alpha = if (isGlassTheme) 0.10f else 0.07f)
     }
@@ -5882,14 +6038,14 @@ private fun MoreQuickAccessHub(
     val scope = rememberCoroutineScope()
     var expanded by remember(animationKey) { mutableStateOf(false) }
     var isTransitioning by remember(animationKey) { mutableStateOf(false) }
-    val isDarkSurface = contentColor == Color.White
+    val isDarkSurface = rememberMoreUsesDarkSurface(isGlassTheme = isGlassTheme)
     val actionSurfaceColor = if (isDarkSurface) {
-        Color.White.copy(alpha = if (isGlassTheme) 0.12f else 0.08f)
+        Color.White.copy(alpha = if (isGlassTheme) 0.08f else 0.06f)
     } else {
         Color.White.copy(alpha = if (isGlassTheme) 0.22f else 0.72f)
     }
     val actionBorderColor = if (isDarkSurface) {
-        Color.White.copy(alpha = 0.18f)
+        Color.White.copy(alpha = if (isGlassTheme) 0.12f else 0.10f)
     } else {
         Color.Black.copy(alpha = 0.08f)
     }
@@ -6094,6 +6250,7 @@ private fun MoreQuickAccessHub(
                 contentColor = contentColor,
                 accentColor = accentColor,
                 isGlassTheme = isGlassTheme,
+                isDarkSurface = isDarkSurface,
                 onClick = {
                     launchHubAction(openFullMore = true) {
                         onOpenFullMoreScreen()
@@ -6209,9 +6366,10 @@ private fun MoreRadialCenterButton(
     contentColor: Color,
     accentColor: Color,
     isGlassTheme: Boolean,
+    isDarkSurface: Boolean,
     onClick: () -> Unit
 ) {
-    val centerSurfaceColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.28f else 0.18f)
+    val centerSurfaceColor = accentColor.copy(alpha = if (isDarkSurface) 0.20f else 0.18f)
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -7543,7 +7701,7 @@ private fun ConnectionRequestsScreen(
     onAccept: (String, String) -> Unit,
     onReject: (String, String) -> Unit
 ) {
-    val isDarkSurface = contentColor == Color.White
+    val isDarkSurface = rememberMoreUsesDarkSurface(isGlassTheme = isGlassTheme)
     val summarySurfaceColor = if (isDarkSurface) {
         accentColor.copy(alpha = 0.10f)
     } else {
@@ -7555,12 +7713,12 @@ private fun ConnectionRequestsScreen(
         accentColor.copy(alpha = 0.12f)
     }
     val sectionSurfaceColor = if (isDarkSurface) {
-        Color.White.copy(alpha = 0.09f)
+        Color.White.copy(alpha = 0.06f)
     } else {
         Color.White.copy(alpha = 0.22f)
     }
     val dividerColor = if (isDarkSurface) {
-        Color.White.copy(alpha = 0.14f)
+        Color.White.copy(alpha = 0.10f)
     } else {
         Color.Black.copy(alpha = 0.10f)
     }
@@ -7639,14 +7797,14 @@ private fun ProfileCustomizationsScreen(
     currentUser: com.kyant.backdrop.catalog.network.models.User? = null,
     onNavigateBack: () -> Unit
 ) {
-    val isDarkSurface = contentColor == Color.White
+    val isDarkSurface = rememberMoreUsesDarkSurface(isGlassTheme = isGlassTheme)
     val sectionSurfaceColor = if (isDarkSurface) {
-        Color.White.copy(alpha = 0.09f)
+        Color.White.copy(alpha = 0.06f)
     } else {
         Color.White.copy(alpha = 0.22f)
     }
     val dividerColor = if (isDarkSurface) {
-        Color.White.copy(alpha = 0.14f)
+        Color.White.copy(alpha = 0.10f)
     } else {
         Color.Black.copy(alpha = 0.10f)
     }
@@ -7774,6 +7932,29 @@ private fun MoreWorkspaceCard(
             }
         }
     }
+}
+
+@Composable
+private fun rememberMoreUsesDarkSurface(isGlassTheme: Boolean): Boolean {
+    val appearance = currentVormexAppearance()
+    if (appearance.isDarkTheme) return true
+    if (!isGlassTheme) return false
+
+    val context = LocalContext.current
+    val glassBackgroundKey by SettingsPreferences.glassBackgroundPreset(context)
+        .collectAsState(initial = DefaultGlassBackgroundPresetKey)
+
+    return remember(glassBackgroundKey) {
+        isDarkGlassBackgroundPreset(glassBackgroundKey)
+    }
+}
+
+private fun isDarkGlassBackgroundPreset(key: String): Boolean {
+    val averageLuminance = glassBackgroundPreset(key)
+        .baseColors
+        .map { it.luminance() }
+        .average()
+    return averageLuminance < 0.32
 }
 
 @Composable
@@ -9229,7 +9410,7 @@ private fun ApiPostCard(
                             ApiMetricChip(
                                 label = relativeTimeLabel,
                                 contentColor = subtleTextColor,
-                                containerColor = metricChipColor
+                                containerColor = Color.Transparent
                             )
                             when (post.visibility) {
                                 "CONNECTIONS" -> ApiMetricChip(
@@ -9254,8 +9435,6 @@ private fun ApiPostCard(
                         .onGloballyPositioned { coordinates ->
                             menuAnchorBounds = coordinates.boundsInWindow()
                         }
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(metricChipColor)
                         .clickable { showMenu = true }
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     contentAlignment = Alignment.Center
@@ -9460,7 +9639,8 @@ private fun ApiPostCard(
                                 )
                             },
                             label = "${displayLikesCount} like${if (displayLikesCount == 1) "" else "s"}",
-                            contentColor = contentColor
+                            contentColor = contentColor,
+                            containerColor = Color.Transparent
                         )
                     }
                 }
@@ -9587,7 +9767,6 @@ private fun ApiMetricChip(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
             .background(containerColor)
-            .border(1.dp, borderColor, RoundedCornerShape(999.dp))
             .padding(horizontal = 10.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(5.dp),
         verticalAlignment = Alignment.CenterVertically

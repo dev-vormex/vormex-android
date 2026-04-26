@@ -77,7 +77,7 @@ fun LiquidBottomTabs(
         else Color(0xFF0091FF)
     val containerColor = if (useGlassEffects) {
         if (isLightTheme) Color(0xFFFAFAFA).copy(0.4f)
-        else Color(0xFF121212).copy(0.4f)
+        else Color(0xFF081019).copy(alpha = 0.52f)
     } else {
         if (isLightTheme) Color.White.copy(alpha = 0.96f)
         else Color(0xFF0F1724).copy(alpha = 0.96f)
@@ -291,10 +291,14 @@ fun LiquidBottomTabs(
                             val progress = dampedDragAnimation.pressProgress
                             drawRect(
                                 if (isLightTheme) Color.Black.copy(0.1f)
-                                else Color.White.copy(0.1f),
+                                else Color.White.copy(alpha = 0.05f),
                                 alpha = 1f - progress
                             )
-                            drawRect(Color.Black.copy(alpha = 0.03f * progress))
+                            drawRect(
+                                Color.Black.copy(
+                                    alpha = if (isLightTheme) 0.03f * progress else 0.06f * progress
+                                )
+                            )
                         }
                     )
                     .height(56f.dp)
