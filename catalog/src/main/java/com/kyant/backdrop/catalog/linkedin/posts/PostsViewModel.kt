@@ -7,9 +7,13 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.kyant.backdrop.catalog.data.VormexPerformancePolicy
+import com.kyant.backdrop.catalog.linkedin.MentionSearchPolicy
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.PostsApiService
 import com.kyant.backdrop.catalog.network.models.*
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,23 +30,23 @@ data class PostsUiState(
     val feedError: String? = null,
     val nextCursor: String? = null,
     val hasMore: Boolean = false,
-    
+
     // Current user
     val currentUserId: String? = null,
     val currentUserName: String? = null,
     val currentUserAvatar: String? = null,
-    
+
     // Create post state
     val isCreatingPost: Boolean = false,
     val createPostError: String? = null,
     val showCreatePostModal: Boolean = false,
     val selectedPostType: PostType = PostType.TEXT,
-    
+
     // Single post detail
     val selectedPost: FullPost? = null,
     val isLoadingPost: Boolean = false,
     val postError: String? = null,
-    
+
     // Comments state
     val comments: List<FullComment> = emptyList(),
     val isLoadingComments: Boolean = false,
@@ -53,39 +57,40 @@ data class PostsUiState(
     val isSubmittingComment: Boolean = false,
     val showCommentsSheet: Boolean = false,
     val selectedPostIdForComments: String? = null,
-    
+
     // Edit post state
     val isEditingPost: Boolean = false,
     val editPostError: String? = null,
     val postBeingEdited: FullPost? = null,
-    
+
     // Delete post state
     val isDeletingPost: Boolean = false,
     val showDeleteConfirmation: Boolean = false,
     val postIdToDelete: String? = null,
-    
+
     // Likes modal
     val showLikesModal: Boolean = false,
     val likesList: List<LikeUser> = emptyList(),
     val isLoadingLikes: Boolean = false,
-    
+
     // Report modal
     val showReportModal: Boolean = false,
     val reportReasons: List<ReportReason> = emptyList(),
     val postIdToReport: String? = null,
     val isReporting: Boolean = false,
-    
+
     // Share modal
     val showShareModal: Boolean = false,
     val postToShare: FullPost? = null,
-    
+
     // Mention search
     val mentionSearchResults: List<MentionUser> = emptyList(),
     val isSearchingMentions: Boolean = false,
-    
+
     // Saved posts
     val savedPosts: List<FullPost> = emptyList(),
     val isLoadingSaved: Boolean = false,
+    val isLoadingMoreSaved: Boolean = false,
     val savedNextCursor: String? = null,
     val hasSavedMore: Boolean = false
 )
@@ -94,16 +99,22 @@ data class PostsUiState(
  * ViewModel for Posts feature - handles all post-related operations
  */
 class PostsViewModel(private val context: Context) : ViewModel() {
-    
+
     private val _uiState = MutableStateFlow(PostsUiState())
     val uiState: StateFlow<PostsUiState> = _uiState.asStateFlow()
-    
+    private val likingPostIds = mutableSetOf<String>()
+    private val savingPostIds = mutableSetOf<String>()
+    private val sharingPostIds = mutableSetOf<String>()
+    private val submittingCommentKeys = mutableSetOf<String>()
+    private val likingCommentIds = mutableSetOf<String>()
+    private var mentionSearchJob: Job? = null
+
     init {
         loadCurrentUser()
     }
-    
+
     // ==================== User Info ====================
-    
+
     private fun loadCurrentUser() {
         viewModelScope.launch {
             val userId = ApiClient.getCurrentUserId(context)
@@ -117,19 +128,19 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     // ==================== Feed Operations ====================
-    
+
     fun loadFeed(refresh: Boolean = false) {
         if (_uiState.value.isLoading) return
-        
+
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 isLoading = true,
                 feedError = null,
                 posts = if (refresh) emptyList() else _uiState.value.posts
             )
-            
+
             PostsApiService.getFeed(context)
                 .onSuccess { response ->
                     _uiState.value = _uiState.value.copy(
@@ -147,14 +158,14 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     fun loadMorePosts() {
         val cursor = _uiState.value.nextCursor ?: return
         if (_uiState.value.isLoadingMore || !_uiState.value.hasMore) return
-        
+
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoadingMore = true)
-            
+
             PostsApiService.getFeed(context, cursor)
                 .onSuccess { response ->
                     _uiState.value = _uiState.value.copy(
@@ -169,9 +180,9 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     // ==================== Create Post Operations ====================
-    
+
     fun showCreatePostModal(postType: PostType = PostType.TEXT) {
         _uiState.value = _uiState.value.copy(
             showCreatePostModal = true,
@@ -179,18 +190,18 @@ class PostsViewModel(private val context: Context) : ViewModel() {
             createPostError = null
         )
     }
-    
+
     fun hideCreatePostModal() {
         _uiState.value = _uiState.value.copy(
             showCreatePostModal = false,
             createPostError = null
         )
     }
-    
+
     fun setSelectedPostType(type: PostType) {
         _uiState.value = _uiState.value.copy(selectedPostType = type)
     }
-    
+
     fun createTextPost(
         content: String,
         visibility: String = "PUBLIC",
@@ -201,10 +212,10 @@ class PostsViewModel(private val context: Context) : ViewModel() {
             _uiState.value = _uiState.value.copy(createPostError = "Content is required")
             return
         }
-        
+
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isCreatingPost = true, createPostError = null)
-            
+
             PostsApiService.createTextPost(context, content, visibility, mentions)
                 .onSuccess { post ->
                     _uiState.value = _uiState.value.copy(
@@ -222,7 +233,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     fun createImagePost(
         content: String?,
         visibility: String = "PUBLIC",
@@ -234,10 +245,10 @@ class PostsViewModel(private val context: Context) : ViewModel() {
             _uiState.value = _uiState.value.copy(createPostError = "At least one image is required")
             return
         }
-        
+
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isCreatingPost = true, createPostError = null)
-            
+
             PostsApiService.createImagePost(context, content, visibility, images, mentions)
                 .onSuccess { post ->
                     _uiState.value = _uiState.value.copy(
@@ -255,7 +266,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     fun createVideoPost(
         content: String?,
         visibility: String = "PUBLIC",
@@ -266,7 +277,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
     ) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isCreatingPost = true, createPostError = null)
-            
+
             PostsApiService.createVideoPost(context, content, visibility, videoBytes, videoFilename, mentions)
                 .onSuccess { post ->
                     _uiState.value = _uiState.value.copy(
@@ -284,7 +295,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     fun createLinkPost(
         linkUrl: String,
         content: String?,
@@ -296,10 +307,10 @@ class PostsViewModel(private val context: Context) : ViewModel() {
             _uiState.value = _uiState.value.copy(createPostError = "Link URL is required")
             return
         }
-        
+
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isCreatingPost = true, createPostError = null)
-            
+
             PostsApiService.createLinkPost(context, linkUrl, content, visibility, mentions)
                 .onSuccess { post ->
                     _uiState.value = _uiState.value.copy(
@@ -317,7 +328,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     fun createPollPost(
         pollOptions: List<String>,
         pollDurationHours: Int = 24,
@@ -331,10 +342,10 @@ class PostsViewModel(private val context: Context) : ViewModel() {
             _uiState.value = _uiState.value.copy(createPostError = "At least 2 poll options are required")
             return
         }
-        
+
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isCreatingPost = true, createPostError = null)
-            
+
             PostsApiService.createPollPost(context, pollOptions, pollDurationHours, content, visibility, showResultsBeforeVote, mentions)
                 .onSuccess { post ->
                     _uiState.value = _uiState.value.copy(
@@ -352,7 +363,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     fun createArticlePost(
         articleTitle: String,
         content: String?,
@@ -366,10 +377,10 @@ class PostsViewModel(private val context: Context) : ViewModel() {
             _uiState.value = _uiState.value.copy(createPostError = "Article title is required")
             return
         }
-        
+
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isCreatingPost = true, createPostError = null)
-            
+
             PostsApiService.createArticlePost(context, articleTitle, content, visibility, coverImage, articleTags, mentions)
                 .onSuccess { post ->
                     _uiState.value = _uiState.value.copy(
@@ -387,7 +398,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     fun createCelebrationPost(
         celebrationType: String,
         content: String?,
@@ -397,7 +408,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
     ) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isCreatingPost = true, createPostError = null)
-            
+
             PostsApiService.createCelebrationPost(context, celebrationType, content, visibility, mentions, null)
                 .onSuccess { post ->
                     _uiState.value = _uiState.value.copy(
@@ -415,9 +426,9 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     // ==================== Edit Post Operations ====================
-    
+
     fun startEditPost(post: FullPost) {
         _uiState.value = _uiState.value.copy(
             postBeingEdited = post,
@@ -425,14 +436,14 @@ class PostsViewModel(private val context: Context) : ViewModel() {
             editPostError = null
         )
     }
-    
+
     fun cancelEditPost() {
         _uiState.value = _uiState.value.copy(
             postBeingEdited = null,
             editPostError = null
         )
     }
-    
+
     fun updatePost(
         postId: String,
         content: String?,
@@ -441,7 +452,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
     ) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isEditingPost = true, editPostError = null)
-            
+
             PostsApiService.updatePost(context, postId, content, visibility)
                 .onSuccess { updatedPost ->
                     val updatedPosts = _uiState.value.posts.map {
@@ -462,27 +473,27 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     // ==================== Delete Post Operations ====================
-    
+
     fun showDeleteConfirmation(postId: String) {
         _uiState.value = _uiState.value.copy(
             showDeleteConfirmation = true,
             postIdToDelete = postId
         )
     }
-    
+
     fun hideDeleteConfirmation() {
         _uiState.value = _uiState.value.copy(
             showDeleteConfirmation = false,
             postIdToDelete = null
         )
     }
-    
+
     fun deletePost(postId: String, onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isDeletingPost = true)
-            
+
             PostsApiService.deletePost(context, postId)
                 .onSuccess {
                     val updatedPosts = _uiState.value.posts.filter { it.id != postId }
@@ -499,71 +510,101 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     // ==================== Engagement Operations ====================
-    
+
     fun toggleLike(postId: String) {
+        if (!likingPostIds.add(postId)) return
+
         viewModelScope.launch {
-            PostsApiService.toggleLike(context, postId)
-                .onSuccess { response ->
-                    val updatedPosts = _uiState.value.posts.map { post ->
-                        if (post.id == postId) {
-                            post.copy(
-                                isLiked = response.liked,
-                                likesCount = response.likesCount
-                            )
-                        } else {
-                            post
-                        }
-                    }
-                    _uiState.value = _uiState.value.copy(posts = updatedPosts)
-                    
-                    // Also update selected post if viewing
-                    _uiState.value.selectedPost?.let { selected ->
-                        if (selected.id == postId) {
-                            _uiState.value = _uiState.value.copy(
-                                selectedPost = selected.copy(
+            try {
+                PostsApiService.toggleLike(context, postId)
+                    .onSuccess { response ->
+                        val updatedPosts = _uiState.value.posts.map { post ->
+                            if (post.id == postId) {
+                                post.copy(
                                     isLiked = response.liked,
                                     likesCount = response.likesCount
                                 )
-                            )
+                            } else {
+                                post
+                            }
+                        }
+                        _uiState.value = _uiState.value.copy(posts = updatedPosts)
+
+                        // Also update selected post if viewing
+                        _uiState.value.selectedPost?.let { selected ->
+                            if (selected.id == postId) {
+                                _uiState.value = _uiState.value.copy(
+                                    selectedPost = selected.copy(
+                                        isLiked = response.liked,
+                                        likesCount = response.likesCount
+                                    )
+                                )
+                            }
                         }
                     }
-                }
+            } finally {
+                likingPostIds.remove(postId)
+            }
         }
     }
-    
+
     fun toggleSave(postId: String) {
+        if (!savingPostIds.add(postId)) return
+
         viewModelScope.launch {
-            PostsApiService.toggleSave(context, postId)
-                .onSuccess { response ->
-                    val updatedPosts = _uiState.value.posts.map { post ->
-                        if (post.id == postId) {
-                            post.copy(
-                                isSaved = response.saved,
-                                savesCount = response.savesCount
-                            )
-                        } else {
-                            post
-                        }
-                    }
-                    _uiState.value = _uiState.value.copy(posts = updatedPosts)
-                    
-                    // Also update selected post if viewing
-                    _uiState.value.selectedPost?.let { selected ->
-                        if (selected.id == postId) {
-                            _uiState.value = _uiState.value.copy(
-                                selectedPost = selected.copy(
+            try {
+                PostsApiService.toggleSave(context, postId)
+                    .onSuccess { response ->
+                        val updatedPosts = _uiState.value.posts.map { post ->
+                            if (post.id == postId) {
+                                post.copy(
                                     isSaved = response.saved,
                                     savesCount = response.savesCount
                                 )
-                            )
+                            } else {
+                                post
+                            }
+                        }
+                        val updatedSavedPosts = _uiState.value.savedPosts
+                            .mapNotNull { post ->
+                                if (post.id == postId) {
+                                    if (response.saved) {
+                                        post.copy(
+                                            isSaved = true,
+                                            savesCount = response.savesCount
+                                        )
+                                    } else {
+                                        null
+                                    }
+                                } else {
+                                    post
+                                }
+                            }
+                        _uiState.value = _uiState.value.copy(
+                            posts = updatedPosts,
+                            savedPosts = updatedSavedPosts
+                        )
+
+                        // Also update selected post if viewing
+                        _uiState.value.selectedPost?.let { selected ->
+                            if (selected.id == postId) {
+                                _uiState.value = _uiState.value.copy(
+                                    selectedPost = selected.copy(
+                                        isSaved = response.saved,
+                                        savesCount = response.savesCount
+                                    )
+                                )
+                            }
                         }
                     }
-                }
+            } finally {
+                savingPostIds.remove(postId)
+            }
         }
     }
-    
+
     fun votePoll(postId: String, optionId: String) {
         viewModelScope.launch {
             PostsApiService.votePoll(context, postId, optionId)
@@ -584,16 +625,16 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     // ==================== Likes Modal ====================
-    
+
     fun showLikesModal(postId: String) {
         _uiState.value = _uiState.value.copy(
             showLikesModal = true,
             isLoadingLikes = true,
             likesList = emptyList()
         )
-        
+
         viewModelScope.launch {
             PostsApiService.getLikes(context, postId)
                 .onSuccess { response ->
@@ -607,16 +648,16 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     fun hideLikesModal() {
         _uiState.value = _uiState.value.copy(
             showLikesModal = false,
             likesList = emptyList()
         )
     }
-    
+
     // ==================== Comments Operations ====================
-    
+
     fun showCommentsSheet(postId: String) {
         _uiState.value = _uiState.value.copy(
             showCommentsSheet = true,
@@ -627,7 +668,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
         )
         loadComments(postId)
     }
-    
+
     fun hideCommentsSheet() {
         _uiState.value = _uiState.value.copy(
             showCommentsSheet = false,
@@ -636,7 +677,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
             commentsError = null
         )
     }
-    
+
     private fun loadComments(postId: String, page: Int = 1) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
@@ -644,7 +685,7 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 isLoadingMoreComments = page > 1,
                 commentsError = null
             )
-            
+
             PostsApiService.getComments(context, postId, page = page)
                 .onSuccess { response ->
                     val newComments = if (page == 1) {
@@ -669,61 +710,74 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     fun loadMoreComments() {
         val postId = _uiState.value.selectedPostIdForComments ?: return
         if (_uiState.value.isLoadingMoreComments || !_uiState.value.hasMoreComments) return
         loadComments(postId, _uiState.value.commentsPage + 1)
     }
-    
+
     fun submitComment(
         content: String,
         parentId: String? = null,
         mentions: List<String>? = null
     ) {
         val postId = _uiState.value.selectedPostIdForComments ?: return
-        if (content.isBlank()) return
-        
+        val trimmedContent = content.trim()
+        if (trimmedContent.isBlank()) return
+
+        val submissionKey = listOf(postId, parentId.orEmpty(), trimmedContent).joinToString("|")
+        if (!submittingCommentKeys.add(submissionKey)) return
+
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isSubmittingComment = true)
-            
-            PostsApiService.createComment(context, postId, content, parentId, mentions)
-                .onSuccess { comment ->
-                    val updatedComments = listOf(comment) + _uiState.value.comments
-                    val updatedPosts = _uiState.value.posts.map { post ->
-                        if (post.id == postId) {
-                            post.copy(commentsCount = post.commentsCount + 1)
-                        } else {
-                            post
+            try {
+                _uiState.value = _uiState.value.copy(isSubmittingComment = true)
+
+                PostsApiService.createComment(context, postId, trimmedContent, parentId, mentions)
+                    .onSuccess { comment ->
+                        val updatedComments = listOf(comment) + _uiState.value.comments
+                        val updatedPosts = _uiState.value.posts.map { post ->
+                            if (post.id == postId) {
+                                post.copy(commentsCount = post.commentsCount + 1)
+                            } else {
+                                post
+                            }
                         }
+                        _uiState.value = _uiState.value.copy(
+                            comments = updatedComments,
+                            posts = updatedPosts,
+                            isSubmittingComment = false
+                        )
                     }
-                    _uiState.value = _uiState.value.copy(
-                        comments = updatedComments,
-                        posts = updatedPosts,
-                        isSubmittingComment = false
-                    )
-                }
-                .onFailure {
-                    _uiState.value = _uiState.value.copy(
-                        isSubmittingComment = false,
-                        commentsError = "Failed to post comment"
-                    )
-                }
+                    .onFailure {
+                        _uiState.value = _uiState.value.copy(
+                            isSubmittingComment = false,
+                            commentsError = "Failed to post comment"
+                        )
+                    }
+            } finally {
+                submittingCommentKeys.remove(submissionKey)
+            }
         }
     }
-    
+
     fun toggleCommentLike(commentId: String) {
         val postId = _uiState.value.selectedPostIdForComments ?: return
-        
+        if (!likingCommentIds.add(commentId)) return
+
         viewModelScope.launch {
-            PostsApiService.toggleCommentLike(context, postId, commentId)
-                .onSuccess { response ->
-                    val updatedComments = updateCommentLike(_uiState.value.comments, commentId, response)
-                    _uiState.value = _uiState.value.copy(comments = updatedComments)
-                }
+            try {
+                PostsApiService.toggleCommentLike(context, postId, commentId)
+                    .onSuccess { response ->
+                        val updatedComments = updateCommentLike(_uiState.value.comments, commentId, response)
+                        _uiState.value = _uiState.value.copy(comments = updatedComments)
+                    }
+            } finally {
+                likingCommentIds.remove(commentId)
+            }
         }
     }
-    
+
     private fun updateCommentLike(
         comments: List<FullComment>,
         commentId: String,
@@ -742,10 +796,10 @@ class PostsViewModel(private val context: Context) : ViewModel() {
             }
         }
     }
-    
+
     fun deleteComment(commentId: String) {
         val postId = _uiState.value.selectedPostIdForComments ?: return
-        
+
         viewModelScope.launch {
             PostsApiService.deleteComment(context, postId, commentId)
                 .onSuccess {
@@ -764,59 +818,65 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     // ==================== Share Operations ====================
-    
+
     fun showShareModal(post: FullPost) {
         _uiState.value = _uiState.value.copy(
             showShareModal = true,
             postToShare = post
         )
     }
-    
+
     fun hideShareModal() {
         _uiState.value = _uiState.value.copy(
             showShareModal = false,
             postToShare = null
         )
     }
-    
+
     fun sharePost(postId: String, activity: Activity) {
+        if (!sharingPostIds.add(postId)) return
+
         viewModelScope.launch {
-            PostsApiService.sharePost(context, postId)
-                .onSuccess { response ->
-                    // Update share count
-                    val updatedPosts = _uiState.value.posts.map { post ->
-                        if (post.id == postId) {
-                            post.copy(sharesCount = response.sharesCount)
-                        } else {
-                            post
+            try {
+                PostsApiService.sharePost(context, postId)
+                    .onSuccess { response ->
+                        // Update share count
+                        val updatedPosts = _uiState.value.posts.map { post ->
+                            if (post.id == postId) {
+                                post.copy(sharesCount = response.sharesCount)
+                            } else {
+                                post
+                            }
                         }
+                        _uiState.value = _uiState.value.copy(
+                            posts = updatedPosts,
+                            showShareModal = false
+                        )
+
+                        // Launch native share dialog
+                        val shareIntent = Intent().apply {
+                            action = Intent.ACTION_SEND
+                            putExtra(Intent.EXTRA_TEXT, "Check out this post on Vormex!")
+                            type = "text/plain"
+                        }
+                        activity.startActivity(Intent.createChooser(shareIntent, "Share Post"))
                     }
-                    _uiState.value = _uiState.value.copy(
-                        posts = updatedPosts,
-                        showShareModal = false
-                    )
-                    
-                    // Launch native share dialog
-                    val shareIntent = Intent().apply {
-                        action = Intent.ACTION_SEND
-                        putExtra(Intent.EXTRA_TEXT, "Check out this post on Vormex!")
-                        type = "text/plain"
-                    }
-                    activity.startActivity(Intent.createChooser(shareIntent, "Share Post"))
-                }
+            } finally {
+                sharingPostIds.remove(postId)
+            }
         }
     }
-    
+
     // ==================== Report Operations ====================
-    
+
     fun showReportModal(postId: String) {
         _uiState.value = _uiState.value.copy(
             showReportModal = true,
             postIdToReport = postId
         )
-        
+
         // Load report reasons if not already loaded
         if (_uiState.value.reportReasons.isEmpty()) {
             viewModelScope.launch {
@@ -827,20 +887,20 @@ class PostsViewModel(private val context: Context) : ViewModel() {
             }
         }
     }
-    
+
     fun hideReportModal() {
         _uiState.value = _uiState.value.copy(
             showReportModal = false,
             postIdToReport = null
         )
     }
-    
+
     fun reportPost(reason: String, description: String? = null, onSuccess: () -> Unit = {}) {
         val postId = _uiState.value.postIdToReport ?: return
-        
+
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isReporting = true)
-            
+
             PostsApiService.reportPost(context, postId, reason, description)
                 .onSuccess {
                     _uiState.value = _uiState.value.copy(
@@ -855,19 +915,28 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     // ==================== Mention Search ====================
-    
+
     fun searchMentions(query: String) {
-        if (query.length < 2) {
-            _uiState.value = _uiState.value.copy(mentionSearchResults = emptyList())
+        val normalizedQuery = MentionSearchPolicy.normalize(query)
+        mentionSearchJob?.cancel()
+        if (!MentionSearchPolicy.shouldSearch(normalizedQuery)) {
+            _uiState.value = _uiState.value.copy(
+                mentionSearchResults = emptyList(),
+                isSearchingMentions = false
+            )
             return
         }
-        
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isSearchingMentions = true)
-            
-            PostsApiService.searchMentions(context, query)
+
+        _uiState.value = _uiState.value.copy(
+            mentionSearchResults = emptyList(),
+            isSearchingMentions = true
+        )
+        mentionSearchJob = viewModelScope.launch {
+            delay(VormexPerformancePolicy.SearchDebounceMillis)
+
+            PostsApiService.searchMentions(context, normalizedQuery)
                 .onSuccess { response ->
                     _uiState.value = _uiState.value.copy(
                         mentionSearchResults = response.users,
@@ -879,17 +948,22 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     fun clearMentionSearch() {
-        _uiState.value = _uiState.value.copy(mentionSearchResults = emptyList())
+        mentionSearchJob?.cancel()
+        mentionSearchJob = null
+        _uiState.value = _uiState.value.copy(
+            mentionSearchResults = emptyList(),
+            isSearchingMentions = false
+        )
     }
-    
+
     // ==================== Single Post Operations ====================
-    
+
     fun loadPost(postId: String) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoadingPost = true, postError = null)
-            
+
             PostsApiService.getPost(context, postId)
                 .onSuccess { post ->
                     _uiState.value = _uiState.value.copy(
@@ -905,60 +979,81 @@ class PostsViewModel(private val context: Context) : ViewModel() {
                 }
         }
     }
-    
+
     fun clearSelectedPost() {
         _uiState.value = _uiState.value.copy(
             selectedPost = null,
             postError = null
         )
     }
-    
+
     // ==================== Saved Posts ====================
-    
+
     fun loadSavedPosts(refresh: Boolean = false) {
-        if (_uiState.value.isLoadingSaved) return
-        
+        val currentState = _uiState.value
+        if (refresh) {
+            if (currentState.isLoadingSaved) return
+        } else {
+            if (
+                currentState.isLoadingSaved ||
+                currentState.isLoadingMoreSaved ||
+                !currentState.hasSavedMore ||
+                currentState.savedNextCursor == null
+            ) return
+        }
+
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
-                isLoadingSaved = true,
+                isLoadingSaved = refresh,
+                isLoadingMoreSaved = !refresh,
                 savedPosts = if (refresh) emptyList() else _uiState.value.savedPosts
             )
-            
-            PostsApiService.getSavedPosts(context)
+
+            PostsApiService.getSavedPosts(
+                context = context,
+                cursor = if (refresh) null else currentState.savedNextCursor,
+                limit = 20
+            )
                 .onSuccess { response ->
+                    val existingPosts = if (refresh) emptyList() else _uiState.value.savedPosts
+                    val mergedPosts = (existingPosts + response.posts).distinctBy { it.id }
                     _uiState.value = _uiState.value.copy(
-                        savedPosts = response.posts,
+                        savedPosts = mergedPosts,
                         savedNextCursor = response.nextCursor,
                         hasSavedMore = response.hasMore,
-                        isLoadingSaved = false
+                        isLoadingSaved = false,
+                        isLoadingMoreSaved = false
                     )
                 }
                 .onFailure {
-                    _uiState.value = _uiState.value.copy(isLoadingSaved = false)
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingSaved = false,
+                        isLoadingMoreSaved = false
+                    )
                 }
         }
     }
-    
+
     // ==================== Error Handling ====================
-    
+
     fun clearFeedError() {
         _uiState.value = _uiState.value.copy(feedError = null)
     }
-    
+
     fun clearCreatePostError() {
         _uiState.value = _uiState.value.copy(createPostError = null)
     }
-    
+
     fun clearEditPostError() {
         _uiState.value = _uiState.value.copy(editPostError = null)
     }
-    
+
     fun clearCommentsError() {
         _uiState.value = _uiState.value.copy(commentsError = null)
     }
-    
+
     // ==================== Factory ====================
-    
+
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {

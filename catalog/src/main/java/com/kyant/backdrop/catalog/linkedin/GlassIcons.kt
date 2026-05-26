@@ -22,7 +22,7 @@ import androidx.compose.ui.unit.dp
  * Custom SVG-style icons for the glass theme
  */
 
-// Three vertical dots menu icon
+// Three horizontal dots menu icon
 @Composable
 fun MenuDotsIcon(
     color: Color,
@@ -30,30 +30,18 @@ fun MenuDotsIcon(
     size: Dp = 20.dp
 ) {
     Canvas(modifier = modifier.size(size)) {
-        val dotRadius = size.toPx() / 10f
-        val spacing = size.toPx() / 3f
-        val centerX = size.toPx() / 2f
-        
-        // Three dots vertically
-        drawCircle(
-            color = color,
-            radius = dotRadius,
-            center = Offset(centerX, spacing)
-        )
-        drawCircle(
-            color = color,
-            radius = dotRadius,
-            center = Offset(centerX, spacing * 2f)
-        )
-        drawCircle(
-            color = color,
-            radius = dotRadius,
-            center = Offset(centerX, spacing * 3f - dotRadius)
-        )
+        val s = size.toPx()
+        val dotRadius = s / 10f
+        val centerY = s / 2f
+
+        // Three dots horizontally
+        drawCircle(color = color, radius = dotRadius, center = Offset(s * 0.22f, centerY))
+        drawCircle(color = color, radius = dotRadius, center = Offset(s * 0.5f, centerY))
+        drawCircle(color = color, radius = dotRadius, center = Offset(s * 0.78f, centerY))
     }
 }
 
-// Like/Thumb up icon
+// Like/Heart icon
 @Composable
 fun LikeIcon(
     color: Color,
@@ -63,26 +51,17 @@ fun LikeIcon(
 ) {
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
-        val strokeWidth = s / 12f
-        
+        val strokeWidth = s / 11f
+
         val path = Path().apply {
-            // Thumb shape
-            moveTo(s * 0.25f, s * 0.45f)
-            lineTo(s * 0.25f, s * 0.9f)
-            lineTo(s * 0.4f, s * 0.9f)
-            lineTo(s * 0.4f, s * 0.45f)
+            moveTo(s * 0.5f, s * 0.88f)
+            cubicTo(s * 0.05f, s * 0.62f, s * 0.05f, s * 0.18f, s * 0.3f, s * 0.18f)
+            cubicTo(s * 0.42f, s * 0.18f, s * 0.48f, s * 0.28f, s * 0.5f, s * 0.32f)
+            cubicTo(s * 0.52f, s * 0.28f, s * 0.58f, s * 0.18f, s * 0.7f, s * 0.18f)
+            cubicTo(s * 0.95f, s * 0.18f, s * 0.95f, s * 0.62f, s * 0.5f, s * 0.88f)
             close()
-            
-            // Hand part
-            moveTo(s * 0.4f, s * 0.5f)
-            lineTo(s * 0.75f, s * 0.5f)
-            quadraticTo(s * 0.9f, s * 0.5f, s * 0.9f, s * 0.4f)
-            quadraticTo(s * 0.9f, s * 0.3f, s * 0.75f, s * 0.3f)
-            lineTo(s * 0.6f, s * 0.3f)
-            quadraticTo(s * 0.7f, s * 0.15f, s * 0.55f, s * 0.1f)
-            quadraticTo(s * 0.4f, s * 0.12f, s * 0.4f, s * 0.4f)
         }
-        
+
         if (filled) {
             drawPath(path, color)
         } else {
@@ -102,7 +81,7 @@ fun HeartIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         val path = Path().apply {
             moveTo(s * 0.5f, s * 0.85f)
             // Left curve
@@ -119,7 +98,7 @@ fun HeartIcon(
             )
             close()
         }
-        
+
         if (filled) {
             drawPath(path, color)
         } else {
@@ -128,7 +107,7 @@ fun HeartIcon(
     }
 }
 
-// Comment/Chat bubble icon
+// Comment/Speech bubble icon — minimal, no dots
 @Composable
 fun CommentIcon(
     color: Color,
@@ -137,33 +116,21 @@ fun CommentIcon(
 ) {
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
-        val strokeWidth = s / 12f
-        
+        val strokeWidth = s / 11f
+
         val path = Path().apply {
-            // Rounded rectangle bubble
-            moveTo(s * 0.15f, s * 0.2f)
-            lineTo(s * 0.85f, s * 0.2f)
-            quadraticTo(s * 0.95f, s * 0.2f, s * 0.95f, s * 0.3f)
-            lineTo(s * 0.95f, s * 0.55f)
-            quadraticTo(s * 0.95f, s * 0.65f, s * 0.85f, s * 0.65f)
-            lineTo(s * 0.4f, s * 0.65f)
-            lineTo(s * 0.2f, s * 0.85f)
-            lineTo(s * 0.25f, s * 0.65f)
-            lineTo(s * 0.15f, s * 0.65f)
-            quadraticTo(s * 0.05f, s * 0.65f, s * 0.05f, s * 0.55f)
-            lineTo(s * 0.05f, s * 0.3f)
-            quadraticTo(s * 0.05f, s * 0.2f, s * 0.15f, s * 0.2f)
+            // Rounded bubble with tail
+            moveTo(s * 0.5f, s * 0.12f)
+            cubicTo(s * 0.16f, s * 0.12f, s * 0.08f, s * 0.3f, s * 0.08f, s * 0.42f)
+            cubicTo(s * 0.08f, s * 0.56f, s * 0.18f, s * 0.68f, s * 0.36f, s * 0.72f)
+            lineTo(s * 0.28f, s * 0.88f)
+            lineTo(s * 0.52f, s * 0.74f)
+            cubicTo(s * 0.84f, s * 0.74f, s * 0.92f, s * 0.56f, s * 0.92f, s * 0.42f)
+            cubicTo(s * 0.92f, s * 0.3f, s * 0.84f, s * 0.12f, s * 0.5f, s * 0.12f)
             close()
         }
-        
+
         drawPath(path, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
-        // Three dots inside
-        val dotRadius = s / 24f
-        val dotY = s * 0.42f
-        drawCircle(color, dotRadius, Offset(s * 0.35f, dotY))
-        drawCircle(color, dotRadius, Offset(s * 0.5f, dotY))
-        drawCircle(color, dotRadius, Offset(s * 0.65f, dotY))
     }
 }
 
@@ -479,7 +446,7 @@ fun FooterProfileIcon(
     }
 }
 
-// Share/Send icon (arrow pointing up-right from box)
+// Share/Paper-plane send icon
 @Composable
 fun ShareIcon(
     color: Color,
@@ -488,30 +455,37 @@ fun ShareIcon(
 ) {
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
-        val strokeWidth = s / 12f
-        
-        // Arrow pointing up-right
-        val arrowPath = Path().apply {
-            moveTo(s * 0.5f, s * 0.1f)
-            lineTo(s * 0.85f, s * 0.1f)
-            lineTo(s * 0.85f, s * 0.45f)
-            moveTo(s * 0.85f, s * 0.1f)
-            lineTo(s * 0.35f, s * 0.6f)
+        val strokeWidth = s / 11f
+
+        // Paper plane shape
+        val path = Path().apply {
+            moveTo(s * 0.88f, s * 0.12f)
+            lineTo(s * 0.38f, s * 0.52f)
+            lineTo(s * 0.12f, s * 0.42f)
+            close()
         }
-        drawPath(arrowPath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
-        // Box/base
-        val boxPath = Path().apply {
-            moveTo(s * 0.15f, s * 0.35f)
-            lineTo(s * 0.15f, s * 0.85f)
-            lineTo(s * 0.7f, s * 0.85f)
-            lineTo(s * 0.7f, s * 0.55f)
+        drawPath(path, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
+
+        // Tail
+        val tailPath = Path().apply {
+            moveTo(s * 0.38f, s * 0.52f)
+            lineTo(s * 0.52f, s * 0.88f)
+            lineTo(s * 0.88f, s * 0.12f)
         }
-        drawPath(boxPath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawPath(tailPath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
+
+        // Inner fold line
+        drawLine(
+            color = color,
+            start = Offset(s * 0.38f, s * 0.52f),
+            end = Offset(s * 0.52f, s * 0.62f),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
     }
 }
 
-// Bookmark/Save icon
+// Bookmark/Ribbon icon
 @Composable
 fun BookmarkIcon(
     color: Color,
@@ -521,17 +495,21 @@ fun BookmarkIcon(
 ) {
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
-        val strokeWidth = s / 12f
-        
+        val strokeWidth = s / 11f
+
         val path = Path().apply {
-            moveTo(s * 0.2f, s * 0.1f)
-            lineTo(s * 0.8f, s * 0.1f)
-            lineTo(s * 0.8f, s * 0.9f)
-            lineTo(s * 0.5f, s * 0.65f)
-            lineTo(s * 0.2f, s * 0.9f)
-            close()
+            // Rounded top bookmark
+            moveTo(s * 0.22f, s * 0.08f)
+            quadraticTo(s * 0.22f, s * 0.08f, s * 0.28f, s * 0.08f)
+            lineTo(s * 0.72f, s * 0.08f)
+            quadraticTo(s * 0.78f, s * 0.08f, s * 0.78f, s * 0.14f)
+            lineTo(s * 0.78f, s * 0.92f)
+            lineTo(s * 0.5f, s * 0.72f)
+            lineTo(s * 0.22f, s * 0.92f)
+            lineTo(s * 0.22f, s * 0.14f)
+            quadraticTo(s * 0.22f, s * 0.08f, s * 0.28f, s * 0.08f)
         }
-        
+
         if (filled) {
             drawPath(path, color)
         } else {
@@ -550,7 +528,7 @@ fun LinkIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         // Two chain links
         rotate(-45f, pivot = Offset(s / 2, s / 2)) {
             // First link
@@ -583,7 +561,7 @@ fun EditIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         rotate(-45f, pivot = Offset(s / 2, s / 2)) {
             // Pencil body
             val path = Path().apply {
@@ -595,7 +573,7 @@ fun EditIcon(
                 close()
             }
             drawPath(path, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-            
+
             // Tip line
             drawLine(
                 color = color,
@@ -617,7 +595,7 @@ fun TrashIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         // Lid
         drawLine(
             color = color,
@@ -626,7 +604,7 @@ fun TrashIcon(
             strokeWidth = strokeWidth,
             cap = StrokeCap.Round
         )
-        
+
         // Handle
         drawRoundRect(
             color = color,
@@ -635,7 +613,7 @@ fun TrashIcon(
             cornerRadius = CornerRadius(s * 0.05f),
             style = Stroke(strokeWidth)
         )
-        
+
         // Body
         val bodyPath = Path().apply {
             moveTo(s * 0.2f, s * 0.25f)
@@ -644,7 +622,7 @@ fun TrashIcon(
             lineTo(s * 0.8f, s * 0.25f)
         }
         drawPath(bodyPath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
+
         // Lines inside
         drawLine(color, Offset(s * 0.4f, s * 0.35f), Offset(s * 0.4f, s * 0.75f), strokeWidth)
         drawLine(color, Offset(s * 0.6f, s * 0.35f), Offset(s * 0.6f, s * 0.75f), strokeWidth)
@@ -661,7 +639,7 @@ fun WarningIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         // Triangle
         val path = Path().apply {
             moveTo(s * 0.5f, s * 0.1f)
@@ -670,7 +648,7 @@ fun WarningIcon(
             close()
         }
         drawPath(path, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
+
         // Exclamation mark
         drawLine(
             color = color,
@@ -699,7 +677,7 @@ fun BlockIcon(
         val strokeWidth = s / 12f
         val radius = s * 0.38f
         val center = Offset(s / 2, s / 2)
-        
+
         // Circle
         drawCircle(
             color = color,
@@ -707,7 +685,7 @@ fun BlockIcon(
             center = center,
             style = Stroke(strokeWidth)
         )
-        
+
         // Diagonal line
         val offset = radius * 0.7f
         drawLine(
@@ -730,7 +708,7 @@ fun CelebrateIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         // Cone
         val conePath = Path().apply {
             moveTo(s * 0.2f, s * 0.85f)
@@ -739,12 +717,12 @@ fun CelebrateIcon(
             close()
         }
         drawPath(conePath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
+
         // Confetti
         drawCircle(color, s / 20f, Offset(s * 0.75f, s * 0.15f))
         drawCircle(color, s / 25f, Offset(s * 0.85f, s * 0.3f))
         drawCircle(color, s / 20f, Offset(s * 0.6f, s * 0.15f))
-        
+
         // Star
         drawLine(color, Offset(s * 0.4f, s * 0.1f), Offset(s * 0.4f, s * 0.2f), strokeWidth * 0.8f, StrokeCap.Round)
         drawLine(color, Offset(s * 0.35f, s * 0.15f), Offset(s * 0.45f, s * 0.15f), strokeWidth * 0.8f, StrokeCap.Round)
@@ -761,7 +739,7 @@ fun InsightfulIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         // Bulb
         val bulbPath = Path().apply {
             moveTo(s * 0.5f, s * 0.1f)
@@ -773,7 +751,7 @@ fun InsightfulIcon(
             close()
         }
         drawPath(bulbPath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
+
         // Base lines
         drawLine(color, Offset(s * 0.35f, s * 0.78f), Offset(s * 0.65f, s * 0.78f), strokeWidth, StrokeCap.Round)
         drawLine(color, Offset(s * 0.38f, s * 0.86f), Offset(s * 0.62f, s * 0.86f), strokeWidth, StrokeCap.Round)
@@ -790,7 +768,7 @@ fun CuriousIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 10f
-        
+
         // Question mark curve
         val path = Path().apply {
             moveTo(s * 0.3f, s * 0.3f)
@@ -798,7 +776,7 @@ fun CuriousIcon(
             cubicTo(s * 0.7f, s * 0.45f, s * 0.5f, s * 0.45f, s * 0.5f, s * 0.6f)
         }
         drawPath(path, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
+
         // Dot
         drawCircle(
             color = color,
@@ -818,7 +796,7 @@ fun RepostIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         // Top arrow
         val topArrowPath = Path().apply {
             moveTo(s * 0.7f, s * 0.25f)
@@ -826,10 +804,10 @@ fun RepostIcon(
             lineTo(s * 0.7f, s * 0.45f)
         }
         drawPath(topArrowPath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
+
         // Top line
         drawLine(color, Offset(s * 0.2f, s * 0.35f), Offset(s * 0.8f, s * 0.35f), strokeWidth, StrokeCap.Round)
-        
+
         // Bottom arrow
         val bottomArrowPath = Path().apply {
             moveTo(s * 0.3f, s * 0.55f)
@@ -837,7 +815,7 @@ fun RepostIcon(
             lineTo(s * 0.3f, s * 0.75f)
         }
         drawPath(bottomArrowPath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
+
         // Bottom line
         drawLine(color, Offset(s * 0.2f, s * 0.65f), Offset(s * 0.8f, s * 0.65f), strokeWidth, StrokeCap.Round)
     }
@@ -853,7 +831,7 @@ fun ZapIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         val path = Path().apply {
             moveTo(s * 0.55f, s * 0.1f)
             lineTo(s * 0.25f, s * 0.5f)
@@ -877,7 +855,7 @@ fun UsersIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         // Front person head
         drawCircle(
             color = color,
@@ -885,7 +863,7 @@ fun UsersIcon(
             center = Offset(s * 0.35f, s * 0.3f),
             style = Stroke(strokeWidth)
         )
-        
+
         // Front person body
         val frontBodyPath = Path().apply {
             moveTo(s * 0.1f, s * 0.85f)
@@ -893,7 +871,7 @@ fun UsersIcon(
             quadraticTo(s * 0.6f, s * 0.5f, s * 0.6f, s * 0.85f)
         }
         drawPath(frontBodyPath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
+
         // Back person head
         drawCircle(
             color = color,
@@ -901,7 +879,7 @@ fun UsersIcon(
             center = Offset(s * 0.65f, s * 0.25f),
             style = Stroke(strokeWidth)
         )
-        
+
         // Back person body
         val backBodyPath = Path().apply {
             moveTo(s * 0.5f, s * 0.7f)
@@ -922,7 +900,7 @@ fun SparkleIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         // Main star
         val starPath = Path().apply {
             moveTo(s * 0.5f, s * 0.1f)
@@ -951,7 +929,7 @@ fun GraduationCapIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         // Cap top (diamond shape)
         val capPath = Path().apply {
             moveTo(s * 0.5f, s * 0.15f)
@@ -961,7 +939,7 @@ fun GraduationCapIcon(
             close()
         }
         drawPath(capPath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
+
         // Cap base curve
         val basePath = Path().apply {
             moveTo(s * 0.2f, s * 0.45f)
@@ -970,7 +948,7 @@ fun GraduationCapIcon(
             lineTo(s * 0.8f, s * 0.45f)
         }
         drawPath(basePath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
+
         // Tassel
         drawLine(color, Offset(s * 0.9f, s * 0.35f), Offset(s * 0.9f, s * 0.7f), strokeWidth, StrokeCap.Round)
         drawCircle(color, s * 0.04f, Offset(s * 0.9f, s * 0.72f))
@@ -987,7 +965,7 @@ fun LocationPinIcon(
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
         val strokeWidth = s / 12f
-        
+
         // Pin shape
         val pinPath = Path().apply {
             moveTo(s * 0.5f, s * 0.9f)
@@ -997,7 +975,7 @@ fun LocationPinIcon(
             close()
         }
         drawPath(pinPath, color, style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        
+
         // Inner circle
         drawCircle(
             color = color,

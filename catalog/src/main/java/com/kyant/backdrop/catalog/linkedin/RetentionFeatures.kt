@@ -14,7 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -58,6 +59,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.data.SettingsPreferences
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.models.*
@@ -192,7 +194,9 @@ class RetentionViewModel(private val context: Context) : ViewModel() {
 
     private val cacheTtlMillis = 5 * 60 * 1000L
     private var lastLoadedAtMillis = 0L
+    private var connectionLimitLoadedAtMillis = 0L
     private var isRequestInFlight = false
+    private var isConnectionLimitRequestInFlight = false
     
     // 12-hour seed that changes twice a day for variety in recommendations
     private val twelveHourSeed: Long
@@ -211,6 +215,21 @@ class RetentionViewModel(private val context: Context) : ViewModel() {
 
     fun ensureRetentionLoaded(forceRefresh: Boolean = false) {
         loadAllRetentionData(forceRefresh = forceRefresh)
+    }
+
+    fun ensureConnectionLimitLoaded(forceRefresh: Boolean = false) {
+        if (!forceRefresh && hasFreshConnectionLimitCache()) return
+        if (isConnectionLimitRequestInFlight || isRequestInFlight) return
+
+        viewModelScope.launch {
+            isConnectionLimitRequestInFlight = true
+            ApiClient.getConnectionLimit(context)
+                .onSuccess { limit ->
+                    connectionLimitLoadedAtMillis = System.currentTimeMillis()
+                    _uiState.value = _uiState.value.copy(connectionLimit = limit)
+                }
+            isConnectionLimitRequestInFlight = false
+        }
     }
 
     fun loadAllRetentionData(forceRefresh: Boolean = false) {
@@ -232,6 +251,7 @@ class RetentionViewModel(private val context: Context) : ViewModel() {
             
             // Use empty states for authenticated progress data instead of fake streaks/goals.
             lastLoadedAtMillis = System.currentTimeMillis()
+            connectionLimitLoadedAtMillis = lastLoadedAtMillis
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 streakData = streaksResult.getOrDefault(StreakData()),
@@ -293,6 +313,11 @@ class RetentionViewModel(private val context: Context) : ViewModel() {
 
     private fun hasFreshCache(): Boolean {
         return lastLoadedAtMillis != 0L && System.currentTimeMillis() - lastLoadedAtMillis < cacheTtlMillis
+    }
+
+    private fun hasFreshConnectionLimitCache(): Boolean {
+        return connectionLimitLoadedAtMillis != 0L &&
+            System.currentTimeMillis() - connectionLimitLoadedAtMillis < cacheTtlMillis
     }
 }
 
@@ -920,7 +945,9 @@ fun StreakDetailsScreen(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onNavigateToFindPeople: () -> Unit = {},
+    onNavigateToCreatePost: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val viewModel: RetentionViewModel = viewModel(factory = RetentionViewModel.Factory(context))
@@ -931,6 +958,9 @@ fun StreakDetailsScreen(
         viewModel.ensureRetentionLoaded()
     }
     
+    val dailyStreak = streaks.dailyStreak.coerceAtLeast(0)
+    val isDailyAtRisk = streaks.dailyIsAtRisk || streaks.isAtRisk.daily
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -938,109 +968,48 @@ fun StreakDetailsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         RetentionHeader(
-            title = "Daily Activity Streak",
+            title = "Streaks",
             contentColor = contentColor,
             onNavigateBack = onNavigateBack
         )
-        
-        // Main streak display
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .retentionCard(contentColor, 24.dp)
-                .padding(24.dp),
-            contentAlignment = Alignment.Center
+
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                RetentionIconBadge(
-                    icon = Icons.Outlined.LocalFireDepartment,
-                    tint = accentColor,
-                    modifier = Modifier.size(52.dp)
+            item {
+                StreakHeroCard(
+                    dailyStreak = dailyStreak,
+                    longestDailyStreak = streaks.longestDailyStreak,
+                    qualifiedToday = streaks.dailyQualifiedToday,
+                    isAtRisk = isDailyAtRisk,
+                    engagementScore = streaks.engagementScore,
+                    contentColor = contentColor,
+                    accentColor = accentColor
                 )
-                BasicText(
-                    "${streaks.dailyStreak}-day",
-                    style = TextStyle(
-                        color = contentColor,
-                        fontSize = 40.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                )
-                BasicText(
-                    if (streaks.dailyQualifiedToday) "Preserved today" else "Daily Activity Streak",
-                    style = TextStyle(
-                        color = contentColor.copy(alpha = 0.7f),
-                        fontSize = 16.sp
-                    )
-                )
-                
-                if (streaks.longestDailyStreak > streaks.dailyStreak) {
-                    BasicText(
-                        "Best: ${streaks.longestDailyStreak} days",
-                        style = TextStyle(
-                            color = contentColor.copy(alpha = 0.5f),
-                            fontSize = 13.sp
-                        )
+            }
+
+            if (isDailyAtRisk && !streaks.dailyQualifiedToday) {
+                item {
+                    StreakRiskCard(
+                        contentColor = contentColor,
+                        accentColor = Color(0xFFFF6B35)
                     )
                 }
             }
-        }
-        
-        // Category streaks
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+
             item {
-                StreakDetailBar(
-                    label = "Networking",
-                    icon = Icons.Outlined.PersonAddAlt1,
-                    currentStreak = streaks.connectionStreak,
-                    longestStreak = streaks.longestConnectionStreak,
-                    isAtRisk = streaks.isAtRisk.connection,
-                    color = Color(0xFFFF9800),
-                    backdrop = backdrop,
-                    contentColor = contentColor
+                StreakHowToEarnCard(
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onNavigateToFindPeople = onNavigateToFindPeople,
+                    onNavigateToCreatePost = onNavigateToCreatePost
                 )
             }
-            
+
             item {
-                StreakDetailBar(
-                    label = "Login",
-                    icon = Icons.Outlined.Schedule,
-                    currentStreak = streaks.loginStreak,
-                    longestStreak = streaks.longestLoginStreak,
-                    isAtRisk = streaks.isAtRisk.login,
-                    color = Color(0xFF2196F3),
-                    backdrop = backdrop,
-                    contentColor = contentColor
-                )
-            }
-            
-            item {
-                StreakDetailBar(
-                    label = "Posting",
-                    icon = Icons.Outlined.Create,
-                    currentStreak = streaks.postingStreak,
-                    longestStreak = streaks.longestPostingStreak,
-                    isAtRisk = streaks.isAtRisk.posting,
-                    color = Color(0xFF9C27B0),
-                    backdrop = backdrop,
-                    contentColor = contentColor
-                )
-            }
-            
-            item {
-                StreakDetailBar(
-                    label = "Messaging",
-                    icon = Icons.Outlined.ChatBubbleOutline,
-                    currentStreak = streaks.messagingStreak,
-                    longestStreak = streaks.longestMessagingStreak,
-                    isAtRisk = streaks.isAtRisk.messaging,
-                    color = Color(0xFF4CAF50),
-                    backdrop = backdrop,
+                StreakCategoriesPanel(
+                    streaks = streaks,
                     contentColor = contentColor
                 )
             }
@@ -1080,98 +1049,554 @@ fun StreakDetailsScreen(
 }
 
 @Composable
+private fun PremiumStreakIcon(
+    iconRes: Int,
+    modifier: Modifier = Modifier,
+    surfaceColor: Color = Color.Transparent
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(surfaceColor)
+            .padding(7.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = null,
+            tint = Color.Unspecified,
+            modifier = Modifier.fillMaxSize()
+        )
+    }
+}
+
+@Composable
+private fun StreakHeroCard(
+    dailyStreak: Int,
+    longestDailyStreak: Int,
+    qualifiedToday: Boolean,
+    isAtRisk: Boolean,
+    engagementScore: Int,
+    contentColor: Color,
+    accentColor: Color
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .retentionCard(contentColor, 24.dp)
+            .padding(20.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                PremiumStreakIcon(
+                    iconRes = R.drawable.ic_vx_streak_flame,
+                    modifier = Modifier.size(70.dp),
+                    surfaceColor = if (isAtRisk) Color(0xFFFF6B35).copy(alpha = 0.10f)
+                    else accentColor.copy(alpha = 0.10f)
+                )
+                StreakStatusPill(
+                    qualifiedToday = qualifiedToday,
+                    isAtRisk = isAtRisk,
+                    contentColor = contentColor,
+                    accentColor = accentColor
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                BasicText(
+                    "$dailyStreak day${if (dailyStreak == 1) "" else "s"}",
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 42.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+                BasicText(
+                    when {
+                        qualifiedToday -> "Daily Activity Streak is safe for today."
+                        isAtRisk -> "Do one meaningful action today to keep it alive."
+                        dailyStreak > 0 -> "One meaningful action each day keeps this growing."
+                        else -> "Start today with one meaningful action."
+                    },
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.68f),
+                        fontSize = 14.sp
+                    )
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                StreakSummaryTile(
+                    label = "Best",
+                    value = longestDailyStreak.coerceAtLeast(dailyStreak).toString(),
+                    contentColor = contentColor,
+                    modifier = Modifier.weight(1f)
+                )
+                StreakSummaryTile(
+                    label = "Today",
+                    value = if (qualifiedToday) "Done" else "Open",
+                    contentColor = contentColor,
+                    modifier = Modifier.weight(1f)
+                )
+                StreakSummaryTile(
+                    label = "Score",
+                    value = engagementScore.coerceIn(0, 100).toString(),
+                    contentColor = contentColor,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreakStatusPill(
+    qualifiedToday: Boolean,
+    isAtRisk: Boolean,
+    contentColor: Color,
+    accentColor: Color
+) {
+    val pillColor = when {
+        qualifiedToday -> Color(0xFF22C55E)
+        isAtRisk -> Color(0xFFFF6B35)
+        else -> accentColor
+    }
+    val label = when {
+        qualifiedToday -> "Safe today"
+        isAtRisk -> "At risk"
+        else -> "Need action"
+    }
+
+    Box(
+        Modifier
+            .clip(Capsule())
+            .background(pillColor.copy(alpha = 0.14f))
+            .padding(horizontal = 12.dp, vertical = 7.dp)
+    ) {
+        BasicText(
+            label,
+            style = TextStyle(
+                color = if (qualifiedToday || isAtRisk) pillColor else contentColor,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+    }
+}
+
+@Composable
+private fun StreakSummaryTile(
+    label: String,
+    value: String,
+    contentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .padding(vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        BasicText(
+            value,
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            )
+        )
+        BasicText(
+            label,
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.56f),
+                fontSize = 11.sp
+            )
+        )
+    }
+}
+
+@Composable
+private fun StreakRiskCard(
+    contentColor: Color,
+    accentColor: Color
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(accentColor.copy(alpha = 0.12f))
+            .border(1.dp, accentColor.copy(alpha = 0.26f), RoundedCornerShape(18.dp))
+            .padding(14.dp)
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.WarningAmber,
+                contentDescription = null,
+                tint = accentColor,
+                modifier = Modifier.size(22.dp)
+            )
+            BasicText(
+                "Your streak needs action today. Connect, post, comment, message, or finish a game.",
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 13.sp
+                ),
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun StreakHowToEarnCard(
+    contentColor: Color,
+    accentColor: Color,
+    onNavigateToFindPeople: () -> Unit,
+    onNavigateToCreatePost: () -> Unit
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .retentionCard(contentColor, 20.dp)
+            .padding(16.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                BasicText(
+                    "Keep it alive",
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+                BasicText(
+                    "One meaningful action preserves the main streak. Login is tracked separately.",
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.66f),
+                        fontSize = 13.sp
+                    )
+                )
+            }
+
+            StreakActionRow(
+                iconRes = R.drawable.ic_vx_streak_network,
+                title = "Connect",
+                subtitle = "Accept or make a useful connection.",
+                contentColor = contentColor
+            )
+            StreakActionRow(
+                iconRes = R.drawable.ic_vx_streak_post,
+                title = "Post or comment",
+                subtitle = "Share a post, article, reel, or join a discussion.",
+                contentColor = contentColor
+            )
+            StreakActionRow(
+                iconRes = R.drawable.ic_vx_streak_message,
+                title = "Message",
+                subtitle = "Send a real message to keep momentum.",
+                contentColor = contentColor
+            )
+            StreakActionRow(
+                iconRes = R.drawable.ic_vx_streak_game,
+                title = "Complete a game",
+                subtitle = "Finish a game session to count as activity.",
+                contentColor = contentColor
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                StreakQuickActionButton(
+                    label = "Find people",
+                    iconRes = R.drawable.ic_vx_streak_network,
+                    tint = accentColor,
+                    contentColor = contentColor,
+                    modifier = Modifier.weight(1f),
+                    onClick = onNavigateToFindPeople
+                )
+                StreakQuickActionButton(
+                    label = "Create post",
+                    iconRes = R.drawable.ic_vx_streak_post,
+                    tint = accentColor,
+                    contentColor = contentColor,
+                    modifier = Modifier.weight(1f),
+                    onClick = onNavigateToCreatePost
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreakActionRow(
+    iconRes: Int,
+    title: String,
+    subtitle: String,
+    contentColor: Color
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        PremiumStreakIcon(
+            iconRes = iconRes,
+            modifier = Modifier.size(36.dp),
+            surfaceColor = contentColor.copy(alpha = 0.06f)
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            BasicText(
+                title,
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+            BasicText(
+                subtitle,
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.58f),
+                    fontSize = 12.sp
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun StreakQuickActionButton(
+    label: String,
+    iconRes: Int,
+    tint: Color,
+    contentColor: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = modifier
+            .height(44.dp)
+            .clip(Capsule())
+            .background(tint.copy(alpha = 0.14f))
+            .border(1.dp, tint.copy(alpha = 0.26f), Capsule())
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = null,
+            tint = Color.Unspecified,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(Modifier.width(6.dp))
+        BasicText(
+            label,
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+    }
+}
+
+@Composable
+private fun StreakCategoriesPanel(
+    streaks: StreakData,
+    contentColor: Color
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .retentionCard(contentColor, 20.dp)
+            .padding(16.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BasicText(
+                    "Progress by action",
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+                BasicText(
+                    "Best included",
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.52f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+            }
+
+            StreakDetailBar(
+                label = "Networking",
+                subtitle = "Connect with someone.",
+                iconRes = R.drawable.ic_vx_streak_network,
+                currentStreak = streaks.connectionStreak,
+                longestStreak = streaks.longestConnectionStreak,
+                isAtRisk = streaks.isAtRisk.connection,
+                color = Color(0xFF3B82F6),
+                contentColor = contentColor
+            )
+            StreakPanelDivider(contentColor)
+            StreakDetailBar(
+                label = "Login",
+                subtitle = "Open Vormex daily.",
+                iconRes = R.drawable.ic_vx_streak_login,
+                currentStreak = streaks.loginStreak,
+                longestStreak = streaks.longestLoginStreak,
+                isAtRisk = streaks.isAtRisk.login,
+                color = Color(0xFF22C55E),
+                contentColor = contentColor
+            )
+            StreakPanelDivider(contentColor)
+            StreakDetailBar(
+                label = "Posting",
+                subtitle = "Post, reel, article, or comment.",
+                iconRes = R.drawable.ic_vx_streak_post,
+                currentStreak = streaks.postingStreak,
+                longestStreak = streaks.longestPostingStreak,
+                isAtRisk = streaks.isAtRisk.posting,
+                color = Color(0xFF8B5CF6),
+                contentColor = contentColor
+            )
+            StreakPanelDivider(contentColor)
+            StreakDetailBar(
+                label = "Messaging",
+                subtitle = "Send a real message.",
+                iconRes = R.drawable.ic_vx_streak_message,
+                currentStreak = streaks.messagingStreak,
+                longestStreak = streaks.longestMessagingStreak,
+                isAtRisk = streaks.isAtRisk.messaging,
+                color = Color(0xFFFF6B35),
+                contentColor = contentColor
+            )
+        }
+    }
+}
+
+@Composable
+private fun StreakPanelDivider(contentColor: Color) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(contentColor.copy(alpha = 0.08f))
+    )
+}
+
+@Composable
 private fun StreakDetailBar(
     label: String,
-    icon: ImageVector,
+    subtitle: String,
+    iconRes: Int,
     currentStreak: Int,
     longestStreak: Int,
     isAtRisk: Boolean,
     color: Color,
-    backdrop: LayerBackdrop,
     contentColor: Color
 ) {
-    val progress = if (longestStreak > 0) currentStreak.toFloat() / longestStreak else 0f
-    
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .retentionCard(contentColor, 16.dp)
-            .then(
-                if (isAtRisk) Modifier.border(
-                    width = 1.dp,
-                    color = Color(0xFFFF8A80),
-                    shape = RoundedCornerShape(16.dp)
-                ) else Modifier
-            )
-            .padding(16.dp)
+    val progress = when {
+        longestStreak > 0 -> currentStreak.toFloat() / longestStreak
+        currentStreak > 0 -> 1f
+        else -> 0f
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
+        PremiumStreakIcon(
+            iconRes = iconRes,
+            modifier = Modifier.size(42.dp),
+            surfaceColor = color.copy(alpha = 0.10f)
+        )
+
         Column(
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    RetentionIconBadge(icon = icon, tint = color, modifier = Modifier.size(36.dp))
                     BasicText(
                         label,
                         style = TextStyle(
                             color = contentColor,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Medium
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
                     )
-                    
-                    if (isAtRisk) {
-                        Box(
-                            Modifier
-                                .clip(Capsule())
-                                .background(Color(0xFFFF8A80).copy(alpha = 0.16f))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            BasicText(
-                                "AT RISK",
-                                style = TextStyle(
-                                    color = Color(0xFFFF8A80),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            )
-                        }
-                    }
-                }
-                
-                Column(horizontalAlignment = Alignment.End) {
                     BasicText(
-                        "${currentStreak}d",
+                        subtitle,
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.54f),
+                            fontSize = 11.sp
+                        )
+                    )
+                }
+
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    if (isAtRisk) {
+                        BasicText(
+                            "At risk",
+                            style = TextStyle(
+                                color = Color(0xFFFF6B6B),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                    }
+                    BasicText(
+                        "${currentStreak.coerceAtLeast(0)}d",
                         style = TextStyle(
                             color = contentColor,
-                            fontSize = 20.sp,
+                            fontSize = 18.sp,
                             fontWeight = FontWeight.Bold
-                        )
-                    )
-                    BasicText(
-                        "Best: ${longestStreak}d",
-                        style = TextStyle(
-                            color = contentColor.copy(alpha = 0.5f),
-                            fontSize = 11.sp
                         )
                     )
                 }
             }
             
-            // Progress bar
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(8.dp)
+                    .height(5.dp)
                     .clip(Capsule())
-                    .background(contentColor.copy(alpha = 0.1f))
+                    .background(contentColor.copy(alpha = 0.08f))
             ) {
                 Box(
                     Modifier
@@ -1186,8 +1611,16 @@ private fun StreakDetailBar(
                                 )
                             )
                         )
-                )
+                    )
             }
+
+            BasicText(
+                "Best ${longestStreak.coerceAtLeast(currentStreak)}d",
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.44f),
+                    fontSize = 10.sp
+                )
+            )
         }
     }
 }
@@ -2754,7 +3187,7 @@ fun PeopleLikeYouSection(
                     "People like you",
                     style = TextStyle(
                         color = contentColor,
-                        fontSize = 15.sp,
+                        fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 )
@@ -2764,7 +3197,7 @@ fun PeopleLikeYouSection(
                 "See all ›",
                 style = TextStyle(
                     color = accentColor,
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Medium
                 ),
                 modifier = Modifier.clickable { onSeeAll() }
@@ -2803,7 +3236,7 @@ private fun PeopleLikeYouCard(
     
     Box(
         modifier = modifier
-            .width(100.dp)
+            .width(92.dp)
             .drawBackdrop(
                 backdrop = backdrop,
                 shape = { RoundedRectangle(16f.dp) },
@@ -2817,18 +3250,18 @@ private fun PeopleLikeYouCard(
                 }
             )
             .clickable { onClick() }
-            .padding(12.dp)
+            .padding(10.dp)
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             // Avatar with online indicator
             Box(contentAlignment = Alignment.BottomEnd) {
                 Box(
                     modifier = Modifier
-                        .size(56.dp)
+                        .size(44.dp)
                         .clip(CircleShape)
                         .background(
                             brush = Brush.linearGradient(
@@ -2864,7 +3297,7 @@ private fun PeopleLikeYouCard(
                             initials.ifEmpty { "U" },
                             style = TextStyle(
                                 color = Color.White,
-                                fontSize = 18.sp,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         )
@@ -2875,7 +3308,7 @@ private fun PeopleLikeYouCard(
                 if (person.isOnline) {
                     Box(
                         modifier = Modifier
-                            .size(16.dp)
+                            .size(12.dp)
                             .clip(CircleShape)
                             .background(Color(0xFF1A1A1A))
                             .padding(2.dp)
@@ -2895,7 +3328,7 @@ private fun PeopleLikeYouCard(
                 person.name ?: "User",
                 style = TextStyle(
                     color = contentColor,
-                    fontSize = 13.sp,
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center
                 ),
@@ -2911,7 +3344,7 @@ private fun PeopleLikeYouCard(
                     subtitle,
                     style = TextStyle(
                         color = contentColor.copy(alpha = 0.5f),
-                        fontSize = 10.sp,
+                        fontSize = 9.sp,
                         textAlign = TextAlign.Center
                     ),
                     maxLines = 1,
@@ -2932,7 +3365,7 @@ private fun PeopleLikeYouCard(
                         badge,
                         style = TextStyle(
                             color = accentColor,
-                            fontSize = 9.sp,
+                            fontSize = 8.sp,
                             fontWeight = FontWeight.Medium
                         )
                     )
@@ -2982,7 +3415,7 @@ fun TodaysMatchesSection(
                     "Today's Matches",
                     style = TextStyle(
                         color = contentColor,
-                        fontSize = 15.sp,
+                        fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 )
@@ -3009,7 +3442,7 @@ fun TodaysMatchesSection(
                 "See all ›",
                 style = TextStyle(
                     color = accentColor,
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Medium
                 ),
                 modifier = Modifier.clickable { onSeeAll() }
@@ -3047,7 +3480,7 @@ private fun TodaysMatchCard(
 ) {
     Box(
         modifier = modifier
-            .width(160.dp)
+            .width(144.dp)
             .drawBackdrop(
                 backdrop = backdrop,
                 shape = { RoundedRectangle(18f.dp) },
@@ -3061,18 +3494,18 @@ private fun TodaysMatchCard(
                 }
             )
             .clickable { onClick() }
-            .padding(14.dp)
+            .padding(12.dp)
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             // Avatar with online indicator
             Box(contentAlignment = Alignment.BottomEnd) {
                 Box(
                     modifier = Modifier
-                        .size(64.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
                         .background(
                             brush = Brush.linearGradient(
@@ -3108,7 +3541,7 @@ private fun TodaysMatchCard(
                             initials.ifEmpty { "U" },
                             style = TextStyle(
                                 color = Color.White,
-                                fontSize = 20.sp,
+                                fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         )
@@ -3119,10 +3552,10 @@ private fun TodaysMatchCard(
                 if (match.isOnline) {
                     Box(
                         modifier = Modifier
-                            .size(18.dp)
+                            .size(14.dp)
                             .clip(CircleShape)
                             .background(Color(0xFF1A1A1A))
-                            .padding(3.dp)
+                            .padding(2.dp)
                     ) {
                         Box(
                             modifier = Modifier
@@ -3139,7 +3572,7 @@ private fun TodaysMatchCard(
                 match.name ?: "User",
                 style = TextStyle(
                     color = contentColor,
-                    fontSize = 14.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center
                 ),
@@ -3155,7 +3588,7 @@ private fun TodaysMatchCard(
                     subtitle,
                     style = TextStyle(
                         color = contentColor.copy(alpha = 0.6f),
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         textAlign = TextAlign.Center
                     ),
                     maxLines = 1,
@@ -3170,7 +3603,7 @@ private fun TodaysMatchCard(
                     match.headline,
                     style = TextStyle(
                         color = contentColor.copy(alpha = 0.45f),
-                        fontSize = 10.sp,
+                        fontSize = 9.sp,
                         textAlign = TextAlign.Center
                     ),
                     maxLines = 1,
@@ -3188,13 +3621,13 @@ private fun TodaysMatchCard(
                     Icons.AutoMirrored.Filled.TrendingUp,
                     contentDescription = null,
                     tint = Color(0xFF22C55E),
-                    modifier = Modifier.size(12.dp)
+                    modifier = Modifier.size(10.dp)
                 )
                 BasicText(
                     "${match.replyRate}% reply rate",
                     style = TextStyle(
                         color = Color(0xFF22C55E),
-                        fontSize = 10.sp,
+                        fontSize = 9.sp,
                         fontWeight = FontWeight.Medium
                     )
                 )
@@ -3207,7 +3640,7 @@ private fun TodaysMatchCard(
                     .clip(RoundedCornerShape(10.dp))
                     .background(accentColor)
                     .clickable { onConnect() }
-                    .padding(vertical = 10.dp),
+                    .padding(vertical = 8.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Row(
@@ -3218,13 +3651,13 @@ private fun TodaysMatchCard(
                         Icons.Default.PersonAdd,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                     BasicText(
                         "Connect",
                         style = TextStyle(
                             color = Color.White,
-                            fontSize = 13.sp,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold
                         )
                     )

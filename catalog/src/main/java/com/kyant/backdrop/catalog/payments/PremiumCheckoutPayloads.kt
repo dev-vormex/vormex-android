@@ -1,115 +1,72 @@
 package com.kyant.backdrop.catalog.payments
 
-import com.kyant.backdrop.catalog.network.models.PremiumCheckoutResponse
-import com.kyant.backdrop.catalog.network.models.PremiumVerifyRequest
-import com.razorpay.Checkout
+import com.android.billingclient.api.BillingClient
+import java.security.MessageDigest
 
-internal data class PreparedPremiumCheckoutSession(
-    val keyId: String,
-    val orderId: String
+internal const val PREMIUM_PLAY_PRODUCT_ID = "vormex_premium"
+internal const val PREMIUM_PLAY_MONTHLY_BASE_PLAN_ID = "premium-monthly-prepaid"
+internal const val PREMIUM_PLAY_YEARLY_BASE_PLAN_ID = "premium-yearly-prepaid"
+
+data class PremiumPlayPlanOffer(
+    val billingCycle: String,
+    val basePlanId: String,
+    val offerToken: String,
+    val formattedPrice: String,
+    val priceAmountMicros: Long,
+    val priceCurrencyCode: String
 )
 
-internal sealed interface PremiumVerificationPreparation {
-    data class Ready(val request: PremiumVerifyRequest) : PremiumVerificationPreparation
-    data class Invalid(val message: String) : PremiumVerificationPreparation
+internal fun premiumBillingCycleForBasePlan(basePlanId: String?): String? {
+    return when (basePlanId?.trim()) {
+        PREMIUM_PLAY_MONTHLY_BASE_PLAN_ID -> "monthly"
+        PREMIUM_PLAY_YEARLY_BASE_PLAN_ID -> "yearly"
+        else -> null
+    }
 }
 
-internal fun preparePremiumCheckoutSession(
-    checkoutSession: PremiumCheckoutResponse
-): PreparedPremiumCheckoutSession? {
-    val keyId = checkoutSession.keyId?.trim().orEmpty()
-    val orderId = checkoutSession.orderId.trim()
-
-    if (keyId.isBlank() || orderId.isBlank()) {
-        return null
-    }
-
-    return PreparedPremiumCheckoutSession(
-        keyId = keyId,
-        orderId = orderId
-    )
+internal fun selectPremiumPlayOffer(
+    offers: List<PremiumPlayPlanOffer>,
+    billingCycle: String
+): PremiumPlayPlanOffer? {
+    val normalizedBillingCycle = billingCycle.trim().lowercase()
+    return offers.firstOrNull { it.billingCycle == normalizedBillingCycle }
+        ?: offers.firstOrNull { it.billingCycle == "monthly" }
+        ?: offers.firstOrNull()
 }
 
-internal fun preparePremiumVerificationRequest(
-    trustedOrderId: String?,
-    callbackOrderId: String?,
-    callbackPaymentId: String?,
-    fallbackPaymentId: String?,
-    callbackSignature: String?
-): PremiumVerificationPreparation {
-    val orderId = trustedOrderId?.trim().orEmpty()
-    if (orderId.isBlank()) {
-        return PremiumVerificationPreparation.Invalid(
-            "Payment finished, but the secure checkout order could not be confirmed."
-        )
-    }
-
-    val checkoutOrderId = callbackOrderId?.trim()
-    if (!checkoutOrderId.isNullOrBlank() && checkoutOrderId != orderId) {
-        return PremiumVerificationPreparation.Invalid(
-            "Payment details did not match the secure checkout session."
-        )
-    }
-
-    val paymentId = callbackPaymentId?.trim().takeUnless { it.isNullOrBlank() }
-        ?: fallbackPaymentId?.trim().takeUnless { it.isNullOrBlank() }
-        ?: return PremiumVerificationPreparation.Invalid(
-            "Payment finished, but the payment id was missing."
-        )
-
-    val signature = callbackSignature?.trim()
-        ?: return PremiumVerificationPreparation.Invalid(
-            "Payment finished, but the verification signature was missing."
-        )
-
-    if (signature.isBlank()) {
-        return PremiumVerificationPreparation.Invalid(
-            "Payment finished, but the verification signature was missing."
-        )
-    }
-
-    return PremiumVerificationPreparation.Ready(
-        PremiumVerifyRequest(
-            razorpayOrderId = orderId,
-            razorpayPaymentId = paymentId,
-            razorpaySignature = signature
-        )
-    )
+internal fun googlePlayObfuscatedAccountId(userId: String): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+        .digest(userId.toByteArray(Charsets.UTF_8))
+    return digest.joinToString(separator = "") { byte -> "%02x".format(byte) }
 }
 
-internal fun resolvePremiumCheckoutErrorMessage(
-    code: Int,
-    response: String?
+internal fun resolvePremiumPlayBillingErrorMessage(
+    responseCode: Int,
+    debugMessage: String? = null
 ): String? {
-    val normalizedResponse = response?.trim().orEmpty()
-    if (
-        code == Checkout.PAYMENT_CANCELED ||
-        normalizedResponse.contains("cancel", ignoreCase = true) ||
-        normalizedResponse.contains("dismiss", ignoreCase = true) ||
-        normalizedResponse.contains("backpress", ignoreCase = true) ||
-        normalizedResponse.contains("back press", ignoreCase = true)
-    ) {
-        return null
-    }
-
-    return when {
-        code == Checkout.NETWORK_ERROR ||
-            normalizedResponse.contains("network", ignoreCase = true) -> {
-            "Network issue while opening Razorpay. Please try again."
+    val normalizedDebugMessage = debugMessage?.trim().orEmpty()
+    return when (responseCode) {
+        BillingClient.BillingResponseCode.OK -> null
+        BillingClient.BillingResponseCode.USER_CANCELED -> null
+        BillingClient.BillingResponseCode.SERVICE_DISCONNECTED,
+        BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE,
+        BillingClient.BillingResponseCode.NETWORK_ERROR -> {
+            "Google Play billing is temporarily unavailable. Please try again."
         }
-
-        code == Checkout.INVALID_OPTIONS -> {
-            "Premium checkout is temporarily unavailable. Please try again."
+        BillingClient.BillingResponseCode.BILLING_UNAVAILABLE -> {
+            "Google Play billing is not available on this device."
         }
-
-        code == Checkout.TLS_ERROR -> {
-            "Secure payment setup failed on this device. Please try again."
+        BillingClient.BillingResponseCode.ITEM_ALREADY_OWNED -> {
+            "Premium is already linked to this Google Play account. Restoring access..."
         }
-
-        code == Checkout.WEBVIEW_CREATION_FAILED -> {
-            "Premium checkout could not open on this device. Please try again."
+        BillingClient.BillingResponseCode.ITEM_UNAVAILABLE -> {
+            "Vormex Premium is not available in Google Play yet."
         }
-
-        else -> "Payment could not be completed. Please try again."
+        BillingClient.BillingResponseCode.DEVELOPER_ERROR -> {
+            "Premium purchase setup needs attention. Please try again later."
+        }
+        else -> normalizedDebugMessage.ifBlank {
+            "Premium purchase could not be completed. Please try again."
+        }
     }
 }

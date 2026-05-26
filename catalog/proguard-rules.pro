@@ -20,15 +20,11 @@
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
 
-# Razorpay checkout
--keepclassmembers class * {
-    @android.webkit.JavascriptInterface <methods>;
-}
--keepattributes JavascriptInterface
--keepattributes *Annotation*
--dontwarn com.razorpay.**
--keep class com.razorpay.** {*;}
--optimizations !method/inlining/*
--keepclasseswithmembers class * {
-    public void onPayment*(...);
+# Strip Android framework logging from minified release builds.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+    public static int w(...);
+    public static int e(...);
 }

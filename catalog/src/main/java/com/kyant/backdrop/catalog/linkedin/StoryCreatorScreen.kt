@@ -17,8 +17,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,9 +40,9 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.kyant.backdrop.catalog.media.MediaReadSafety
 import com.kyant.backdrop.catalog.network.models.StoryCategory
 import com.kyant.backdrop.catalog.network.models.StoryVisibility
-import java.io.ByteArrayOutputStream
 
 @Composable
 fun StoryCreatorDialog(
@@ -195,20 +195,26 @@ private fun StoryCreator(
                             val mediaBytes: Pair<ByteArray, String>? = when (storyType) {
                                 "IMAGE" -> selectedImageUri?.let { uri ->
                                     try {
-                                        val inputStream = context.contentResolver.openInputStream(uri)
-                                        val bytes = inputStream?.readBytes()
-                                        inputStream?.close()
-                                        bytes?.let { Pair(it, "image/jpeg") }
+                                        MediaReadSafety.readMediaBytes(
+                                            context = context,
+                                            uri = uri,
+                                            fallbackFileName = "story.jpg",
+                                            maxBytes = MediaReadSafety.MaxStoryMediaBytes,
+                                            label = "Story image"
+                                        ).first to "image/jpeg"
                                     } catch (e: Exception) {
                                         null
                                     }
                                 }
                                 "VIDEO" -> selectedVideoUri?.let { uri ->
                                     try {
-                                        val inputStream = context.contentResolver.openInputStream(uri)
-                                        val bytes = inputStream?.readBytes()
-                                        inputStream?.close()
-                                        bytes?.let { Pair(it, "video/mp4") }
+                                        MediaReadSafety.readMediaBytes(
+                                            context = context,
+                                            uri = uri,
+                                            fallbackFileName = "story.mp4",
+                                            maxBytes = MediaReadSafety.MaxStoryMediaBytes,
+                                            label = "Story video"
+                                        ).first to "video/mp4"
                                     } catch (e: Exception) {
                                         null
                                     }

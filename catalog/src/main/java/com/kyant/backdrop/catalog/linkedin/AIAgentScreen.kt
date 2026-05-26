@@ -32,7 +32,7 @@ fun AIAgentScreen(
     val isGlassTheme = appearance.isGlassTheme
     val isDarkTheme = appearance.isDarkTheme
     val contentColor = appearance.contentColor
-    val accentColor = glassAccentPalette(accentPaletteKey).color
+    val accentColor = vormexAccentColor(themeMode, accentPaletteKey)
     val backdrop = rememberLayerBackdrop()
 
     ProvideVormexAppearance(themeMode) {

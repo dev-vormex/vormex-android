@@ -21,7 +21,8 @@ object AgentSocketManager {
         val sessionId: String,
         val surface: String,
         val surfaceContext: Map<String, String>,
-        val allowAutonomousActions: Boolean
+        val allowAutonomousActions: Boolean,
+        val autonomyMode: String
     )
 
     data class AgentSocketEvent(
@@ -366,7 +367,8 @@ object AgentSocketManager {
         sessionId: String,
         surface: String,
         surfaceContext: Map<String, String> = emptyMap(),
-        allowAutonomousActions: Boolean
+        allowAutonomousActions: Boolean,
+        autonomyMode: String = if (allowAutonomousActions) "power" else "approval"
     ) {
         if (sessionId.isBlank()) {
             return
@@ -376,7 +378,8 @@ object AgentSocketManager {
             sessionId = sessionId,
             surface = surface,
             surfaceContext = surfaceContext,
-            allowAutonomousActions = allowAutonomousActions
+            allowAutonomousActions = allowAutonomousActions,
+            autonomyMode = autonomyMode
         )
         updateSession(sessionId)
         if (socket?.connected() == true) {
@@ -395,7 +398,8 @@ object AgentSocketManager {
         sessionId: String,
         surface: String,
         surfaceContext: Map<String, String> = emptyMap(),
-        allowAutonomousActions: Boolean? = null
+        allowAutonomousActions: Boolean? = null,
+        autonomyMode: String? = null
     ) {
         if (sessionId.isBlank() || socket?.connected() != true) {
             return
@@ -413,6 +417,9 @@ object AgentSocketManager {
 
         if (allowAutonomousActions != null) {
             payload.put("allowAutonomousActions", allowAutonomousActions)
+        }
+        if (!autonomyMode.isNullOrBlank()) {
+            payload.put("autonomyMode", autonomyMode)
         }
 
         socket?.emit("agent:surface_update", payload)
@@ -476,6 +483,7 @@ object AgentSocketManager {
                 .put("surface", request.surface)
                 .put("surfaceContext", contextJson)
                 .put("allowAutonomousActions", request.allowAutonomousActions)
+                .put("autonomyMode", request.autonomyMode)
         )
     }
 

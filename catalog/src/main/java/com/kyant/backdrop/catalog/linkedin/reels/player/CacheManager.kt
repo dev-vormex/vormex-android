@@ -1,3 +1,5 @@
+@file:androidx.media3.common.util.UnstableApi
+
 package com.kyant.backdrop.catalog.linkedin.reels.player
 
 import android.content.Context
@@ -8,7 +10,7 @@ import java.io.File
 
 object CacheManager {
     private const val CACHE_DIR_NAME = "reels_media_cache"
-    private const val MAX_CACHE_BYTES = 500L * 1024L * 1024L
+    private const val MAX_CACHE_BYTES = 320L * 1024L * 1024L
 
     @Volatile
     private var simpleCache: SimpleCache? = null

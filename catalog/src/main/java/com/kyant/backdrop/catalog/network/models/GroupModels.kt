@@ -46,7 +46,9 @@ data class GroupUser(
     val username: String? = null,
     val name: String? = null,
     val profileImage: String? = null,
-    val headline: String? = null
+    val headline: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -125,8 +127,31 @@ data class GroupInvite(
     val status: String = "pending", // pending, accepted, declined, expired
     val message: String? = null,
     val createdAt: String? = null,
+    val expiresAt: String? = null,
     val respondedAt: String? = null,
     val group: Group? = null
+)
+
+@Serializable
+data class GroupInviteLinkResponse(
+    val inviteCode: String,
+    val inviteUrl: String? = null,
+    val visibility: String = "ADMINS",
+    val canShare: Boolean = false,
+    val requiresApproval: Boolean = false,
+    val group: Group
+)
+
+@Serializable
+data class GroupJoinRequest(
+    val id: String,
+    val groupId: String,
+    val requesterId: String,
+    val inviteCode: String,
+    val status: String = "pending",
+    val requestedAt: String? = null,
+    val respondedAt: String? = null,
+    val requester: GroupUser
 )
 
 @Serializable
@@ -194,7 +219,9 @@ data class GroupMembersResponse(
 @Serializable
 data class JoinGroupResponse(
     val status: String, // "joined" or "pending"
-    val message: String
+    val message: String,
+    val groupId: String? = null,
+    val requestId: String? = null
 )
 
 @Serializable
@@ -241,6 +268,40 @@ data class UpdateMemberRoleRequest(
     val role: String
 )
 
+@Serializable
+data class GroupInviteLinkSettingsRequest(
+    val visibility: String
+)
+
+@Serializable
+data class CreateGroupInviteRequest(
+    val userId: String,
+    val message: String? = null
+)
+
+@Serializable
+data class GroupInviteResponse(
+    val invite: GroupInvite
+)
+
+@Serializable
+data class RespondToGroupInviteRequest(
+    val action: String
+)
+
+@Serializable
+data class GroupInviteActionResponse(
+    val status: String,
+    val message: String,
+    val groupId: String,
+    val requestId: String? = null
+)
+
+@Serializable
+data class GroupJoinRequestsResponse(
+    val requests: List<GroupJoinRequest>
+)
+
 // ==================== Circle Models ====================
 
 @Serializable
@@ -278,7 +339,9 @@ data class CircleMember(
     val college: String? = null,
     val role: String? = null,
     val xpInCircle: Int = 0,
-    val joinedAt: String? = null
+    val joinedAt: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable

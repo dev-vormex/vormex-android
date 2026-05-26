@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.offset
@@ -67,15 +68,14 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.Icon
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
+import com.kyant.backdrop.catalog.ui.blockTouchPassthrough
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
@@ -89,6 +89,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
@@ -106,6 +107,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
@@ -115,6 +117,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -135,11 +138,15 @@ import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.catalog.BuildConfig
 import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.components.LiquidBottomTab
 import com.kyant.backdrop.catalog.components.LiquidBottomTabs
 import com.kyant.backdrop.catalog.components.LiquidButton
+import com.kyant.backdrop.catalog.components.LiquidToggle
+import com.kyant.backdrop.catalog.network.AgentApiService
 import com.kyant.backdrop.catalog.network.ApiClient
+import com.kyant.backdrop.catalog.network.models.Author
 import com.kyant.backdrop.catalog.network.models.Comment
 import com.kyant.backdrop.catalog.network.models.FullProfileResponse
 import com.kyant.backdrop.catalog.network.models.PendingConnectionRequest
@@ -147,6 +154,7 @@ import com.kyant.backdrop.catalog.network.models.ProfileUpdateRequest
 import com.kyant.backdrop.catalog.network.models.CelebrationType
 import com.kyant.backdrop.catalog.network.models.PollOption
 import com.kyant.backdrop.catalog.network.models.Post
+import com.kyant.backdrop.catalog.network.models.PremiumPlanOption
 import com.kyant.backdrop.catalog.network.models.PremiumSubscriptionResponse
 import com.kyant.backdrop.catalog.network.models.StoryGroup
 import com.kyant.backdrop.catalog.payments.PremiumCheckoutManager
@@ -157,12 +165,20 @@ import com.kyant.backdrop.catalog.linkedin.posts.FormattedContent
 import com.kyant.backdrop.catalog.linkedin.posts.MentionProfilePreviewPopup
 import com.kyant.backdrop.catalog.linkedin.groups.GroupsScreen
 import com.kyant.backdrop.catalog.linkedin.groups.GroupDetailScreen
+import com.kyant.backdrop.catalog.linkedin.groups.GroupInviteLinkScreen
+import com.kyant.backdrop.catalog.linkedin.groups.GroupSettingsScreen
 import com.kyant.backdrop.catalog.linkedin.groups.GroupChatScreen
 import com.kyant.backdrop.catalog.linkedin.groups.CirclesScreen
+import com.kyant.backdrop.catalog.game.TicTacToeGameScreen
+import com.kyant.backdrop.catalog.game.OnlineTicTacToeGameScreen
+import com.kyant.backdrop.catalog.game.TapDuelGameScreen
+import com.kyant.backdrop.catalog.game.GamesHubScreen
+import com.kyant.backdrop.catalog.game.GameType
 import com.kyant.backdrop.catalog.linkedin.groups.CircleDetailScreen
 import com.kyant.backdrop.catalog.linkedin.reels.ReelsPreviewSection
 import com.kyant.backdrop.catalog.linkedin.reels.ReelsFeedScreen
 import com.kyant.backdrop.catalog.linkedin.reels.ReelCommentsSheet
+import com.kyant.backdrop.catalog.linkedin.reels.ReelCreateSheet
 import com.kyant.backdrop.catalog.linkedin.reels.ReelsViewModel
 import com.kyant.backdrop.catalog.network.models.Reel
 import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
@@ -172,9 +188,11 @@ import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.catalog.data.SettingsPreferences
+import com.kyant.backdrop.catalog.deeplink.VormexDeepLinks
 import com.kyant.shapes.Capsule
 import com.kyant.shapes.RoundedRectangle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import com.kyant.backdrop.catalog.chat.ChatViewModel
 import kotlin.math.PI
@@ -203,6 +221,12 @@ private fun Modifier.noRippleClickable(
     )
 }
 
+private class MenuAnchorBoundsHolder {
+    var coordinates: LayoutCoordinates? = null
+
+    fun currentBounds(): Rect? = coordinates?.takeIf { it.isAttached }?.boundsInWindow()
+}
+
 // Shimmer effect for skeleton loading
 @Composable
 private fun shimmerBrush(isLightTheme: Boolean): Brush {
@@ -219,7 +243,7 @@ private fun shimmerBrush(isLightTheme: Boolean): Brush {
             Color.DarkGray.copy(alpha = 0.3f)
         )
     }
-    
+
     val transition = rememberInfiniteTransition(label = "shimmer")
     val translateAnimation = transition.animateFloat(
         initialValue = 0f,
@@ -230,7 +254,7 @@ private fun shimmerBrush(isLightTheme: Boolean): Brush {
         ),
         label = "shimmer_translate"
     )
-    
+
     return Brush.linearGradient(
         colors = shimmerColors,
         start = Offset(translateAnimation.value - 300f, translateAnimation.value - 300f),
@@ -304,7 +328,7 @@ private fun PostSkeletonCard(
                     )
                 }
             }
-            
+
             // Content skeleton - multiple lines
             Box(
                 Modifier
@@ -327,7 +351,7 @@ private fun PostSkeletonCard(
                     .clip(RoundedCornerShape(4.dp))
                     .background(shimmerBrush)
             )
-            
+
             // Image skeleton
             Box(
                 Modifier
@@ -336,7 +360,7 @@ private fun PostSkeletonCard(
                     .clip(RoundedCornerShape(12.dp))
                     .background(shimmerBrush)
             )
-            
+
             // Stats skeleton
             Row(
                 Modifier.fillMaxWidth(),
@@ -357,7 +381,7 @@ private fun PostSkeletonCard(
                         .background(shimmerBrush)
                 )
             }
-            
+
             // Divider
             Box(
                 Modifier
@@ -365,7 +389,7 @@ private fun PostSkeletonCard(
                     .height(1.dp)
                     .background(if (isLightTheme) Color.LightGray.copy(alpha = 0.2f) else Color.DarkGray.copy(alpha = 0.2f))
             )
-            
+
             // Action buttons skeleton
             Row(
                 Modifier.fillMaxWidth(),
@@ -399,7 +423,11 @@ private fun SectionOverlayContainer(
     val appearance = currentVormexAppearance(themeMode)
     val isGlassTheme = appearance.isGlassTheme
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .blockTouchPassthrough()
+    ) {
         if (isGlassTheme) {
             GlassBackgroundLayer(
                 modifier = Modifier
@@ -450,8 +478,11 @@ fun LinkedInContent(
     val appScope = rememberCoroutineScope()
     val viewModel: FeedViewModel = viewModel(factory = FeedViewModel.Factory(context))
     val uiState by viewModel.uiState.collectAsState()
+    val sessionUserKey = uiState.currentUserId
+        ?.takeIf { uiState.isLoggedIn && it.isNotBlank() }
+        ?: "signed-out"
     val pendingGroupConversationKeys by MessageNotificationManager.pendingGroupConversationKeys.collectAsState()
-    
+
     // Theme preference: "glass", "light", "dark"
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
     val glassBackgroundKey by SettingsPreferences.glassBackgroundPreset(context)
@@ -461,35 +492,43 @@ fun LinkedInContent(
     val glassMotionStyleKey by SettingsPreferences.glassMotionStyle(context)
         .collectAsState(initial = DefaultGlassMotionStyleKey)
     val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
+    val showReelsOnHome by SettingsPreferences.showReelsOnHome(context).collectAsState(initial = false)
     val appearance = rememberVormexAppearance(themeMode)
     val isGlassTheme = appearance.isGlassTheme
     val isLightTheme = appearance.isLightTheme
     val isDarkTheme = appearance.isDarkTheme
     val contentColor = appearance.contentColor
-    val accentColor = glassAccentPalette(accentPaletteKey).color
+    val accentColor = vormexAccentColor(themeMode, accentPaletteKey)
     val hasPendingGroupMessages = pendingGroupConversationKeys.isNotEmpty()
     val footerIconSize = 28.dp
     val footerTextStyle = TextStyle(contentColor, 12.sp)
 
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var showFullMoreScreen by rememberSaveable { mutableStateOf(false) }
+    var premiumDetailsRequestKey by rememberSaveable { mutableIntStateOf(0) }
     var moreHubAnimationKey by rememberSaveable { mutableIntStateOf(0) }
     var viewingProfileUserId by remember { mutableStateOf<String?>(null) }
+    var profileOpenedFromReels by remember { mutableStateOf(false) }
     var openChatWithUserId by remember { mutableStateOf<String?>(null) }
+    var openChatInitialDraft by remember { mutableStateOf<String?>(null) }
+    var preparingConversationStarterForUserId by remember { mutableStateOf<String?>(null) }
+    var profileConversationHasMessagesByUserId by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     // Track if user is viewing a personal chat thread (for hiding bottom nav)
     var isInChatThread by remember { mutableStateOf(false) }
     val backdrop = rememberLayerBackdrop()
-    
+
     // Messages screen state
     var showMessagesScreen by remember { mutableStateOf(false) }
-    
+
     // Groups & Circles navigation state
     var showGroupsScreen by remember { mutableStateOf(false) }
     var showCirclesScreen by remember { mutableStateOf(false) }
     var selectedGroupId by remember { mutableStateOf<String?>(null) }
+    var selectedGroupInviteCode by remember { mutableStateOf<String?>(null) }
     var selectedCircleId by remember { mutableStateOf<String?>(null) }
     var showGroupChat by remember { mutableStateOf(false) }
-    
+    var showGroupSettingsScreen by remember { mutableStateOf(false) }
+
     // Retention features navigation state
     var showWeeklyGoalsScreen by remember { mutableStateOf(false) }
     var showStreakDetailsScreen by remember { mutableStateOf(false) }
@@ -498,16 +537,19 @@ fun LinkedInContent(
     var showSessionSummary by remember { mutableStateOf(false) }
     var showConnectionCelebration by remember { mutableStateOf(false) }
     var celebrationConnectionId by remember { mutableStateOf<String?>(null) }
-    
+
     // Deep link navigation state - for opening specific post/reel from notification
     var deepLinkPostId by remember { mutableStateOf<String?>(null) }
+    var deepLinkPostShouldOpenComments by remember { mutableStateOf(false) }
     var deepLinkReelId by remember { mutableStateOf<String?>(null) }
+    var deepLinkReelCommentId by remember { mutableStateOf<String?>(null) }
+    var deepLinkReelParentCommentId by remember { mutableStateOf<String?>(null) }
     var deepLinkConversationId by remember { mutableStateOf<String?>(null) }
 
     // Shared post detail/comments state (used by feed and profile screens)
     var showCommentsSheet by remember { mutableStateOf(false) }
     var selectedPostForComments by remember { mutableStateOf<String?>(null) }
-    
+
     // Settings & More screen navigation state
     var showProfileScreen by remember { mutableStateOf(false) }
     var showSavedPostsScreen by remember { mutableStateOf(false) }
@@ -523,18 +565,33 @@ fun LinkedInContent(
     var showAboutScreen by remember { mutableStateOf(false) }
     var showContactScreen by remember { mutableStateOf(false) }
     var showGrowthHubScreen by remember { mutableStateOf(false) }
+    var showGamesScreen by remember { mutableStateOf(false) }
+    var activeGame by remember { mutableStateOf(GameType.NONE) }
     var showSkillPassportScreen by remember { mutableStateOf(false) }
     var showSkillSwapScreen by remember { mutableStateOf(false) }
+    var showHackathonBoardScreen by remember { mutableStateOf(false) }
     var showAgentSheet by remember { mutableStateOf(false) }
     var minimizeAgentSheetForVoice by remember { mutableStateOf(false) }
     var autoMinimizedAgentSheetForActiveVoice by remember { mutableStateOf(false) }
     var showLogoutDialog by remember { mutableStateOf(false) }
+    var logoutDialogTitle by remember { mutableStateOf("Log Out") }
+    var logoutDialogMessage by remember {
+        mutableStateOf("Are you sure you want to log out? You'll need to sign in again to access your account.")
+    }
+    var logoutDialogConfirmText by remember { mutableStateOf("Log Out") }
     var notificationUnreadCount by remember { mutableIntStateOf(0) }
-    
-    val hasOverlayBackNavigation = viewingProfileUserId != null ||
+    var shareAnimationTrigger by remember { mutableIntStateOf(0) }
+    val hasOpenPostDetail = uiState.openedPost != null ||
+        uiState.isLoadingOpenedPost ||
+        uiState.openedPostError != null
+
+    val hasOverlayBackNavigation = hasOpenPostDetail ||
+            viewingProfileUserId != null ||
             showMessagesScreen ||
             showGroupChat ||
+            showGroupSettingsScreen ||
             selectedGroupId != null ||
+            selectedGroupInviteCode != null ||
             selectedCircleId != null ||
             showGroupsScreen ||
             showCirclesScreen ||
@@ -557,37 +614,130 @@ fun LinkedInContent(
             showAboutScreen ||
             showContactScreen ||
             showGrowthHubScreen ||
+            showGamesScreen ||
             showSkillPassportScreen ||
-            showSkillSwapScreen
+            showSkillSwapScreen ||
+            showHackathonBoardScreen ||
+            showAgentSheet
+
+    fun resetAccountScopedNavigation() {
+        selectedTab = 0
+        showFullMoreScreen = false
+        viewingProfileUserId = null
+        profileOpenedFromReels = false
+        openChatWithUserId = null
+        openChatInitialDraft = null
+        preparingConversationStarterForUserId = null
+        profileConversationHasMessagesByUserId = emptyMap()
+        isInChatThread = false
+        showMessagesScreen = false
+        showGroupsScreen = false
+        showCirclesScreen = false
+        selectedGroupId = null
+        selectedGroupInviteCode = null
+        selectedCircleId = null
+        showGroupChat = false
+        showGroupSettingsScreen = false
+        showWeeklyGoalsScreen = false
+        showStreakDetailsScreen = false
+        showTopNetworkersScreen = false
+        showOnboardingScreen = false
+        showSessionSummary = false
+        showConnectionCelebration = false
+        celebrationConnectionId = null
+        deepLinkPostId = null
+        deepLinkPostShouldOpenComments = false
+        deepLinkReelId = null
+        deepLinkReelCommentId = null
+        deepLinkReelParentCommentId = null
+        deepLinkConversationId = null
+        showCommentsSheet = false
+        selectedPostForComments = null
+        showProfileScreen = false
+        showSavedPostsScreen = false
+        showConnectionRequestsScreen = false
+        showProfileCustomizationsScreen = false
+        showNotificationsInbox = false
+        showProfileViewersScreen = false
+        showNotificationSettingsScreen = false
+        showPrivacySettingsScreen = false
+        showAppearanceSettingsScreen = false
+        showHelpScreen = false
+        showInviteFriendsScreen = false
+        showAboutScreen = false
+        showContactScreen = false
+        showGrowthHubScreen = false
+        showGamesScreen = false
+        activeGame = GameType.NONE
+        showSkillPassportScreen = false
+        showSkillSwapScreen = false
+        showHackathonBoardScreen = false
+        showAgentSheet = false
+        minimizeAgentSheetForVoice = false
+        autoMinimizedAgentSheetForActiveVoice = false
+    }
+
+    fun openPremiumDetails() {
+        resetAccountScopedNavigation()
+        selectedTab = 3
+        showFullMoreScreen = false
+        premiumDetailsRequestKey += 1
+    }
+
+    fun showAccountExitDialog(switchAccount: Boolean) {
+        logoutDialogTitle = if (switchAccount) "Switch Account" else "Log Out"
+        logoutDialogMessage = if (switchAccount) {
+            "Sign out of this account so you can choose another one."
+        } else {
+            "Are you sure you want to log out? You'll need to sign in again to access your account."
+        }
+        logoutDialogConfirmText = if (switchAccount) "Switch Account" else "Log Out"
+        showLogoutDialog = true
+    }
 
     // Handle system back button for all overlay screens
     // Priority: innermost overlays first, then outer overlays
     BackHandler(enabled = hasOverlayBackNavigation) {
         when {
+            showAgentSheet -> {
+                minimizeAgentSheetForVoice = false
+                showAgentSheet = false
+            }
+
+            hasOpenPostDetail -> viewModel.closePostDetail()
+
             // Profile viewing (highest priority - innermost overlay)
             viewingProfileUserId != null -> viewingProfileUserId = null
-            
+
             // Messages screen
             showMessagesScreen -> showMessagesScreen = false
-            
+
             // Group chat
             showGroupChat -> showGroupChat = false
-            
+            showGroupSettingsScreen -> showGroupSettingsScreen = false
+
             // Group/Circle detail screens
-            selectedGroupId != null -> selectedGroupId = null
+            selectedGroupInviteCode != null -> {
+                selectedGroupInviteCode = null
+                showGroupsScreen = true
+            }
+            selectedGroupId != null -> {
+                showGroupSettingsScreen = false
+                selectedGroupId = null
+            }
             selectedCircleId != null -> selectedCircleId = null
-            
+
             // Groups/Circles list screens
             showGroupsScreen -> showGroupsScreen = false
             showCirclesScreen -> showCirclesScreen = false
-            
+
             // Retention feature screens
             showWeeklyGoalsScreen -> showWeeklyGoalsScreen = false
             showStreakDetailsScreen -> showStreakDetailsScreen = false
             showTopNetworkersScreen -> showTopNetworkersScreen = false
             showSessionSummary -> showSessionSummary = false
             showConnectionCelebration -> showConnectionCelebration = false
-            
+
             // Settings screens
             showProfileScreen -> showProfileScreen = false
             showSavedPostsScreen -> showSavedPostsScreen = false
@@ -603,8 +753,16 @@ fun LinkedInContent(
             showAboutScreen -> showAboutScreen = false
             showContactScreen -> showContactScreen = false
             showGrowthHubScreen -> showGrowthHubScreen = false
+            showGamesScreen -> {
+                if (activeGame != GameType.NONE) {
+                    activeGame = GameType.NONE
+                } else {
+                    showGamesScreen = false
+                }
+            }
             showSkillPassportScreen -> showSkillPassportScreen = false
             showSkillSwapScreen -> showSkillSwapScreen = false
+            showHackathonBoardScreen -> showHackathonBoardScreen = false
         }
     }
 
@@ -621,6 +779,45 @@ fun LinkedInContent(
         selectedTab = 0
     }
 
+    val handlePostMenuAction: (String, String) -> Unit = { postId, action ->
+        when (action) {
+            "save" -> viewModel.toggleSave(postId)
+            "copy_link" -> viewModel.copyPostLink(postId)
+            "not_interested" -> Toast.makeText(
+                context,
+                "We'll show fewer posts like this",
+                Toast.LENGTH_SHORT
+            ).show()
+            "report" -> Toast.makeText(
+                context,
+                "Thanks for the report",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    val openPostFromLink: (String) -> Unit = { postId ->
+        selectedTab = 0
+        showFullMoreScreen = false
+        showMessagesScreen = false
+        isInChatThread = false
+        showGroupChat = false
+        showGroupSettingsScreen = false
+        selectedGroupId = null
+        selectedGroupInviteCode = null
+        selectedCircleId = null
+        showSavedPostsScreen = false
+        showNotificationsInbox = false
+        showCommentsSheet = false
+        selectedPostForComments = null
+        viewModel.openPostDetail(postId)
+    }
+
+    val ownProfileViewModel: ProfileViewModel = viewModel(
+        key = "profile:me:$sessionUserKey",
+        factory = ProfileViewModel.Factory(context)
+    )
+
     LaunchedEffect(uiState.isLoggedIn, uiState.currentUserId) {
         notificationUnreadCount = if (uiState.isLoggedIn) {
             ApiClient.getNotificationUnreadCount(context).getOrDefault(0)
@@ -628,10 +825,14 @@ fun LinkedInContent(
             0
         }
     }
-    
+
     // Handle deep links from push notifications
-    LaunchedEffect(deepLink) {
+    LaunchedEffect(deepLink, uiState.isLoggedIn) {
         deepLink?.let { link ->
+            if (link.action != "auth_flow" && !uiState.isLoggedIn) {
+                return@LaunchedEffect
+            }
+
             when (link.action) {
                 "auth_flow" -> {
                     if (!uiState.isLoggedIn) {
@@ -674,12 +875,15 @@ fun LinkedInContent(
                         val convId = link.conversationId
                         deepLinkConversationId = convId
                         openChatWithUserId = null
+                        openChatInitialDraft = null
                     } else if (!link.userId.isNullOrBlank()) {
                         deepLinkConversationId = null
+                        openChatInitialDraft = null
                         openChatWithUserId = link.userId
                     } else {
                         deepLinkConversationId = null
                         openChatWithUserId = null
+                        openChatInitialDraft = null
                     }
                 }
                 com.kyant.backdrop.catalog.notifications.VormexMessagingService.ACTION_GROUP_CHAT -> {
@@ -687,14 +891,65 @@ fun LinkedInContent(
                         selectedTab = 3
                         showGroupsScreen = true
                         selectedGroupId = groupId
+                        selectedGroupInviteCode = null
                         showGroupChat = true
                     }
                 }
+                VormexDeepLinks.ACTION_GROUP_INVITE_LINK -> {
+                    link.groupInviteCode?.let { inviteCode ->
+                        selectedTab = 3
+                        showGroupsScreen = true
+                        selectedGroupId = null
+                        selectedGroupInviteCode = inviteCode
+                        showGroupChat = false
+                        showGroupSettingsScreen = false
+                    }
+                }
+                VormexDeepLinks.ACTION_POST_LINK -> {
+                    link.postId?.let { postId ->
+                        openPostFromLink(postId)
+                    }
+                }
+                VormexDeepLinks.ACTION_REEL_LINK -> {
+                    link.reelId?.let { reelId ->
+                        selectedTab = 0
+                        deepLinkReelId = reelId
+                        deepLinkReelCommentId = link.commentId
+                        deepLinkReelParentCommentId = link.parentCommentId
+                    }
+                }
+                VormexDeepLinks.ACTION_GITHUB_INTEGRATION -> {
+                    selectedTab = 4
+                    showFullMoreScreen = false
+                    showProfileScreen = false
+                    ownProfileViewModel.handleGitHubOAuthResult(
+                        status = link.githubStatus,
+                        message = link.githubMessage
+                    )
+                    Toast.makeText(
+                        context,
+                        if (link.githubStatus == "connected") {
+                            "GitHub connected"
+                        } else {
+                            "GitHub connection failed"
+                        },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
                 com.kyant.backdrop.catalog.notifications.VormexMessagingService.ACTION_POST -> {
-                    // Navigate to specific post (like, comment, mention notifications)
+                    // Navigate to specific post (like/share/post mention notifications)
                     link.postId?.let { postId ->
                         selectedTab = 0 // Feed tab
                         deepLinkPostId = postId
+                        deepLinkPostShouldOpenComments = false
+                    }
+                }
+                com.kyant.backdrop.catalog.notifications.VormexMessagingService.ACTION_POST_COMMENTS -> {
+                    // Navigate directly to the discussion for comment/reply notifications.
+                    link.postId?.let { postId ->
+                        selectedTab = 0 // Feed tab
+                        deepLinkPostId = postId
+                        deepLinkPostShouldOpenComments = true
                     }
                 }
                 com.kyant.backdrop.catalog.notifications.VormexMessagingService.ACTION_REEL -> {
@@ -702,6 +957,8 @@ fun LinkedInContent(
                     link.reelId?.let { reelId ->
                         selectedTab = 0 // Feed tab
                         deepLinkReelId = reelId
+                        deepLinkReelCommentId = link.commentId
+                        deepLinkReelParentCommentId = link.parentCommentId
                     }
                 }
                 com.kyant.backdrop.catalog.notifications.VormexMessagingService.ACTION_CONNECTIONS -> {
@@ -738,28 +995,75 @@ fun LinkedInContent(
         factory = FindPeopleViewModel.Factory(context)
     )
     val rewardsState by findPeopleViewModel.uiState.collectAsState()
-    val ownProfileViewModel: ProfileViewModel = viewModel(
-        key = "profile:me",
-        factory = ProfileViewModel.Factory(context)
-    )
     val premiumRefreshSignal by PremiumCheckoutManager.refreshSignal.collectAsState()
     val rewardCardsViewModel: RewardCardsViewModel = viewModel(factory = RewardCardsViewModel.Factory(context))
     val rewardCardsState by rewardCardsViewModel.uiState.collectAsState()
-    
+
     // Reels state
     val reelsViewModel: ReelsViewModel = viewModel(factory = ReelsViewModel.Factory(context))
     val reelsState by reelsViewModel.uiState.collectAsState()
-    
+    var showReelCreateSheet by rememberSaveable { mutableStateOf(false) }
+    var reopenReelDraftLibrary by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(viewingProfileUserId, profileOpenedFromReels, reelsState.isViewerOpen) {
+        if (profileOpenedFromReels && viewingProfileUserId == null && reelsState.isViewerOpen) {
+            reelsViewModel.resumePlayback(reelsState.currentReelIndex)
+            profileOpenedFromReels = false
+        }
+    }
+    val openReelCreateSheet: () -> Unit = {
+        reelsViewModel.pausePlayback(false)
+        reelsViewModel.clearReelUploadState()
+        reopenReelDraftLibrary = false
+        showReelCreateSheet = true
+    }
+    val closeReelCreateSheet: () -> Unit = {
+        showReelCreateSheet = false
+        reopenReelDraftLibrary = false
+        reelsViewModel.clearReelUploadState()
+        if (reelsState.isViewerOpen) {
+            reelsViewModel.resumePlayback(reelsState.currentReelIndex)
+        }
+    }
+    LaunchedEffect(showReelsOnHome, uiState.isLoggedIn) {
+        if (showReelsOnHome && uiState.isLoggedIn) {
+            reelsViewModel.loadPreviewReels()
+        }
+    }
+
     // Retention features state (Weekly Goals, Leaderboard, Session Summary)
     val retentionViewModel: RetentionViewModel = viewModel(factory = RetentionViewModel.Factory(context))
     val retentionState by retentionViewModel.uiState.collectAsState()
-    
+
     // Chat state for unread message indicator
-    val chatViewModel: ChatViewModel = viewModel(factory = ChatViewModel.Factory(context))
+    val chatViewModel: ChatViewModel = viewModel(
+        key = "chat:$sessionUserKey",
+        factory = ChatViewModel.Factory(context)
+    )
     val chatState by chatViewModel.uiState.collectAsState()
+    LaunchedEffect(uiState.isLoggedIn, uiState.currentUserId, chatViewModel) {
+        chatViewModel.onSessionChanged(if (uiState.isLoggedIn) uiState.currentUserId else null)
+    }
+    LaunchedEffect(viewingProfileUserId, uiState.isLoggedIn, uiState.currentUserId) {
+        val profileUserId = viewingProfileUserId ?: return@LaunchedEffect
+        if (!uiState.isLoggedIn || profileUserId == uiState.currentUserId) return@LaunchedEffect
+
+        val cachedConversation = chatState.conversations.firstOrNull { it.otherParticipant.id == profileUserId }
+        if (cachedConversation?.lastMessage != null) {
+            profileConversationHasMessagesByUserId =
+                profileConversationHasMessagesByUserId + (profileUserId to true)
+            return@LaunchedEffect
+        }
+
+        ApiClient.getConversationStatusWithUser(context, profileUserId)
+            .onSuccess { status ->
+                profileConversationHasMessagesByUserId =
+                    profileConversationHasMessagesByUserId + (profileUserId to status.hasMessages)
+            }
+    }
     val agentViewModel: AgentViewModel = viewModel(factory = AgentViewModel.Factory(context))
     val agentState by agentViewModel.uiState.collectAsState()
     val canUseAgent = uiState.currentUser?.canUseAgent == true
+    val canOpenAgent = uiState.isLoggedIn
     val isAgentVoiceLive =
         agentState.isVoiceSessionConnecting ||
             agentState.isRecordingVoice ||
@@ -775,23 +1079,14 @@ fun LinkedInContent(
         animationSpec = tween(durationMillis = agentSheetAnimationDuration, easing = FastOutSlowInEasing),
         label = "agentSheetAlpha"
     )
-    val agentSheetScale by animateFloatAsState(
-        targetValue = if (minimizeAgentSheetForVoice) 0.96f else 1f,
-        animationSpec = tween(durationMillis = agentSheetAnimationDuration, easing = FastOutSlowInEasing),
-        label = "agentSheetScale"
-    )
-    val agentSheetScrimAlpha by animateFloatAsState(
-        targetValue = if (minimizeAgentSheetForVoice) 0f else 0.32f,
-        animationSpec = tween(durationMillis = agentSheetAnimationDuration, easing = FastOutSlowInEasing),
-        label = "agentSheetScrimAlpha"
-    )
 
     val agentSurface = when {
         showGrowthHubScreen -> "growth_hub"
         showNotificationsInbox -> "notifications"
         showProfileViewersScreen -> "profile_views"
+        showHackathonBoardScreen -> "hackathons"
         showMessagesScreen || isInChatThread -> "chat"
-        showGroupsScreen || selectedGroupId != null || showGroupChat -> "groups"
+        showGroupsScreen || selectedGroupId != null || selectedGroupInviteCode != null || showGroupChat || showGroupSettingsScreen -> "groups"
         viewingProfileUserId != null || selectedTab == 4 -> "profile"
         selectedTab == 1 -> "find_people"
         else -> "feed"
@@ -830,9 +1125,12 @@ fun LinkedInContent(
             isInChatThread ||
             showGroupsScreen ||
             selectedGroupId != null ||
+            selectedGroupInviteCode != null ||
             showGroupChat ||
+            showGroupSettingsScreen ||
             showNotificationsInbox ||
             showProfileViewersScreen ||
+            showHackathonBoardScreen ||
             showGrowthHubScreen
     val shouldShowInlineResultsOverlay =
         uiState.isLoggedIn &&
@@ -852,10 +1150,10 @@ fun LinkedInContent(
         }
     }
 
-    // Own profile caches for 5 minutes; refresh when opening the tab so new posts (e.g. celebrations) appear.
+    // Own profile should paint from memory/disk cache immediately, then refresh in the background.
     LaunchedEffect(selectedTab, uiState.isLoggedIn) {
         if (uiState.isLoggedIn && selectedTab == 4) {
-            ownProfileViewModel.loadProfile(userId = null, forceRefresh = true)
+            ownProfileViewModel.loadProfile(userId = null, forceRefresh = false)
         }
     }
 
@@ -888,7 +1186,7 @@ fun LinkedInContent(
         delay(280)
         retentionViewModel.ensureRetentionLoaded()
         delay(220)
-        reelsViewModel.prefetchAppStartData()
+        reelsViewModel.prefetchAppStartData(includeHomePreview = showReelsOnHome)
         rewardCardsViewModel.maybeLoadOnAppOpen(true)
     }
 
@@ -908,8 +1206,8 @@ fun LinkedInContent(
         }
     }
 
-    LaunchedEffect(canUseAgent) {
-        if (!canUseAgent) {
+    LaunchedEffect(uiState.isLoggedIn) {
+        if (!uiState.isLoggedIn) {
             autoMinimizedAgentSheetForActiveVoice = false
             minimizeAgentSheetForVoice = false
             showAgentSheet = false
@@ -918,16 +1216,12 @@ fun LinkedInContent(
     }
 
     val openAgentPanel: () -> Unit = {
-        if (uiState.currentUser?.canUseAgent == true) {
+        if (!uiState.isLoggedIn) {
+            Toast.makeText(context, "Please sign in to use vormex.", Toast.LENGTH_SHORT).show()
+        } else {
             showFullMoreScreen = false
             minimizeAgentSheetForVoice = false
             showAgentSheet = true
-        } else {
-            Toast.makeText(
-                context,
-                "AI Agent access is not enabled for this account yet.",
-                Toast.LENGTH_SHORT
-            ).show()
         }
     }
 
@@ -966,8 +1260,11 @@ fun LinkedInContent(
                     openChatWithUserId != null ||
                     deepLinkConversationId != null ||
                     showGroupsScreen ||
+                    showHackathonBoardScreen ||
                     selectedGroupId != null ||
+                    selectedGroupInviteCode != null ||
                     showGroupChat ||
+                    showGroupSettingsScreen ||
                     viewingProfileUserId != null
             showGrowthHubScreen = false
             showNotificationsInbox = false
@@ -975,10 +1272,14 @@ fun LinkedInContent(
             showMessagesScreen = false
             isInChatThread = false
             openChatWithUserId = null
+            openChatInitialDraft = null
             deepLinkConversationId = null
             showGroupsScreen = false
+            showHackathonBoardScreen = false
             selectedGroupId = null
+            selectedGroupInviteCode = null
             showGroupChat = false
+            showGroupSettingsScreen = false
             viewingProfileUserId = null
             if (hadOverlay && transitionDelayMs > 0) {
                 delay(transitionDelayMs)
@@ -1015,6 +1316,7 @@ fun LinkedInContent(
                     showMessagesScreen = true
                     intent.conversationId?.let { deepLinkConversationId = it }
                     if (intent.conversationId.isNullOrBlank()) {
+                        openChatInitialDraft = null
                         openChatWithUserId = intent.userId
                     }
                 }
@@ -1072,9 +1374,13 @@ fun LinkedInContent(
                     .background(appearance.backgroundColor)
             )
         }
-        
-        // Show auth screen if not logged in
-        if (!uiState.isLoggedIn) {
+
+        if (uiState.isRestoringSession) {
+            SessionRestoreScreen(
+                contentColor = contentColor,
+                accentColor = accentColor
+            )
+        } else if (!uiState.isLoggedIn) {
             when (uiState.authScreen) {
                 AuthScreen.LOGIN -> LoginScreen(
                     backdrop = backdrop,
@@ -1174,25 +1480,38 @@ fun LinkedInContent(
                     when (selectedTab) {
                         0 -> {
                             // Handle deep link to specific post (from notification)
-                            LaunchedEffect(deepLinkPostId) {
+                            LaunchedEffect(deepLinkPostId, deepLinkPostShouldOpenComments) {
                                 deepLinkPostId?.let { postId ->
-                                    // Open the comments sheet for this post
-                                    selectedPostForComments = postId
-                                    viewModel.loadComments(postId)
-                                    showCommentsSheet = true
+                                    if (deepLinkPostShouldOpenComments) {
+                                        selectedPostForComments = postId
+                                        viewModel.loadComments(postId)
+                                        showCommentsSheet = true
+                                    } else {
+                                        openPostFromLink(postId)
+                                    }
                                     deepLinkPostId = null // Clear after handling
+                                    deepLinkPostShouldOpenComments = false
                                 }
                             }
-                            
+
                             // Handle deep link to specific reel (from notification)
-                            LaunchedEffect(deepLinkReelId) {
+                            LaunchedEffect(deepLinkReelId, deepLinkReelCommentId, deepLinkReelParentCommentId) {
                                 deepLinkReelId?.let { reelId ->
                                     // Open the reel viewer
                                     reelsViewModel.loadReelById(reelId)
+                                    if (!deepLinkReelCommentId.isNullOrBlank()) {
+                                        reelsViewModel.openComments(
+                                            reelId = reelId,
+                                            highlightCommentId = deepLinkReelCommentId,
+                                            parentCommentId = deepLinkReelParentCommentId
+                                        )
+                                    }
                                     deepLinkReelId = null // Clear after handling
+                                    deepLinkReelCommentId = null
+                                    deepLinkReelParentCommentId = null
                                 }
                             }
-                            
+
                             Box(Modifier.fillMaxSize()) {
                                 FeedScreen(
                                     backdrop = backdrop,
@@ -1202,16 +1521,18 @@ fun LinkedInContent(
                                     posts = uiState.posts,
                                     storyGroups = uiState.storyGroups,
                                     // Reels data
-                                    reels = reelsState.previewReels,
-                                    isLoadingReels = reelsState.isLoadingPreview,
+                                    showReelsOnHome = showReelsOnHome,
+                                    reels = if (showReelsOnHome) reelsState.previewReels else emptyList(),
+                                    isLoadingReels = showReelsOnHome && reelsState.isLoadingPreview,
                                     onReelClick = { index ->
-                                        reelsViewModel.openReelsViewer(reelsState.previewReels, index)
+                                        reelsViewModel.openPreviewReelsViewer(index)
                                     },
                                     onSeeAllReelsClick = {
-                                        reelsViewModel.loadReelsFeed()
-                                        reelsViewModel.openReelsViewer(reelsState.previewReels, 0)
+                                        reelsViewModel.loadAndOpenReels()
                                     },
+                                    onCreateReelClick = openReelCreateSheet,
                                 isLoading = uiState.isLoading,
+                                isRefreshing = uiState.isRefreshingFeed,
                                 error = uiState.error,
                                 currentUserInitials = uiState.currentUser?.name?.split(" ")?.mapNotNull { it.firstOrNull()?.uppercase() }?.take(2)?.joinToString("") ?: "U",
                                 currentUserProfileImage = uiState.currentUser?.profileImage,
@@ -1225,14 +1546,16 @@ fun LinkedInContent(
                                 showLoginStreakBadge = uiState.showLoginStreakBadge,
                                 onDismissStreakReminder = { viewModel.dismissStreakReminder() },
                                 onDismissLoginStreakBadge = { viewModel.dismissLoginStreakBadge() },
-                                onNavigateToFindPeople = { 
+                                onNavigateToFindPeople = {
                                     viewModel.clearError() // Clear any error when navigating
-                                    selectedTab = 1 
+                                    selectedTab = 1
                                 },
                                 onRefresh = {
                                     viewModel.loadFeed(forceRefresh = true)
                                     viewModel.loadStories(forceRefresh = true)
-                                    reelsViewModel.loadPreviewReels(forceRefresh = true)
+                                    if (showReelsOnHome) {
+                                        reelsViewModel.loadPreviewReels(forceRefresh = true)
+                                    }
                                     findPeopleViewModel.refreshAllVariableRewards()
                                     retentionViewModel.loadAllRetentionData(forceRefresh = true)
                                 },
@@ -1251,15 +1574,7 @@ fun LinkedInContent(
                                 onProfileClick = { userId ->
                                     viewingProfileUserId = userId
                                 },
-                                onMenuAction = { postId, action ->
-                                    // Handle menu actions
-                                    when (action) {
-                                        "report" -> { /* Handle report */ }
-                                        "save" -> { /* Handle save */ }
-                                        "copy_link" -> { /* Handle copy link */ }
-                                        "not_interested" -> { /* Handle not interested */ }
-                                    }
-                                },
+                                onMenuAction = handlePostMenuAction,
                                 onStoryClick = { groupIndex ->
                                     viewModel.openStoryViewer(groupIndex)
                                 },
@@ -1286,7 +1601,7 @@ fun LinkedInContent(
                                 isLoadingMore = uiState.isLoadingMore,
                                 onLoadMore = { viewModel.loadMorePosts() }
                             )
-                            
+
                             // Share modal
                             if (uiState.showShareModal && uiState.sharePostId != null) {
                                 SharePostModal(
@@ -1294,22 +1609,24 @@ fun LinkedInContent(
                                     contentColor = contentColor,
                                     accentColor = accentColor,
                                     isLightTheme = isLightTheme,
-                                    connections = uiState.mentionSearchResults,
-                                    isLoading = uiState.isSearchingMentions,
+                                    shareTargets = uiState.shareTargets,
+                                    isLoading = uiState.isLoadingShareTargets,
                                     isSharing = uiState.isSharing,
-                                    error = null,
+                                    error = uiState.shareError,
                                     onDismiss = { viewModel.hideShareModal() },
-                                    onShareToConnections = { connectionIds, message ->
-                                        // For now, just share externally
-                                        activity?.let { viewModel.sharePostExternal(uiState.sharePostId!!, it) }
+                                    onCopyLink = {
+                                        uiState.sharePostId?.let { postId ->
+                                            viewModel.copyPostLink(postId)
+                                        }
                                     },
-                                    onSearchConnections = { query ->
-                                        viewModel.searchMentions(query)
+                                    onShareToTargets = { targetIds, message ->
+                                        viewModel.sharePostInApp(targetIds, message)
                                     },
-                                    onClearError = { /* No error state yet */ }
+                                    onClearError = { viewModel.clearShareError() },
+                                    onShareAnimation = { shareAnimationTrigger++ }
                                 )
                             }
-                            
+
                             // Story Viewer Dialog
                             if (uiState.isStoryViewerOpen && uiState.storyGroups.isNotEmpty()) {
                                 StoryViewerDialog(
@@ -1330,7 +1647,7 @@ fun LinkedInContent(
                                     }
                                 )
                             }
-                            
+
                             // Story Creator Dialog
                             if (uiState.isStoryCreatorOpen) {
                                 StoryCreatorDialog(
@@ -1351,20 +1668,33 @@ fun LinkedInContent(
                                     isCreating = uiState.isCreatingStory
                                 )
                             }
-                            
+
+                                val activeUploadProgress =
+                                    if (reelsState.uploadProgress.status != UploadStatus.IDLE) {
+                                        reelsState.uploadProgress
+                                    } else {
+                                        uiState.uploadProgress
+                                    }
+
                                 // Upload Progress Bar (Instagram-style)
                                 GlassUploadProgressBar(
-                                    uploadProgress = uiState.uploadProgress,
+                                    uploadProgress = activeUploadProgress,
                                     backdrop = backdrop,
                                     contentColor = contentColor,
                                     accentColor = accentColor,
-                                    onDismiss = { viewModel.dismissUploadError() },
+                                    onDismiss = {
+                                        if (reelsState.uploadProgress.status != UploadStatus.IDLE) {
+                                            reelsViewModel.dismissReelUploadProgress()
+                                        } else {
+                                            viewModel.dismissUploadError()
+                                        }
+                                    },
                                     modifier = Modifier
                                         .align(Alignment.TopCenter)
                                         .padding(top = 8.dp)
                                         .statusBarsPadding()
                                 )
-                                
+
                                 // Trending Banner (auto-hide after 2 seconds)
                                 TrendingBannerAutoHide(
                                     isTrending = rewardsState.isTrending,
@@ -1393,35 +1723,42 @@ fun LinkedInContent(
                             accentColor = accentColor,
                             isCreating = uiState.isCreatingPost,
                             error = uiState.error,
-                            userName = uiState.currentUser?.name ?: uiState.currentUser?.username ?: "User",
+                            userName = listOf(
+                                uiState.currentUser?.name,
+                                uiState.currentUser?.username,
+                                uiState.currentUser?.email?.substringBefore("@")
+                            ).firstOrNull { !it.isNullOrBlank() } ?: "User",
+                            userUsername = uiState.currentUser?.username,
                             userAvatar = uiState.currentUser?.profileImage,
                             mentionSearchResults = uiState.mentionSearchResults,
                             isSearchingMentions = uiState.isSearchingMentions,
-                            onCreateTextPost = { content, visibility, mentions ->
-                                viewModel.createTextPost(content, visibility, mentions) { selectedTab = 0 }
+                            onCreateTextPost = { content, visibility, mentions, collaboratorIds, defaultVideoId ->
+                                viewModel.createTextPost(content, visibility, mentions, defaultVideoId, collaboratorIds) { selectedTab = 0 }
                             },
-                            onCreateImagePost = { content, visibility, images, mentions ->
-                                viewModel.createImagePost(content, visibility, images, mentions) { selectedTab = 0 }
+                            onCreateImagePost = { content, visibility, images, mentions, collaboratorIds, defaultVideoId ->
+                                viewModel.createImagePost(content, visibility, images, mentions, defaultVideoId, collaboratorIds) { selectedTab = 0 }
                             },
-                            onCreateVideoPost = { content, visibility, videoBytes, videoFilename, mentions ->
-                                viewModel.createVideoPost(content, visibility, videoBytes, videoFilename, mentions) { selectedTab = 0 }
+                            onCreateVideoPost = { content, visibility, videoBytes, videoFilename, mentions, collaboratorIds, defaultVideoId ->
+                                viewModel.createVideoPost(content, visibility, videoBytes, videoFilename, mentions, defaultVideoId, collaboratorIds) { selectedTab = 0 }
                             },
-                            onCreateLinkPost = { linkUrl, content, visibility, mentions ->
-                                viewModel.createLinkPost(linkUrl, content, visibility, mentions) { selectedTab = 0 }
+                            onCreateLinkPost = { linkUrl, content, visibility, mentions, collaboratorIds, defaultVideoId ->
+                                viewModel.createLinkPost(linkUrl, content, visibility, mentions, defaultVideoId, collaboratorIds) { selectedTab = 0 }
                             },
-                            onCreatePollPost = { pollOptions, pollDurationHours, content, visibility, showResultsBeforeVote, mentions ->
-                                viewModel.createPollPost(pollOptions, pollDurationHours, content, visibility, showResultsBeforeVote, mentions) { selectedTab = 0 }
+                            onCreatePollPost = { pollOptions, pollDurationHours, content, visibility, showResultsBeforeVote, mentions, collaboratorIds, defaultVideoId ->
+                                viewModel.createPollPost(pollOptions, pollDurationHours, content, visibility, showResultsBeforeVote, mentions, defaultVideoId, collaboratorIds) { selectedTab = 0 }
                             },
-                            onCreateArticlePost = { articleTitle, content, visibility, coverImage, articleTags, mentions ->
-                                viewModel.createArticlePost(articleTitle, content, visibility, coverImage, articleTags, mentions) { selectedTab = 0 }
+                            onCreateArticlePost = { articleTitle, content, visibility, coverImage, articleTags, mentions, collaboratorIds, defaultVideoId ->
+                                viewModel.createArticlePost(articleTitle, content, visibility, coverImage, articleTags, mentions, defaultVideoId, collaboratorIds) { selectedTab = 0 }
                             },
-                            onCreateCelebrationPost = { celebrationType, content, visibility, mentions, celebrationGif ->
+                            onCreateCelebrationPost = { celebrationType, content, visibility, mentions, collaboratorIds, celebrationGif, defaultVideoId ->
                                 viewModel.createCelebrationPost(
                                     celebrationType,
                                     content,
                                     visibility,
                                     mentions,
-                                    celebrationGif
+                                    celebrationGif,
+                                    defaultVideoId,
+                                    collaboratorIds
                                 ) { selectedTab = 0 }
                             },
                             onSearchMentions = { query -> viewModel.searchMentions(query) },
@@ -1441,6 +1778,7 @@ fun LinkedInContent(
                             connectionRequestsError = rewardsState.pendingConnectionRequestsError,
                             hasPendingGroupMessages = hasPendingGroupMessages,
                             showFullMoreScreen = showFullMoreScreen,
+                            premiumDetailsRequestKey = premiumDetailsRequestKey,
                             quickHubAnimationKey = moreHubAnimationKey,
                             onOpenFullMoreScreen = { showFullMoreScreen = true },
                             onNavigateToProfile = { selectedTab = 4 },
@@ -1449,16 +1787,12 @@ fun LinkedInContent(
                                 if (uiState.currentUser?.canAccessProfileCustomization == true) {
                                     showProfileCustomizationsScreen = true
                                 } else {
-                                    Toast.makeText(
-                                        context,
-                                        "Profile customizations are available for premium users.",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                    openPremiumDetails()
                                 }
                             },
                             onNavigateToGroups = { showGroupsScreen = true },
                             onNavigateToCircles = { showCirclesScreen = true },
-                            onNavigateToReels = { 
+                            onNavigateToReels = {
                                 reelsViewModel.loadAndOpenReels()
                             },
                             onNavigateToWeeklyGoals = { showWeeklyGoalsScreen = true },
@@ -1467,9 +1801,13 @@ fun LinkedInContent(
                             onNavigateToOnboarding = { showOnboardingScreen = true },
                             onNavigateToSavedPosts = { showSavedPostsScreen = true },
                             onNavigateToGrowthHub = { showGrowthHubScreen = true },
+                            onNavigateToGames = { showGamesScreen = true },
                             onNavigateToSkillPassport = { showSkillPassportScreen = true },
                             onNavigateToSkillSwap = { showSkillSwapScreen = true },
+                            onNavigateToHackathons = { showHackathonBoardScreen = true },
+                            onOpenAiChat = openAgentPanel,
                             onOpenAgent = openAgentPanel,
+
                             onNavigateToNotificationSettings = { showNotificationSettingsScreen = true },
                             onNavigateToPrivacySettings = { showPrivacySettingsScreen = true },
                             onNavigateToAppearanceSettings = { showAppearanceSettingsScreen = true },
@@ -1477,7 +1815,8 @@ fun LinkedInContent(
                             onNavigateToInviteFriends = { showInviteFriendsScreen = true },
                             onNavigateToAbout = { showAboutScreen = true },
                             onNavigateToContact = { showContactScreen = true },
-                            onLogout = { showLogoutDialog = true }
+                            onSwitchAccount = { showAccountExitDialog(switchAccount = true) },
+                            onLogout = { showAccountExitDialog(switchAccount = false) }
                         )
                         4 -> {
                             // Use the new comprehensive ProfileScreen with its own ViewModel
@@ -1488,7 +1827,7 @@ fun LinkedInContent(
                                 accentColor = accentColor,
                                 profileViewModel = ownProfileViewModel,
                                 onNavigateBack = { selectedTab = 0 },
-                                onEditProfile = { showOnboardingScreen = true },
+                                onEditProfile = {},
                                 onOpenProfile = { nextUserId -> viewingProfileUserId = nextUserId },
                                 onOpenFeedItem = { item ->
                                     when (item.entityType?.lowercase()) {
@@ -1498,9 +1837,7 @@ fun LinkedInContent(
                                         }
                                         "post" -> {
                                             selectedTab = 0
-                                            selectedPostForComments = item.id
-                                            viewModel.loadComments(item.id)
-                                            showCommentsSheet = true
+                                            viewModel.openPostDetail(item.id)
                                         }
                                     }
                                 }
@@ -1588,7 +1925,7 @@ fun LinkedInContent(
                         },
                         backdrop = backdrop,
                         tabsCount = 5,
-                        useGlassEffects = isGlassTheme,
+                        useGlassEffects = true,
                         lightTheme = isLightTheme,
                         accentColor = accentColor,
                         modifier = Modifier
@@ -1699,26 +2036,57 @@ fun LinkedInContent(
                 showMessagesScreen = false
                 isInChatThread = false
                 openChatWithUserId = null
+                openChatInitialDraft = null
                 deepLinkConversationId = null
                 showGroupsScreen = false
+                showHackathonBoardScreen = false
                 selectedGroupId = null
+                selectedGroupInviteCode = null
                 showGroupChat = false
+                showGroupSettingsScreen = false
                 selectedTab = 4
                 viewingProfileUserId = userId
             }
-            val openInlineChat: (String) -> Unit = { userId ->
+            fun openInlineChat(userId: String, initialDraft: String? = null) {
                 minimizeAgentSheetForVoice = false
                 showAgentSheet = false
                 showGrowthHubScreen = false
                 showNotificationsInbox = false
                 showGroupsScreen = false
+                showHackathonBoardScreen = false
                 selectedGroupId = null
+                selectedGroupInviteCode = null
                 showGroupChat = false
+                showGroupSettingsScreen = false
                 viewingProfileUserId = null
                 showMessagesScreen = true
                 isInChatThread = false
                 deepLinkConversationId = null
+                openChatInitialDraft = initialDraft
                 openChatWithUserId = userId
+            }
+            fun startAiConversationFromProfile(userId: String) {
+                if (preparingConversationStarterForUserId != null) return
+                appScope.launch {
+                    preparingConversationStarterForUserId = userId
+                    val fallbackDraft =
+                        "Hey, I saw your profile and think there may be a useful overlap between what you're working on and what I'm exploring. I'd love to trade ideas and see if there is a small way we can help each other."
+                    val starter = AgentApiService.getConversationStarters(
+                        context = context,
+                        otherUserId = userId,
+                        goal = "Write one first message that makes the recipient feel the connection could be useful for collaboration, learning, or helping each other. Do not send a generic greeting."
+                    ).getOrNull()
+                        ?.firstOrNull { it.isNotBlank() }
+                        ?.trim()
+                        ?: fallbackDraft
+                    preparingConversationStarterForUserId = null
+                    if (profileOpenedFromReels && reelsState.isViewerOpen) {
+                        profileOpenedFromReels = false
+                        reelsViewModel.closeReelsViewer()
+                    }
+                    viewingProfileUserId = null
+                    openInlineChat(userId, starter)
+                }
             }
             val openInlineFind: () -> Unit = {
                 agentViewModel.dismissInlineResults()
@@ -1729,10 +2097,14 @@ fun LinkedInContent(
                 showMessagesScreen = false
                 isInChatThread = false
                 openChatWithUserId = null
+                openChatInitialDraft = null
                 deepLinkConversationId = null
                 showGroupsScreen = false
+                showHackathonBoardScreen = false
                 selectedGroupId = null
+                selectedGroupInviteCode = null
                 showGroupChat = false
+                showGroupSettingsScreen = false
                 viewingProfileUserId = null
                 selectedTab = 1
             }
@@ -1778,7 +2150,7 @@ fun LinkedInContent(
             }
 
             AnimatedVisibility(
-                visible = uiState.isLoggedIn && canUseAgent,
+                visible = uiState.isLoggedIn && canOpenAgent,
                 enter = fadeIn(),
                 exit = fadeOut(),
                 modifier = Modifier.align(Alignment.BottomEnd)
@@ -1807,84 +2179,103 @@ fun LinkedInContent(
                         )
                     }
 
-                    if (agentState.pendingApprovals.isNotEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .clip(CircleShape)
-                                .background(Color(0xFFFF5A5F))
-                                .padding(horizontal = 6.dp, vertical = 3.dp)
-                        ) {
-                            BasicText(
-                                text = agentState.pendingApprovals.size.toString(),
-                                style = TextStyle(
-                                    color = Color.White,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            )
-                        }
-                    }
                 }
             }
 
-            if (showAgentSheet && canUseAgent) {
-                ModalBottomSheet(
-                    onDismissRequest = {
-                        minimizeAgentSheetForVoice = false
-                        showAgentSheet = false
-                    },
-                    sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-                    containerColor = if (isDarkTheme) Color(0xFF131313) else Color(0xFFF9F7F2),
-                    scrimColor = Color.Black.copy(alpha = agentSheetScrimAlpha)
+            if (showAgentSheet && canOpenAgent) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .fillMaxSize()
+                        .blockTouchPassthrough()
+                        .graphicsLayer { alpha = agentSheetAlpha }
                 ) {
+                    if (isGlassTheme) {
+                        GlassBackgroundLayer(
+                            modifier = Modifier
+                                .layerBackdrop(backdrop)
+                                .fillMaxSize(),
+                            backgroundKey = glassBackgroundKey,
+                            accentColor = accentColor,
+                            motionStyleKey = glassMotionStyleKey,
+                            reduceAnimations = reduceAnimations
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .layerBackdrop(backdrop)
+                                .fillMaxSize()
+                                .background(appearance.backgroundColor)
+                        )
+                    }
+
                     Box(
-                        modifier = Modifier.graphicsLayer {
-                            alpha = agentSheetAlpha
-                            scaleX = agentSheetScale
-                            scaleY = agentSheetScale
-                        }
+                        modifier = Modifier.fillMaxSize()
                     ) {
                         AgentSheetContent(
                             viewModel = agentViewModel,
-                            surface = agentSurface,
-                            surfaceContext = agentSurfaceContext,
-                            userDisplayName = uiState.currentUser?.name ?: uiState.currentUser?.username,
+                            surface = "talk_with_vormex",
+                            surfaceContext = mapOf(
+                                "surface" to "talk_with_vormex",
+                                "entry" to "more_chat_ai"
+                            ),
+                            userDisplayName = uiState.currentUser?.name,
                             contentColor = contentColor,
                             accentColor = accentColor,
                             backdrop = backdrop,
                             reduceAnimations = reduceAnimations,
                             isDarkTheme = isDarkTheme,
-                            onOpenInlineProfile = openInlineProfile,
-                            onOpenInlineChat = openInlineChat,
+                            isPremiumUser = uiState.currentUser?.isPremium,
+                            headerTitle = "vormex",
+                            sendButtonLabel = "Send",
+                            placeholderText = "Message vormex...",
+                            enableVoiceControls = false,
+                            enableInlineNavigationActions = true,
+                            onOpenInlineProfile = { userId ->
+                                agentViewModel.dismissInlineResults()
+                                openInlineProfile(userId)
+                            },
+                            onOpenInlineChat = { userId ->
+                                agentViewModel.dismissInlineResults()
+                                openInlineChat(userId)
+                            },
                             onSeeMoreInlineResults = openInlineFind,
                             onDismiss = {
                                 minimizeAgentSheetForVoice = false
                                 showAgentSheet = false
-                            }
+                            },
+                            isFullScreen = true
                         )
                     }
                 }
             }
-            
+
             // Reels Full-Screen Viewer Dialog (shown from any tab)
             if (reelsState.isViewerOpen) {
-                val reelsToShow = if (reelsState.feedReels.isNotEmpty()) 
-                    reelsState.feedReels 
-                else 
+                val reelsToShow = if (reelsState.feedReels.isNotEmpty())
+                    reelsState.feedReels
+                else
                     reelsState.previewReels
-                    
+
                 if (reelsToShow.isNotEmpty()) {
                     ReelsFeedScreen(
                         reels = reelsToShow,
                         initialIndex = reelsState.currentReelIndex,
-                        onDismiss = { reelsViewModel.closeReelsViewer() },
+                        onDismiss = {
+                            val wasDraftPreview = reelsState.activeDraftPreviewId != null
+                            reelsViewModel.closeReelsViewer()
+                            if (wasDraftPreview) {
+                                reopenReelDraftLibrary = true
+                                showReelCreateSheet = true
+                            }
+                        },
                         onLike = { reelId -> reelsViewModel.toggleLike(reelId) },
                         onSave = { reelId -> reelsViewModel.toggleSave(reelId) },
                         onComment = { reelId -> reelsViewModel.openComments(reelId) },
-                        onShare = {},
+                        onShare = { reelId -> reelsViewModel.showShareModal(reelId) },
                         onProfileClick = { userId ->
-                            reelsViewModel.closeReelsViewer()
+                            profileOpenedFromReels = true
+                            reelsViewModel.pausePlayback(false)
                             viewingProfileUserId = userId
                         },
                         onTrackView = { reelId, watchTime, completed ->
@@ -1897,7 +2288,18 @@ fun LinkedInContent(
                         onPausePlayback = { reset -> reelsViewModel.pausePlayback(reset) },
                         onResumePlayback = { index -> reelsViewModel.resumePlayback(index) },
                         onReleasePlayback = { reelsViewModel.releasePlayback() },
-                        onLoadMore = { reelsViewModel.loadMoreReels() }
+                        onLoadMore = { reelsViewModel.loadMoreReels() },
+                        isDraftPreview = reelsState.activeDraftPreviewId != null,
+                        isPublishingDraft = reelsState.publishingDraftId != null,
+                        onPublishDraftPreview = { reelId ->
+                            reelsViewModel.publishDraftReel(reelId) {
+                                reopenReelDraftLibrary = false
+                                showReelCreateSheet = false
+                                selectedTab = 0
+                                reelsViewModel.closeReelsViewer()
+                            }
+                        },
+                        onCreateClick = openReelCreateSheet
                     )
 
                     if (reelsState.showCommentsSheet) {
@@ -1910,16 +2312,24 @@ fun LinkedInContent(
                             comments = reelsState.reelComments,
                             repliesByParent = reelsState.replyCommentsByParent,
                             expandedParents = reelsState.expandedReplyParents,
+                            loadingReplyParents = reelsState.loadingReplyParents,
+                            hasMoreRepliesByParent = reelsState.hasMoreRepliesByParent,
                             replyTarget = reelsState.replyToComment,
                             isLoading = reelsState.isLoadingComments,
                             isLoadingMore = reelsState.isLoadingMoreComments,
                             hasMore = reelsState.hasMoreComments,
                             isSubmitting = reelsState.isSubmittingComment,
                             error = reelsState.commentsError,
+                            highlightedCommentId = reelsState.highlightedCommentId,
+                            mentionSearchResults = reelsState.mentionSearchResults,
+                            isSearchingMentions = reelsState.isSearchingMentions,
                             onDismiss = { reelsViewModel.closeComments() },
                             onLoadMore = { reelsViewModel.loadReelComments(refresh = false) },
                             onToggleReplies = { parentId -> reelsViewModel.loadReplies(parentId) },
+                            onLoadMoreReplies = { parentId -> reelsViewModel.loadMoreReplies(parentId) },
                             onReplyTo = { comment -> reelsViewModel.setReplyTarget(comment) },
+                            onMentionQueryChanged = { query -> reelsViewModel.searchMentions(query) },
+                            onMentionSearchClear = { reelsViewModel.clearMentionSearch() },
                             onSubmitComment = { content -> reelsViewModel.submitComment(content) }
                         )
                     }
@@ -1956,7 +2366,7 @@ fun LinkedInContent(
                                     style = TextStyle(Color.White, 18.sp, FontWeight.Bold)
                                 )
                             }
-                            
+
                             if (reelsState.isLoadingFeed) {
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -2013,7 +2423,96 @@ fun LinkedInContent(
                     }
                 }
             }
-            
+
+            if (reelsState.showShareModal && reelsState.shareReelId != null) {
+                SharePostModal(
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    isLightTheme = isLightTheme,
+                    shareTargets = reelsState.shareTargets,
+                    isLoading = reelsState.isLoadingShareTargets,
+                    isSharing = reelsState.isSharing,
+                    error = reelsState.shareError,
+                    onDismiss = { reelsViewModel.hideShareModal() },
+                    onCopyLink = {
+                        reelsState.shareReelId?.let { reelId ->
+                            reelsViewModel.copyReelLink(reelId)
+                        }
+                    },
+                    onShareToTargets = { targetIds, message ->
+                        reelsViewModel.shareReelInApp(targetIds, message)
+                    },
+                    onClearError = { reelsViewModel.clearShareError() },
+                    subjectLabel = "reel",
+                    showMessageInput = false,
+                    onShareAnimation = { shareAnimationTrigger++ }
+                )
+            }
+
+            ShareLottieEffect(
+                trigger = shareAnimationTrigger,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .requiredSize(260.dp)
+            )
+
+            if (showReelCreateSheet) {
+                ReelCreateSheet(
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    isUploading = reelsState.isUploadingReel,
+                    error = reelsState.reelUploadError,
+                    drafts = reelsState.draftReels,
+                    isLoadingDrafts = reelsState.isLoadingDrafts,
+                    draftsError = reelsState.draftError,
+                    publishingDraftId = reelsState.publishingDraftId,
+                    startWithDraftLibrary = reopenReelDraftLibrary,
+                    onDismiss = closeReelCreateSheet,
+                    onLoadDrafts = { reelsViewModel.loadDraftReels(forceRefresh = true) },
+                    onPreviewDraft = { draft ->
+                        reopenReelDraftLibrary = false
+                        showReelCreateSheet = false
+                        selectedTab = 0
+                        reelsViewModel.openDraftPreview(draft)
+                    },
+                    onPublishDraft = { reelId ->
+                        reelsViewModel.publishDraftReel(reelId) {
+                            showReelCreateSheet = false
+                            selectedTab = 0
+                            reelsViewModel.closeReelsViewer()
+                        }
+                    },
+                    onSubmit = { form ->
+                        reelsViewModel.createReel(
+                            videoUri = form.video.uri,
+                            videoFileName = form.video.fileName,
+                            videoMimeType = form.video.mimeType,
+                            videoSize = form.video.sizeBytes,
+                            thumbnailUri = form.thumbnail?.uri,
+                            thumbnailFileName = form.thumbnail?.fileName,
+                            thumbnailMimeType = form.thumbnail?.mimeType,
+                            thumbnailSize = form.thumbnail?.sizeBytes,
+                            title = form.title,
+                            caption = form.caption,
+                            hashtags = form.hashtags,
+                            category = form.category,
+                            visibility = form.visibility,
+                            allowComments = form.allowComments,
+                            allowDuets = form.allowDuets,
+                            allowStitch = form.allowStitch,
+                            allowDownload = form.allowDownload,
+                            allowSharing = form.allowSharing,
+                            muteOriginalAudio = form.muteOriginalAudio,
+                            saveAsDraft = form.saveAsDraft
+                        )
+                        showReelCreateSheet = false
+                        selectedTab = 0
+                        reelsViewModel.closeReelsViewer()
+                    }
+                )
+            }
+
             // Swipeable Reward Cards Overlay (shown when app opens)
             if (
                 rewardCardsState.shouldShowOverlay &&
@@ -2027,6 +2526,7 @@ fun LinkedInContent(
                     contentColor = contentColor,
                     accentColor = accentColor,
                     currentTheme = themeMode,
+                    reduceAnimations = reduceAnimations,
                     onCardShown = {
                         rewardCardsViewModel.trackShownCardsOnce()
                     },
@@ -2045,7 +2545,7 @@ fun LinkedInContent(
                     }
                 )
             }
-            
+
             // Messages Screen Overlay
             AnimatedVisibility(
                 visible = showMessagesScreen,
@@ -2056,7 +2556,7 @@ fun LinkedInContent(
                 // light/dark use solid surfaces — avoids feed bleed-through and keeps chat aligned with theme.
                 val messagesContentColor = contentColor
                 val messagesAccentColor = accentColor
-                
+
                 SectionOverlayContainer(
                     backdrop = backdrop,
                     themeMode = themeMode,
@@ -2102,7 +2602,7 @@ fun LinkedInContent(
                                 )
                             }
                         }
-                        
+
                         // Chat content
                         ChatTabContent(
                             backdrop = backdrop,
@@ -2112,17 +2612,28 @@ fun LinkedInContent(
                             isGlassTheme = isGlassTheme,
                             openConversationId = deepLinkConversationId,
                             openChatWithUserId = openChatWithUserId,
+                            openChatInitialDraft = openChatInitialDraft,
                             onConsumedOpenConversation = { deepLinkConversationId = null },
-                            onConsumedOpenChat = { openChatWithUserId = null },
+                            onConsumedOpenChat = {
+                                openChatWithUserId = null
+                                openChatInitialDraft = null
+                            },
                             onInChatThread = { inThread -> isInChatThread = inThread },
                             onNavigateToProfile = { userId ->
                                 viewingProfileUserId = userId
+                            },
+                            onNavigateToReel = { sharedReel ->
+                                showMessagesScreen = false
+                                isInChatThread = false
+                                chatViewModel.selectConversation(null)
+                                selectedTab = 0
+                                reelsViewModel.openSharedReel(sharedReel)
                             }
                         )
                     }
                 }
             }
-            
+
             // Profile page when viewing another user's profile (above Messages so it opens on top of chat)
             AnimatedVisibility(
                 visible = viewingProfileUserId != null,
@@ -2133,6 +2644,7 @@ fun LinkedInContent(
                     Box(
                         Modifier
                             .fillMaxSize()
+                            .blockTouchPassthrough()
                             .then(
                                 when {
                                     isGlassTheme -> Modifier.drawBackdrop(
@@ -2153,31 +2665,44 @@ fun LinkedInContent(
                             )
                             .statusBarsPadding()
                     ) {
-                        ProfileScreen(
-                            userId = userId,
-                            backdrop = backdrop,
-                            contentColor = contentColor,
-                            accentColor = accentColor,
-                            onNavigateBack = { viewingProfileUserId = null },
-                            onOpenProfile = { nextUserId -> viewingProfileUserId = nextUserId },
-                            onMessage = { otherUserId ->
-                                viewingProfileUserId = null
-                                openChatWithUserId = otherUserId
-                                showMessagesScreen = true
-                            },
+	                        ProfileScreen(
+	                            userId = userId,
+	                            backdrop = backdrop,
+	                            contentColor = contentColor,
+	                            accentColor = accentColor,
+	                            onNavigateBack = { viewingProfileUserId = null },
+	                            onOpenProfile = { nextUserId -> viewingProfileUserId = nextUserId },
+	                            showStartConversation = profileConversationHasMessagesByUserId[userId] == false,
+	                            isPreparingConversationStarter = preparingConversationStarterForUserId == userId,
+	                            onStartConversation = { otherUserId ->
+	                                startAiConversationFromProfile(otherUserId)
+	                            },
+	                            onMessage = { otherUserId ->
+	                                if (profileOpenedFromReels && reelsState.isViewerOpen) {
+	                                    profileOpenedFromReels = false
+	                                    reelsViewModel.closeReelsViewer()
+	                                }
+	                                openInlineChat(otherUserId)
+	                            },
                             onOpenFeedItem = { item ->
                                 when (item.entityType?.lowercase()) {
                                     "reel" -> {
+                                        if (profileOpenedFromReels && reelsState.isViewerOpen) {
+                                            profileOpenedFromReels = false
+                                            reelsViewModel.closeReelsViewer()
+                                        }
                                         viewingProfileUserId = null
                                         selectedTab = 0
                                         reelsViewModel.loadReelById(item.id)
                                     }
                                     "post" -> {
+                                        if (profileOpenedFromReels && reelsState.isViewerOpen) {
+                                            profileOpenedFromReels = false
+                                            reelsViewModel.closeReelsViewer()
+                                        }
                                         viewingProfileUserId = null
                                         selectedTab = 0
-                                        selectedPostForComments = item.id
-                                        viewModel.loadComments(item.id)
-                                        showCommentsSheet = true
+                                        viewModel.openPostDetail(item.id)
                                     }
                                 }
                             }
@@ -2185,10 +2710,10 @@ fun LinkedInContent(
                     }
                 }
             }
-            
+
             // Groups Screen Overlay
             AnimatedVisibility(
-                visible = showGroupsScreen && selectedGroupId == null && !showGroupChat,
+                visible = showGroupsScreen && selectedGroupId == null && selectedGroupInviteCode == null && !showGroupChat && !showGroupSettingsScreen,
                 enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
                 exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
             ) {
@@ -2206,17 +2731,53 @@ fun LinkedInContent(
                         accentColor = accentColor,
                         onNavigateBack = { showGroupsScreen = false },
                         onNavigateToGroupDetail = { groupId -> selectedGroupId = groupId },
-                        onNavigateToGroupChat = { groupId -> 
+                        onNavigateToGroupChat = { groupId ->
                             selectedGroupId = groupId
                             // Could show group chat here
                         }
                     )
                 }
             }
-            
+
+            // Group Invite Link Overlay
+            AnimatedVisibility(
+                visible = selectedGroupInviteCode != null,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+            ) {
+                selectedGroupInviteCode?.let { inviteCode ->
+                    SectionOverlayContainer(
+                        backdrop = backdrop,
+                        themeMode = themeMode,
+                        glassBackgroundKey = glassBackgroundKey,
+                        accentColor = accentColor,
+                        glassMotionStyleKey = glassMotionStyleKey,
+                        reduceAnimations = reduceAnimations
+                    ) {
+                        GroupInviteLinkScreen(
+                            inviteCode = inviteCode,
+                            backdrop = backdrop,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            onNavigateBack = {
+                                selectedGroupInviteCode = null
+                                showGroupsScreen = true
+                            },
+                            onOpenGroup = { groupId ->
+                                selectedGroupInviteCode = null
+                                selectedGroupId = groupId
+                                showGroupsScreen = true
+                                showGroupChat = false
+                                showGroupSettingsScreen = false
+                            }
+                        )
+                    }
+                }
+            }
+
             // Group Detail Screen Overlay
             AnimatedVisibility(
-                visible = selectedGroupId != null && !showGroupChat,
+                visible = selectedGroupId != null && selectedGroupInviteCode == null && !showGroupChat && !showGroupSettingsScreen,
                 enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
                 exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
             ) {
@@ -2234,14 +2795,50 @@ fun LinkedInContent(
                             backdrop = backdrop,
                             contentColor = contentColor,
                             accentColor = accentColor,
-                            onNavigateBack = { selectedGroupId = null },
+                            onNavigateBack = {
+                                showGroupSettingsScreen = false
+                                selectedGroupId = null
+                            },
                             onNavigateToChat = { showGroupChat = true },
+                            onNavigateToSettings = { showGroupSettingsScreen = true },
                             onNavigateToProfile = { userId -> viewingProfileUserId = userId }
                         )
                     }
                 }
             }
-            
+
+            // Group Settings Screen Overlay
+            AnimatedVisibility(
+                visible = showGroupSettingsScreen && selectedGroupId != null,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+            ) {
+                selectedGroupId?.let { groupId ->
+                    SectionOverlayContainer(
+                        backdrop = backdrop,
+                        themeMode = themeMode,
+                        glassBackgroundKey = glassBackgroundKey,
+                        accentColor = accentColor,
+                        glassMotionStyleKey = glassMotionStyleKey,
+                        reduceAnimations = reduceAnimations
+                    ) {
+                        GroupSettingsScreen(
+                            groupId = groupId,
+                            backdrop = backdrop,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            onNavigateBack = { showGroupSettingsScreen = false },
+                            onDeleted = {
+                                showGroupSettingsScreen = false
+                                showGroupChat = false
+                                selectedGroupId = null
+                                showGroupsScreen = true
+                            }
+                        )
+                    }
+                }
+            }
+
             // Group Chat Screen Overlay
             AnimatedVisibility(
                 visible = showGroupChat && selectedGroupId != null,
@@ -2269,7 +2866,7 @@ fun LinkedInContent(
                     }
                 }
             }
-            
+
             // Circles Screen Overlay
             AnimatedVisibility(
                 visible = showCirclesScreen && selectedCircleId == null,
@@ -2290,11 +2887,11 @@ fun LinkedInContent(
                         accentColor = accentColor,
                         onNavigateBack = { showCirclesScreen = false },
                         onNavigateToCircle = { circleId -> selectedCircleId = circleId },
-                        onNavigateToUpgrade = { /* TODO: Navigate to upgrade */ }
+                        onNavigateToUpgrade = { openPremiumDetails() }
                     )
                 }
             }
-            
+
             // Circle Detail Screen Overlay
             AnimatedVisibility(
                 visible = selectedCircleId != null,
@@ -2323,9 +2920,9 @@ fun LinkedInContent(
                     }
                 }
             }
-            
+
             // ==================== RETENTION FEATURE SCREENS ====================
-            
+
             // Weekly Goals Screen Overlay
             AnimatedVisibility(
                 visible = showWeeklyGoalsScreen,
@@ -2352,7 +2949,7 @@ fun LinkedInContent(
                     )
                 }
             }
-            
+
             // Streak Details Screen Overlay
             AnimatedVisibility(
                 visible = showStreakDetailsScreen,
@@ -2371,11 +2968,19 @@ fun LinkedInContent(
                         backdrop = backdrop,
                         contentColor = contentColor,
                         accentColor = accentColor,
-                        onNavigateBack = { showStreakDetailsScreen = false }
+                        onNavigateBack = { showStreakDetailsScreen = false },
+                        onNavigateToFindPeople = {
+                            showStreakDetailsScreen = false
+                            selectedTab = 1
+                        },
+                        onNavigateToCreatePost = {
+                            showStreakDetailsScreen = false
+                            selectedTab = 2
+                        }
                     )
                 }
             }
-            
+
             // Top Networkers Leaderboard Screen Overlay
             AnimatedVisibility(
                 visible = showTopNetworkersScreen,
@@ -2395,14 +3000,14 @@ fun LinkedInContent(
                         contentColor = contentColor,
                         accentColor = accentColor,
                         onNavigateBack = { showTopNetworkersScreen = false },
-                        onNavigateToProfile = { userId -> 
+                        onNavigateToProfile = { userId ->
                             showTopNetworkersScreen = false
-                            viewingProfileUserId = userId 
+                            viewingProfileUserId = userId
                         }
                     )
                 }
             }
-            
+
             // Onboarding / Profile Preferences Screen Overlay
             AnimatedVisibility(
                 visible = showOnboardingScreen,
@@ -2412,6 +3017,7 @@ fun LinkedInContent(
                 Box(
                     Modifier
                         .fillMaxSize()
+                        .blockTouchPassthrough()
                         .background(androidx.compose.material3.MaterialTheme.colorScheme.background)
                         .statusBarsPadding()
                 ) {
@@ -2421,7 +3027,7 @@ fun LinkedInContent(
                     )
                 }
             }
-            
+
             // Saved Posts Screen Overlay
             AnimatedVisibility(
                 visible = showSavedPostsScreen,
@@ -2444,15 +3050,54 @@ fun LinkedInContent(
                         onNavigateToPost = { postId ->
                             showSavedPostsScreen = false
                             selectedTab = 0
-                            selectedPostForComments = postId
-                            viewModel.loadComments(postId)
-                            showCommentsSheet = true
+                            viewModel.openPostDetail(postId)
                         },
                         onNavigateToReel = { reelId ->
                             showSavedPostsScreen = false
                             selectedTab = 0
                             reelsViewModel.loadReelById(reelId)
                         }
+                    )
+                }
+            }
+
+            // Saved Post Detail Overlay
+            AnimatedVisibility(
+                visible = hasOpenPostDetail,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+            ) {
+                SectionOverlayContainer(
+                    backdrop = backdrop,
+                    themeMode = themeMode,
+                    glassBackgroundKey = glassBackgroundKey,
+                    accentColor = accentColor,
+                    glassMotionStyleKey = glassMotionStyleKey,
+                    reduceAnimations = reduceAnimations
+                ) {
+                    SavedPostDetailOverlay(
+                        post = uiState.openedPost,
+                        isLoading = uiState.isLoadingOpenedPost,
+                        error = uiState.openedPostError,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        glassBackgroundKey = glassBackgroundKey,
+                        reduceAnimations = reduceAnimations,
+                        onNavigateBack = { viewModel.closePostDetail() },
+                        onLike = { postId -> viewModel.toggleLike(postId) },
+                        onComment = { postId ->
+                            selectedPostForComments = postId
+                            viewModel.loadComments(postId)
+                            showCommentsSheet = true
+                        },
+                        onShare = { postId -> viewModel.showShareModal(postId) },
+                        onVotePoll = { postId, optionId -> viewModel.votePoll(postId, optionId) },
+                        onProfileClick = { userId ->
+                            viewModel.closePostDetail()
+                            viewingProfileUserId = userId
+                        },
+                        onMenuAction = handlePostMenuAction
                     )
                 }
             }
@@ -2548,17 +3193,29 @@ fun LinkedInContent(
                             showNotificationsInbox = false
                             viewingProfileUserId = userId
                         },
-                        onOpenPost = { postId ->
+                        onOpenPost = { postId, openComments ->
                             showNotificationsInbox = false
                             selectedTab = 0
-                            selectedPostForComments = postId
-                            viewModel.loadComments(postId)
-                            showCommentsSheet = true
+                            if (openComments) {
+                                viewModel.closePostDetail()
+                                selectedPostForComments = postId
+                                viewModel.loadComments(postId)
+                                showCommentsSheet = true
+                            } else {
+                                openPostFromLink(postId)
+                            }
                         },
-                        onOpenReel = { reelId ->
+                        onOpenReel = { reelId, commentId, parentCommentId ->
                             showNotificationsInbox = false
                             selectedTab = 0
                             reelsViewModel.loadReelById(reelId)
+                            if (!commentId.isNullOrBlank()) {
+                                reelsViewModel.openComments(
+                                    reelId = reelId,
+                                    highlightCommentId = commentId,
+                                    parentCommentId = parentCommentId
+                                )
+                            }
                         },
                         onOpenConversation = { conversationId ->
                             showNotificationsInbox = false
@@ -2601,6 +3258,33 @@ fun LinkedInContent(
                             viewingProfileUserId = userId
                         }
                     )
+                }
+            }
+
+            // Games Overlay
+            AnimatedVisibility(
+                visible = showGamesScreen,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+            ) {
+                SectionOverlayContainer(
+                    backdrop = backdrop,
+                    themeMode = themeMode,
+                    glassBackgroundKey = glassBackgroundKey,
+                    accentColor = accentColor,
+                    glassMotionStyleKey = glassMotionStyleKey,
+                    reduceAnimations = reduceAnimations
+                ) {
+                    when (activeGame) {
+                        GameType.NONE -> GamesHubScreen(
+                            contentColor = contentColor,
+                            onNavigateBack = { showGamesScreen = false },
+                            onSelectGame = { activeGame = it }
+                        )
+                        GameType.TIC_TAC_TOE -> TicTacToeGameScreen(contentColor = contentColor, onNavigateBack = { activeGame = GameType.NONE })
+                        GameType.TIC_TAC_TOE_ONLINE -> OnlineTicTacToeGameScreen(contentColor = contentColor, onNavigateBack = { activeGame = GameType.NONE })
+                        GameType.TAP_DUEL -> TapDuelGameScreen(contentColor = contentColor, onNavigateBack = { activeGame = GameType.NONE })
+                    }
                 }
             }
 
@@ -2708,6 +3392,35 @@ fun LinkedInContent(
                 }
             }
 
+            // Hackathon Board Overlay
+            AnimatedVisibility(
+                visible = showHackathonBoardScreen,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+            ) {
+                SectionOverlayContainer(
+                    backdrop = backdrop,
+                    themeMode = themeMode,
+                    glassBackgroundKey = glassBackgroundKey,
+                    accentColor = accentColor,
+                    glassMotionStyleKey = glassMotionStyleKey,
+                    reduceAnimations = reduceAnimations
+                ) {
+                    HackathonBoardScreen(
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onNavigateBack = { showHackathonBoardScreen = false },
+                        onOpenGroupChat = { groupId ->
+                            showHackathonBoardScreen = false
+                            showGroupSettingsScreen = false
+                            selectedGroupId = groupId
+                            showGroupChat = true
+                        }
+                    )
+                }
+            }
+
             // Notification Settings Screen Overlay
             AnimatedVisibility(
                 visible = showNotificationSettingsScreen,
@@ -2730,7 +3443,7 @@ fun LinkedInContent(
                     )
                 }
             }
-            
+
             // Privacy Settings Screen Overlay
             AnimatedVisibility(
                 visible = showPrivacySettingsScreen,
@@ -2753,7 +3466,7 @@ fun LinkedInContent(
                     )
                 }
             }
-            
+
             // Appearance Settings Screen Overlay
             AnimatedVisibility(
                 visible = showAppearanceSettingsScreen,
@@ -2776,7 +3489,7 @@ fun LinkedInContent(
                     )
                 }
             }
-            
+
             // Help Screen Overlay
             AnimatedVisibility(
                 visible = showHelpScreen,
@@ -2799,7 +3512,7 @@ fun LinkedInContent(
                     )
                 }
             }
-            
+
             // About Screen Overlay
             AnimatedVisibility(
                 visible = showAboutScreen,
@@ -2822,7 +3535,7 @@ fun LinkedInContent(
                     )
                 }
             }
-            
+
             // Invite Friends Screen Overlay
             AnimatedVisibility(
                 visible = showInviteFriendsScreen,
@@ -2845,7 +3558,7 @@ fun LinkedInContent(
                     )
                 }
             }
-            
+
             // Contact Screen Overlay
             AnimatedVisibility(
                 visible = showContactScreen,
@@ -2868,20 +3581,24 @@ fun LinkedInContent(
                     )
                 }
             }
-            
+
             // Logout Confirmation Dialog
             if (showLogoutDialog) {
                 LogoutConfirmationDialog(
                     contentColor = Color.White,
                     accentColor = accentColor,
+                    title = logoutDialogTitle,
+                    message = logoutDialogMessage,
+                    confirmText = logoutDialogConfirmText,
                     onConfirm = {
                         showLogoutDialog = false
+                        resetAccountScopedNavigation()
                         viewModel.logout()
                     },
                     onDismiss = { showLogoutDialog = false }
                 )
             }
-            
+
             // Session Summary Overlay (Peak-End Rule)
             SessionSummaryOverlay(
                 isVisible = showSessionSummary,
@@ -2927,9 +3644,9 @@ private fun LinkedInTopBar(
             Row(
                 modifier = Modifier
                     .noRippleClickable(onClick = onStreakClick)
-                    .padding(vertical = 8.dp),
+                    .padding(horizontal = 2.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 StreakFireLottie(modifier = Modifier.size(22.dp))
                 BasicText(
@@ -3025,6 +3742,47 @@ private fun LinkedInTopBar(
     }
 }
 
+@Composable
+private fun SessionRestoreScreen(
+    contentColor: Color,
+    accentColor: Color
+) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(72.dp)
+                    .clip(CircleShape)
+                    .background(accentColor.copy(alpha = 0.12f))
+                    .border(1.dp, accentColor.copy(alpha = 0.32f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                BasicText(
+                    "V",
+                    style = TextStyle(
+                        color = accentColor,
+                        fontSize = 34.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+                )
+            }
+            CircularProgressIndicator(
+                modifier = Modifier.size(28.dp),
+                color = accentColor,
+                trackColor = contentColor.copy(alpha = 0.12f),
+                strokeWidth = 2.dp
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FeedScreen(
@@ -3035,11 +3793,14 @@ private fun FeedScreen(
     posts: List<Post> = emptyList(),
     storyGroups: List<StoryGroup> = emptyList(),
     // Reels data
+    showReelsOnHome: Boolean = false,
     reels: List<Reel> = emptyList(),
     isLoadingReels: Boolean = false,
     onReelClick: (Int) -> Unit = {},
     onSeeAllReelsClick: () -> Unit = {},
+    onCreateReelClick: () -> Unit = {},
     isLoading: Boolean = false,
+    isRefreshing: Boolean = false,
     error: String? = null,
     currentUserInitials: String = "U",
     currentUserProfileImage: String? = null,
@@ -3082,11 +3843,14 @@ private fun FeedScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val hapticFeedback = LocalHapticFeedback.current
-    var isRefreshing by remember { mutableStateOf(false) }
     val pullToRefreshState = rememberPullToRefreshState()
-    // Single shimmer animation shared by all skeleton rows (avoids 3× infinite transitions).
-    val skeletonShimmer = shimmerBrush(isLightTheme)
-    
+    val showSkeletons = isLoading && posts.isEmpty()
+    val skeletonShimmer = if (showSkeletons) shimmerBrush(isLightTheme) else null
+    val isFeedScrolling by remember {
+        derivedStateOf { listState.isScrollInProgress }
+    }
+    val reduceFeedCardMotion = reduceAnimations || isFeedScrolling
+
     // Widget positions for distributing engagement widgets in feed
     // Random positions within ranges: ensures varied feed experience on each app open
     val widgetPositions = remember {
@@ -3104,30 +3868,26 @@ private fun FeedScreen(
         buildHomeFeedRows(posts, retentionState, widgetPositions)
     }
 
-    val shouldPrefetchNextPage by remember {
-        derivedStateOf {
-            if (!hasMore || isLoadingMore) return@derivedStateOf false
-            val layoutInfo = listState.layoutInfo
-            val total = layoutInfo.totalItemsCount
-            if (total <= 0) return@derivedStateOf false
-            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index
-                ?: return@derivedStateOf false
-            val buffer = 5
-            if (total <= buffer + 1) {
-                lastVisible >= total - 1
-            } else {
-                lastVisible >= total - buffer - 1
-            }
-        }
-    }
-    LaunchedEffect(shouldPrefetchNextPage, hasMore, isLoadingMore) {
-        if (shouldPrefetchNextPage && hasMore && !isLoadingMore) {
-            onLoadMore()
-        }
-    }
-    
     // System default fling matches native RecyclerView-style physics and avoids custom decay work during scroll.
     val listFlingBehavior = ScrollableDefaults.flingBehavior()
+
+    LaunchedEffect(listState, feedRows.size, hasMore, isLoadingMore) {
+        if (!hasMore || isLoadingMore || feedRows.isEmpty()) return@LaunchedEffect
+
+        snapshotFlow {
+            val layoutInfo = listState.layoutInfo
+            val totalItems = layoutInfo.totalItemsCount
+            val lastVisibleItem = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            totalItems > 0 &&
+                lastVisibleItem >= (totalItems - HomeFeedPrefetchRemainingPosts).coerceAtLeast(0)
+        }
+            .distinctUntilChanged()
+            .collect { shouldLoadMore ->
+                if (shouldLoadMore && hasMore && !isLoadingMore) {
+                    onLoadMore()
+                }
+            }
+    }
 
     // Pull-to-refresh with haptic feedback and minimal line indicator
     // Twitter/X style - thin animated gradient line at top
@@ -3135,13 +3895,7 @@ private fun FeedScreen(
         isRefreshing = isRefreshing,
         onRefresh = {
             hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-            isRefreshing = true
-                onRefresh()
-                // Reset after a short delay (ViewModel will update the data)
-                scope.launch {
-                    delay(1500)
-                    isRefreshing = false
-                }
+            onRefresh()
         },
         modifier = Modifier.fillMaxSize(),
         state = pullToRefreshState,
@@ -3163,7 +3917,7 @@ private fun FeedScreen(
             flingBehavior = listFlingBehavior
         ) {
             item { Spacer(Modifier.height(4.dp)) }
-        
+
         // Streak reminder banner at top (urgency driver) - ONLY when at risk
         if (showStreakReminder && connectionStreak > 0) {
             item {
@@ -3179,7 +3933,7 @@ private fun FeedScreen(
                 )
             }
         }
-        
+
         // Login streak celebration - controlled by ViewModel (milestones only, 24hr cooldown)
         if (showLoginStreakBadge && !isLoading && posts.isNotEmpty()) {
             item {
@@ -3191,7 +3945,7 @@ private fun FeedScreen(
                 )
             }
         }
-        
+
         // Onboarding prompt banner - show if user hasn't completed onboarding
         if (showOnboarding) {
             item {
@@ -3203,7 +3957,7 @@ private fun FeedScreen(
                 )
             }
         }
-        
+
         // Stories section - always show
         item {
             StoriesRow(
@@ -3218,9 +3972,9 @@ private fun FeedScreen(
                 onMyStoryClick = onMyStoryClick
             )
         }
-        
-        // Reels Preview Section - Instagram-like horizontal scrollable reels
-        if (reels.isNotEmpty() || isLoadingReels) {
+
+        if (showReelsOnHome) {
+            // Reels Preview Section - Instagram-like horizontal scrollable reels
             item {
                 ReelsPreviewSection(
                     reels = reels,
@@ -3229,13 +3983,15 @@ private fun FeedScreen(
                     accentColor = accentColor,
                     isLoading = isLoadingReels,
                     onReelClick = onReelClick,
-                    onSeeAllClick = onSeeAllReelsClick
+                    onSeeAllClick = onSeeAllReelsClick,
+                    onCreateClick = onCreateReelClick,
+                    reduceAnimations = reduceFeedCardMotion
                 )
             }
         }
-        
+
         // ==================== RETENTION FEATURES SECTION ====================
-        
+
         // Stay Active Banner (like web's "Stay active – check your feed and connect with someone today")
         retentionState?.let { state ->
             item {
@@ -3248,11 +4004,11 @@ private fun FeedScreen(
                     onConnect = onNavigateToFindPeople
                 )
             }
-            
+
         }
 
         // Loading state - Skeleton loading
-        if (isLoading && posts.isEmpty()) {
+        if (showSkeletons && skeletonShimmer != null) {
             items(count = 3, key = { "feed_skeleton_$it" }) {
                 PostSkeletonCard(
                     shimmerBrush = skeletonShimmer,
@@ -3260,19 +4016,13 @@ private fun FeedScreen(
                 )
             }
         }
-        
+
         // Error state
         error?.let { errorMsg ->
             item {
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .drawBackdrop(
-                            backdrop = backdrop,
-                            shape = { RoundedRectangle(16f.dp) },
-                            effects = { blur(8f.dp.toPx()) },
-                            onDrawSurface = { drawRect(Color.Red.copy(alpha = 0.1f)) }
-                        )
                         .padding(16.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -3289,7 +4039,7 @@ private fun FeedScreen(
                 }
             }
         }
-        
+
         // Empty state
         if (!isLoading && posts.isEmpty() && error == null) {
             item {
@@ -3328,7 +4078,8 @@ private fun FeedScreen(
                         onProfileClick = { onProfileClick(row.post.author.id) },
                         onMentionClick = { username -> onProfileClick(username) },
                         onMenuAction = onMenuAction,
-                        reduceAnimations = reduceAnimations
+                        reduceAnimations = reduceFeedCardMotion,
+                        playDefaultVideos = !reduceAnimations
                     )
                 }
                 FeedListRow.WidgetPeopleLikeYou,
@@ -3406,22 +4157,9 @@ private fun MinimalLineRefreshIndicator(
     accentColor: Color,
     modifier: Modifier = Modifier
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "line_loader")
-    
-    // Animated gradient position for the loading state
-    val animatedOffset = infiniteTransition.animateFloat(
-        initialValue = -1f,
-        targetValue = 2f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "gradient_offset"
-    )
-    
     // Only show when pulling or refreshing
     val showIndicator = pullProgress > 0f || isRefreshing
-    
+
     AnimatedVisibility(
         visible = showIndicator,
         enter = fadeIn(animationSpec = tween(150)),
@@ -3435,6 +4173,16 @@ private fun MinimalLineRefreshIndicator(
                 .statusBarsPadding()
         ) {
             if (isRefreshing) {
+                val infiniteTransition = rememberInfiniteTransition(label = "line_loader")
+                val animatedOffset = infiniteTransition.animateFloat(
+                    initialValue = -1f,
+                    targetValue = 2f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(1200, easing = LinearEasing),
+                        repeatMode = RepeatMode.Restart
+                    ),
+                    label = "gradient_offset"
+                )
                 // Animated gradient line during refresh
                 Box(
                     modifier = Modifier
@@ -3486,12 +4234,12 @@ private fun StoriesRow(
     onMyStoryClick: () -> Unit = {}
 ) {
     // Find user's own story group
-    val myStoryGroup = storyGroups.find { it.isOwnStory }
+    val myStoryGroup = remember(storyGroups) { storyGroups.find { it.isOwnStory } }
     val hasMyStory = myStoryGroup != null && myStoryGroup.stories.isNotEmpty()
-    
+
     // Filter out user's own story from the list (will be shown separately)
-    val otherStoryGroups = storyGroups.filter { !it.isOwnStory }
-    
+    val otherStoryGroups = remember(storyGroups) { storyGroups.filter { !it.isOwnStory } }
+
     Row(
         Modifier
             .fillMaxWidth()
@@ -3573,7 +4321,7 @@ private fun StoriesRow(
                         }
                     }
                 }
-                
+
                 // "+" badge in bottom-right corner
                 Box(
                     Modifier
@@ -3608,7 +4356,7 @@ private fun StoriesRow(
                 style = TextStyle(contentColor.copy(alpha = 0.7f), 11.sp)
             )
         }
-        
+
         // Other story groups
         otherStoryGroups.forEachIndexed { index, storyGroup ->
             // Find the original index in the full list for proper callback
@@ -3635,7 +4383,7 @@ private fun StoryItem(
     val userName = storyGroup.user.name ?: storyGroup.user.username ?: "User"
     val firstName = userName.split(" ").firstOrNull() ?: userName
     val displayName = if (firstName.length > 8) firstName.take(7) + "…" else firstName
-    
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier.clickable { onClick() }
@@ -3771,9 +4519,12 @@ private fun MockPostCard(
             }
 
             // Post content
-            BasicText(
-                post.content,
-                style = TextStyle(contentColor, 14.sp, lineHeight = 20.sp)
+            FormattedContent(
+                content = post.content,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                fontSize = 14.sp,
+                lineHeight = 20.sp
             )
 
             // Image placeholder if has image
@@ -3849,7 +4600,7 @@ private fun FindPeopleScreen(
     retentionViewModel: RetentionViewModel? = null
 ) {
     val retentionState = retentionViewModel?.uiState?.collectAsState()?.value
-    
+
     Column(
         Modifier
             .fillMaxSize()
@@ -3888,7 +4639,7 @@ private fun FindPeopleScreen(
                 )
             }
         }
-        
+
         // Connection limit indicator (Scarcity feature)
         retentionState?.connectionLimit?.let { limit ->
             ConnectionLimitIndicator(
@@ -3935,50 +4686,50 @@ private fun ConnectionCard(
                     drawRect(Color.White.copy(alpha = 0.12f))
                 }
             )
-            .padding(16.dp)
+            .padding(12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
-                    .size(56.dp)
+                    .size(44.dp)
                     .clip(CircleShape)
                     .background(accentColor.copy(alpha = 0.7f)),
                 contentAlignment = Alignment.Center
             ) {
                 BasicText(
                     user.avatarInitials,
-                    style = TextStyle(Color.White, 18.sp, FontWeight.Bold)
+                    style = TextStyle(Color.White, 14.sp, FontWeight.Bold)
                 )
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 BasicText(
                     user.name,
-                    style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold)
+                    style = TextStyle(contentColor, 13.sp, FontWeight.SemiBold)
                 )
                 BasicText(
                     user.headline,
-                    style = TextStyle(contentColor.copy(alpha = 0.7f), 12.sp),
+                    style = TextStyle(contentColor.copy(alpha = 0.7f), 11.sp),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.height(4.dp))
                 BasicText(
                     "${user.connections} connections",
-                    style = TextStyle(contentColor.copy(alpha = 0.5f), 11.sp)
+                    style = TextStyle(contentColor.copy(alpha = 0.5f), 10.sp)
                 )
             }
             Spacer(Modifier.width(8.dp))
             LiquidButton(
                 onClick = { },
                 backdrop = backdrop,
-                modifier = Modifier.height(36.dp),
+                modifier = Modifier.height(32.dp),
                 tint = accentColor
             ) {
                 BasicText(
                     "Connect",
-                    Modifier.padding(horizontal = 12.dp),
-                    style = TextStyle(Color.White, 13.sp, FontWeight.Medium)
+                    Modifier.padding(horizontal = 10.dp),
+                    style = TextStyle(Color.White, 12.sp, FontWeight.Medium)
                 )
             }
         }
@@ -4041,18 +4792,6 @@ private fun PostScreen(
         Box(
             Modifier
                 .fillMaxWidth()
-                .drawBackdrop(
-                    backdrop = backdrop,
-                    shape = { RoundedRectangle(24f.dp) },
-                    effects = {
-                        vibrancy()
-                        blur(16f.dp.toPx())
-                        lens(12f.dp.toPx(), 24f.dp.toPx())
-                    },
-                    onDrawSurface = {
-                        drawRect(Color.White.copy(alpha = 0.15f))
-                    }
-                )
                 .padding(24.dp)
         ) {
             Column(
@@ -4292,6 +5031,7 @@ private fun MoreScreen(
     connectionRequestsError: String? = null,
     hasPendingGroupMessages: Boolean = false,
     showFullMoreScreen: Boolean = false,
+    premiumDetailsRequestKey: Int = 0,
     quickHubAnimationKey: Int = 0,
     onOpenFullMoreScreen: () -> Unit = {},
     onNavigateToProfile: () -> Unit = {},
@@ -4306,9 +5046,13 @@ private fun MoreScreen(
     onNavigateToOnboarding: () -> Unit = {},
     onNavigateToSavedPosts: () -> Unit = {},
     onNavigateToGrowthHub: () -> Unit = {},
+    onNavigateToGames: () -> Unit = {},
     onNavigateToSkillPassport: () -> Unit = {},
     onNavigateToSkillSwap: () -> Unit = {},
+    onNavigateToHackathons: () -> Unit = {},
+    onOpenAiChat: () -> Unit = {},
     onOpenAgent: () -> Unit = {},
+
     onNavigateToNotificationSettings: () -> Unit = {},
     onNavigateToPrivacySettings: () -> Unit = {},
     onNavigateToAppearanceSettings: () -> Unit = {},
@@ -4316,11 +5060,11 @@ private fun MoreScreen(
     onNavigateToInviteFriends: () -> Unit = {},
     onNavigateToAbout: () -> Unit = {},
     onNavigateToContact: () -> Unit = {},
+    onSwitchAccount: () -> Unit = {},
     onLogout: () -> Unit = {}
 ) {
     var showPremiumDetailsScreen by rememberSaveable { mutableStateOf(false) }
     val pendingRequestsCount = connectionRequests.size
-    val canUseAgent = currentUser?.canUseAgent == true
     val pendingRequestsBadge = when {
         pendingRequestsCount <= 0 -> null
         pendingRequestsCount > 99 -> "99+"
@@ -4335,6 +5079,14 @@ private fun MoreScreen(
                 badgeLabel = pendingRequestsBadge,
                 showIndicatorDot = pendingRequestsCount > 0,
                 onClick = onNavigateToConnectionRequests
+            )
+        )
+        add(
+            MoreQuickAction(
+                title = "vormex",
+                label = "vormex",
+                icon = Icons.Outlined.ChatBubbleOutline,
+                onClick = onOpenAiChat
             )
         )
         add(
@@ -4380,22 +5132,20 @@ private fun MoreScreen(
         )
         add(
             MoreQuickAction(
+                title = "Hackathons",
+                label = "Hacks",
+                icon = Icons.Outlined.EmojiEvents,
+                onClick = onNavigateToHackathons
+            )
+        )
+        add(
+            MoreQuickAction(
                 title = "Growth hub",
                 label = "Growth",
                 icon = Icons.Outlined.School,
                 onClick = onNavigateToGrowthHub
             )
         )
-        if (canUseAgent) {
-            add(
-                MoreQuickAction(
-                    title = "Agent",
-                    label = "AI Agent",
-                    icon = Icons.Outlined.AutoAwesome,
-                    onClick = onOpenAgent
-                )
-            )
-        }
         add(
             MoreQuickAction(
                 title = "Notifications",
@@ -4410,14 +5160,22 @@ private fun MoreScreen(
         showPremiumDetailsScreen = false
     }
 
+    LaunchedEffect(premiumDetailsRequestKey) {
+        if (premiumDetailsRequestKey > 0) {
+            showPremiumDetailsScreen = true
+        }
+    }
+
     if (showPremiumDetailsScreen) {
         MorePremiumDetailsScreen(
             backdrop = backdrop,
             contentColor = contentColor,
             accentColor = accentColor,
             isGlassTheme = isGlassTheme,
+            currentUserId = currentUser?.id,
             onNavigateBack = { showPremiumDetailsScreen = false },
-            onOpenAgent = onOpenAgent
+            onOpenAgent = onOpenAgent,
+
         )
     } else if (showFullMoreScreen) {
         MoreFullScreen(
@@ -4431,7 +5189,7 @@ private fun MoreScreen(
             isLoadingConnectionRequests = isLoadingConnectionRequests,
             connectionRequestsError = connectionRequestsError,
             hasPendingGroupMessages = hasPendingGroupMessages,
-            hiddenQuickActionTitles = quickActions.mapTo(linkedSetOf()) { it.title },
+            hiddenQuickActionTitles = emptySet(),
             onOpenPremiumDetails = { showPremiumDetailsScreen = true },
             onNavigateToProfile = onNavigateToProfile,
             onNavigateToConnectionRequests = onNavigateToConnectionRequests,
@@ -4445,8 +5203,11 @@ private fun MoreScreen(
             onNavigateToOnboarding = onNavigateToOnboarding,
             onNavigateToSavedPosts = onNavigateToSavedPosts,
             onNavigateToGrowthHub = onNavigateToGrowthHub,
+            onNavigateToGames = onNavigateToGames,
             onNavigateToSkillPassport = onNavigateToSkillPassport,
             onNavigateToSkillSwap = onNavigateToSkillSwap,
+            onNavigateToHackathons = onNavigateToHackathons,
+            onOpenAiChat = onOpenAiChat,
             onOpenAgent = onOpenAgent,
             onNavigateToNotificationSettings = onNavigateToNotificationSettings,
             onNavigateToPrivacySettings = onNavigateToPrivacySettings,
@@ -4455,6 +5216,7 @@ private fun MoreScreen(
             onNavigateToInviteFriends = onNavigateToInviteFriends,
             onNavigateToAbout = onNavigateToAbout,
             onNavigateToContact = onNavigateToContact,
+            onSwitchAccount = onSwitchAccount,
             onLogout = onLogout
         )
     } else {
@@ -4496,8 +5258,11 @@ private fun MoreFullScreen(
     onNavigateToOnboarding: () -> Unit = {},
     onNavigateToSavedPosts: () -> Unit = {},
     onNavigateToGrowthHub: () -> Unit = {},
+    onNavigateToGames: () -> Unit = {},
     onNavigateToSkillPassport: () -> Unit = {},
     onNavigateToSkillSwap: () -> Unit = {},
+    onNavigateToHackathons: () -> Unit = {},
+    onOpenAiChat: () -> Unit = {},
     onOpenAgent: () -> Unit = {},
     onNavigateToNotificationSettings: () -> Unit = {},
     onNavigateToPrivacySettings: () -> Unit = {},
@@ -4506,6 +5271,7 @@ private fun MoreFullScreen(
     onNavigateToInviteFriends: () -> Unit = {},
     onNavigateToAbout: () -> Unit = {},
     onNavigateToContact: () -> Unit = {},
+    onSwitchAccount: () -> Unit = {},
     onLogout: () -> Unit = {}
 ) {
     val goalsData = retentionState.weeklyGoals
@@ -4536,7 +5302,6 @@ private fun MoreFullScreen(
     val destructiveColor = if (isDarkSurface) Color(0xFFFF7A7A) else Color(0xFFD33A3A)
     var searchQuery by rememberSaveable { mutableStateOf("") }
     val pendingRequestsCount = connectionRequests.size
-    val canUseAgent = currentUser?.canUseAgent == true
     val canAccessProfileCustomization = currentUser?.canAccessProfileCustomization == true
     val connectionRequestsSubtitle = when {
         isLoadingConnectionRequests && pendingRequestsCount == 0 -> "Checking for incoming requests"
@@ -4658,22 +5423,48 @@ private fun MoreFullScreen(
         MoreSettingsSection(
             title = "For professionals",
             items = buildList {
-                if (canUseAgent) {
-                    add(
-                        MoreSettingsItem(
-                            title = "AI Agent",
-                            subtitle = "Ask Vormex to help across the app",
-                            icon = Icons.Outlined.AutoAwesome,
-                            onClick = onOpenAgent
-                        )
+                add(
+                    MoreSettingsItem(
+                        title = "vormex",
+                        subtitle = "Ask vormex to help inside the app",
+                        icon = Icons.Outlined.ChatBubbleOutline,
+                        onClick = onOpenAiChat,
+                        searchTerms = listOf("ai", "agent", "vormex", "chat", "assistant")
                     )
-                }
+                )
+                add(
+                    MoreSettingsItem(
+                        title = "Hackathons",
+                        subtitle = "Find events, form teams, and open team chats",
+                        icon = Icons.Outlined.EmojiEvents,
+                        onClick = onNavigateToHackathons,
+                        searchTerms = listOf("hackathon", "hackathons", "devfolio", "mlh", "team", "college fest")
+                    )
+                )
                 add(
                     MoreSettingsItem(
                         title = "Growth hub",
                         subtitle = "Jobs, learning, AI coach, rewards",
                         icon = Icons.Outlined.School,
                         onClick = onNavigateToGrowthHub
+                    )
+                )
+                add(
+                    MoreSettingsItem(
+                        title = "Skill Passport",
+                        subtitle = "Verified skills and proof of work",
+                        icon = Icons.Outlined.Verified,
+                        onClick = onNavigateToSkillPassport,
+                        searchTerms = listOf("skill", "passport", "verified", "proof", "portfolio")
+                    )
+                )
+                add(
+                    MoreSettingsItem(
+                        title = "Skill Swap",
+                        subtitle = "Trade skills and learn with others",
+                        icon = Icons.Outlined.Groups,
+                        onClick = onNavigateToSkillSwap,
+                        searchTerms = listOf("skill", "swap", "learn", "mentor", "teach")
                     )
                 )
                 add(
@@ -4699,6 +5490,14 @@ private fun MoreFullScreen(
                         subtitle = "Watch short videos",
                         icon = Icons.Outlined.SmartDisplay,
                         onClick = onNavigateToReels
+                    )
+                )
+                add(
+                    MoreSettingsItem(
+                        title = "Games",
+                        subtitle = "Play Vormex Connect",
+                        icon = Icons.Outlined.SportsEsports,
+                        onClick = onNavigateToGames
                     )
                 )
             }
@@ -4752,6 +5551,12 @@ private fun MoreFullScreen(
         MoreSettingsSection(
             title = "Account actions",
             items = listOf(
+                MoreSettingsItem(
+                    title = "Switch account",
+                    subtitle = "Sign out and choose another account",
+                    icon = Icons.Outlined.PersonOutline,
+                    onClick = onSwitchAccount
+                ),
                 MoreSettingsItem(
                     title = "Log out",
                     subtitle = "Sign out of your account on this device",
@@ -4843,8 +5648,11 @@ private fun MoreFullScreen(
                     isGlassTheme = isGlassTheme,
                     sectionSurfaceColor = sectionSurfaceColor,
                     dividerColor = dividerColor,
+                    contentColor = contentColor,
+                    secondaryTextColor = secondaryTextColor,
                     accentColor = accentColor,
                     sectionHeaderColor = sectionHeaderColor,
+                    currentUser = currentUser,
                     onOpenPremiumDetails = onOpenPremiumDetails
                 )
             }
@@ -4944,16 +5752,173 @@ private data class PremiumHighlight(
     val icon: ImageVector
 )
 
+private data class PremiumMembershipPalette(
+    val pageBackground: Color,
+    val contentColor: Color,
+    val secondaryTextColor: Color,
+    val metaTextColor: Color,
+    val accentColor: Color,
+    val featureAccentColor: Color,
+    val dividerColor: Color,
+    val closeBackgroundColor: Color,
+    val closeIconColor: Color,
+    val headerTextColor: Color,
+    val glassPanelSurfaceColor: Color,
+    val glassPanelBorderColor: Color,
+    val planSurfaceColor: Color,
+    val planSelectedSurfaceColor: Color,
+    val planSelectedTextColor: Color,
+    val planUnselectedTextColor: Color,
+    val reachCardSurfaceColor: Color,
+    val reachCardLabelSurfaceColor: Color,
+    val reachCardLabelTextColor: Color,
+    val reachCardTitleColor: Color,
+    val reachCardDetailColor: Color,
+    val aiCardSurfaceColor: Color,
+    val aiCardLabelSurfaceColor: Color,
+    val aiCardLabelTextColor: Color,
+    val aiCardTitleColor: Color,
+    val aiCardDetailColor: Color,
+    val ctaSurfaceColor: Color,
+    val ctaContentColor: Color,
+    val activeCtaSurfaceColor: Color,
+    val activeCtaContentColor: Color,
+    val statusSurfaceColor: Color,
+    val statusErrorTextColor: Color
+)
+
+@Composable
+private fun rememberPremiumMembershipPalette(
+    isGlassTheme: Boolean,
+    baseContentColor: Color,
+    baseAccentColor: Color
+): PremiumMembershipPalette {
+    val appearance = currentVormexAppearance()
+    val usesDarkSurface = rememberMoreUsesDarkSurface(isGlassTheme = isGlassTheme)
+    val useDarkPremium = appearance.isDarkTheme || usesDarkSurface
+    val neonAccent = Color(0xFFCDFF00)
+    val editorialAccent = Color(0xFFFF6240)
+    val resolvedAccent = when {
+        useDarkPremium -> neonAccent
+        isGlassTheme -> baseAccentColor
+        else -> editorialAccent
+    }
+    val useLightTextOnAccent = !useDarkPremium && resolvedAccent.luminance() < 0.42f
+    val pageBackground = when {
+        isGlassTheme -> Color.Transparent
+        useDarkPremium -> appearance.backgroundColor
+        appearance.mode == VormexThemeMode.WarmPaper -> Color(0xFFF5F1EA)
+        else -> appearance.backgroundColor
+    }
+    val content = when {
+        useDarkPremium -> baseContentColor.takeIf { it.luminance() > 0.45f } ?: Color.White.copy(alpha = 0.94f)
+        isGlassTheme -> baseContentColor
+        else -> Color(0xFF1E1C18)
+    }
+    val secondary = if (useDarkPremium) {
+        content.copy(alpha = 0.62f)
+    } else {
+        Color(0xFF736F68)
+    }
+    val meta = if (useDarkPremium) {
+        content.copy(alpha = 0.42f)
+    } else {
+        Color(0xFFA9A198)
+    }
+    val divider = when {
+        isGlassTheme && useDarkPremium -> Color.White.copy(alpha = 0.14f)
+        isGlassTheme -> Color.White.copy(alpha = 0.30f)
+        useDarkPremium -> appearance.dividerColor.copy(alpha = 0.95f)
+        else -> Color(0xFFE5DED2)
+    }
+
+    return PremiumMembershipPalette(
+        pageBackground = pageBackground,
+        contentColor = content,
+        secondaryTextColor = secondary,
+        metaTextColor = meta,
+        accentColor = resolvedAccent,
+        featureAccentColor = if (useDarkPremium) neonAccent else Color(0xFF8FC900),
+        dividerColor = divider,
+        closeBackgroundColor = if (useDarkPremium) {
+            Color.White.copy(alpha = if (isGlassTheme) 0.12f else 0.08f)
+        } else {
+            Color(0xFFE9E4DA).copy(alpha = if (isGlassTheme) 0.72f else 1f)
+        },
+        closeIconColor = if (useDarkPremium) content.copy(alpha = 0.74f) else Color(0xFF77716A),
+        headerTextColor = meta,
+        glassPanelSurfaceColor = if (useDarkPremium) {
+            Color.Black.copy(alpha = 0.34f)
+        } else {
+            Color.White.copy(alpha = 0.36f)
+        },
+        glassPanelBorderColor = if (useDarkPremium) {
+            Color.White.copy(alpha = 0.14f)
+        } else {
+            Color.White.copy(alpha = 0.34f)
+        },
+        planSurfaceColor = if (useDarkPremium) Color.White.copy(alpha = 0.07f) else Color.White.copy(alpha = 0.92f),
+        planSelectedSurfaceColor = if (useDarkPremium) neonAccent else Color(0xFF1F1C18),
+        planSelectedTextColor = if (useDarkPremium) Color(0xFF111111) else Color.White,
+        planUnselectedTextColor = secondary,
+        reachCardSurfaceColor = if (useDarkPremium) Color(0xFF101010) else Color(0xFF1F1C18),
+        reachCardLabelSurfaceColor = Color.White.copy(alpha = if (useDarkPremium) 0.09f else 0.10f),
+        reachCardLabelTextColor = Color.White.copy(alpha = 0.74f),
+        reachCardTitleColor = Color.White,
+        reachCardDetailColor = Color.White.copy(alpha = 0.68f),
+        aiCardSurfaceColor = resolvedAccent,
+        aiCardLabelSurfaceColor = Color.Black.copy(alpha = if (useDarkPremium) 0.14f else 0.10f),
+        aiCardLabelTextColor = when {
+            useDarkPremium -> Color(0xFF284000)
+            useLightTextOnAccent -> Color.White.copy(alpha = 0.78f)
+            else -> Color(0xFF5D2619)
+        },
+        aiCardTitleColor = if (useLightTextOnAccent) Color.White else Color(0xFF111111),
+        aiCardDetailColor = when {
+            useDarkPremium -> Color(0xFF334500)
+            useLightTextOnAccent -> Color.White.copy(alpha = 0.74f)
+            else -> Color(0xFF6A291C)
+        },
+        ctaSurfaceColor = if (useDarkPremium) neonAccent else Color(0xFF1F1C18),
+        ctaContentColor = if (useDarkPremium) Color(0xFF111111) else Color.White,
+        activeCtaSurfaceColor = neonAccent,
+        activeCtaContentColor = Color(0xFF111111),
+        statusSurfaceColor = if (useDarkPremium) {
+            Color.White.copy(alpha = if (isGlassTheme) 0.08f else 0.06f)
+        } else {
+            Color.White.copy(alpha = if (isGlassTheme) 0.34f else 0.54f)
+        },
+        statusErrorTextColor = if (useDarkPremium) Color(0xFFFF947A) else Color(0xFFB33A25)
+    )
+}
+
 @Composable
 private fun MorePremiumSection(
     backdrop: LayerBackdrop,
     isGlassTheme: Boolean,
     sectionSurfaceColor: Color,
     dividerColor: Color,
+    contentColor: Color,
+    secondaryTextColor: Color,
     accentColor: Color,
     sectionHeaderColor: Color,
+    currentUser: com.kyant.backdrop.catalog.network.models.User?,
     onOpenPremiumDetails: () -> Unit
 ) {
+    val context = LocalContext.current
+    val premiumRefreshSignal by PremiumCheckoutManager.refreshSignal.collectAsState()
+    var premiumState by remember(currentUser?.id) { mutableStateOf<PremiumSubscriptionResponse?>(null) }
+
+    LaunchedEffect(currentUser?.id, premiumRefreshSignal) {
+        if (currentUser == null) {
+            premiumState = null
+            return@LaunchedEffect
+        }
+
+        ApiClient.getPremiumSubscription(context)
+            .onSuccess { premiumState = it }
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         MoreSectionHeader("Premium", sectionHeaderColor)
         MorePremiumEntryCard(
@@ -4973,32 +5938,64 @@ private fun MorePremiumDetailsScreen(
     contentColor: Color,
     accentColor: Color,
     isGlassTheme: Boolean,
+    currentUserId: String?,
     onNavigateBack: () -> Unit,
     onOpenAgent: () -> Unit
 ) {
-    val isDarkSurface = rememberMoreUsesDarkSurface(isGlassTheme = isGlassTheme)
-    val pageBackground = Color.Transparent
-    val sectionSurfaceColor = if (isDarkSurface) {
-        Color.White.copy(alpha = if (isGlassTheme) 0.06f else 0.05f)
-    } else {
-        Color.White.copy(alpha = if (isGlassTheme) 0.22f else 0.68f)
-    }
-    val dividerColor = if (isDarkSurface) {
-        Color.White.copy(alpha = if (isGlassTheme) 0.10f else 0.08f)
-    } else {
-        Color.Black.copy(alpha = if (isGlassTheme) 0.10f else 0.07f)
-    }
-    val secondaryTextColor = contentColor.copy(alpha = if (isDarkSurface) 0.66f else 0.58f)
-    val sectionHeaderColor = contentColor.copy(alpha = if (isDarkSurface) 0.72f else 0.48f)
+    val premiumPalette = rememberPremiumMembershipPalette(
+        isGlassTheme = isGlassTheme,
+        baseContentColor = contentColor,
+        baseAccentColor = accentColor
+    )
+    val sectionSurfaceColor = Color.Transparent
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val premiumRefreshSignal by PremiumCheckoutManager.refreshSignal.collectAsState()
     val celebrationSignal by PremiumCheckoutManager.celebrationSignal.collectAsState()
+    val billingState by PremiumCheckoutManager.billingState.collectAsState()
+    val playBillingDiagnostic = remember(billingState) {
+        if (!BuildConfig.DEBUG) {
+            null
+        } else {
+            buildString {
+                append("Play Billing: ")
+                append(if (billingState.isReady) "connected" else "not connected")
+                append(" • offers ")
+                append(billingState.plans.size)
+                billingState.lastResponseCode?.let { responseCode ->
+                    append(" • code ")
+                    append(responseCode)
+                }
+                billingState.lastDebugMessage
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { debugMessage ->
+                        append(" • ")
+                        append(debugMessage)
+                    }
+            }
+        }
+    }
     var premiumState by remember { mutableStateOf<PremiumSubscriptionResponse?>(null) }
     var isLoadingPremiumState by remember { mutableStateOf(true) }
-    var isLaunchingCheckout by remember { mutableStateOf(false) }
     var isCancellingPremium by remember { mutableStateOf(false) }
+
     var showCelebration by remember { mutableStateOf(false) }
+    var selectedBillingCycle by rememberSaveable { mutableStateOf("yearly") }
+    val playPlanOptions = remember(billingState.plans, premiumState?.planOptions) {
+        val backendOptions = premiumState?.planOptions.orEmpty()
+        billingState.plans.map { offer ->
+            val backendOption = backendOptions.firstOrNull { it.billingCycle == offer.billingCycle }
+            PremiumPlanOption(
+                billingCycle = offer.billingCycle,
+                amountMinor = (offer.priceAmountMicros / 10_000L).toInt(),
+                currency = offer.priceCurrencyCode,
+                displayAmount = offer.formattedPrice,
+                durationDays = backendOption?.durationDays ?: if (offer.billingCycle == "yearly") 365 else 31,
+                label = backendOption?.label ?: offer.billingCycle.replaceFirstChar { it.uppercase() },
+                savingsLabel = backendOption?.savingsLabel
+            )
+        }
+    }
 
     fun launchPremiumCheckout() {
         val activity = context.findComponentActivity()
@@ -5020,23 +6017,18 @@ private fun MorePremiumDetailsScreen(
             return
         }
 
-        scope.launch {
-            isLaunchingCheckout = true
-            val checkoutResult = ApiClient.createPremiumCheckout(context)
-            isLaunchingCheckout = false
+        PremiumCheckoutManager.startCheckout(
+            activity = activity,
+            billingCycle = selectedBillingCycle,
+            userId = currentUserId
+        )
+    }
 
-            checkoutResult
-                .onSuccess { checkoutSession ->
-                    PremiumCheckoutManager.startCheckout(activity, checkoutSession)
-                }
-                .onFailure { error ->
-                    Toast.makeText(
-                        context,
-                        error.message ?: "Unable to start premium checkout.",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-        }
+    fun managePremiumAccess() {
+        PremiumCheckoutManager.openGooglePlayManagement(
+            context = context,
+            productId = premiumState?.googlePlayProductId
+        )
     }
 
     fun cancelPremiumAccess() {
@@ -5065,12 +6057,28 @@ private fun MorePremiumDetailsScreen(
         }
     }
 
+
+
     LaunchedEffect(premiumRefreshSignal) {
         isLoadingPremiumState = true
         ApiClient.getPremiumSubscription(context)
             .onSuccess { premiumState = it }
             .onFailure { premiumState = null }
         isLoadingPremiumState = false
+    }
+
+    LaunchedEffect(Unit) {
+        PremiumCheckoutManager.loadPremiumPlans(context)
+        PremiumCheckoutManager.restorePurchases(context)
+    }
+
+    LaunchedEffect(playPlanOptions, premiumState?.planOptions) {
+        val availableCycles = (playPlanOptions.takeIf { it.isNotEmpty() } ?: premiumState?.planOptions.orEmpty())
+            .map { it.billingCycle }
+            .filter { it.isNotBlank() }
+        if (availableCycles.isNotEmpty() && selectedBillingCycle !in availableCycles) {
+            selectedBillingCycle = availableCycles.first()
+        }
     }
 
     LaunchedEffect(celebrationSignal) {
@@ -5083,56 +6091,73 @@ private fun MorePremiumDetailsScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(pageBackground)
+            .background(premiumPalette.pageBackground)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 18.dp)
+                .padding(horizontal = 24.dp, vertical = 18.dp)
                 .padding(bottom = 110.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            Row(
+            Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .clickable(onClick = onNavigateBack)
-                    .padding(horizontal = 4.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .fillMaxWidth()
+                    .height(34.dp)
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                    contentDescription = "Back",
-                    tint = contentColor,
-                    modifier = Modifier.size(18.dp)
-                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(premiumPalette.closeBackgroundColor)
+                        .clickable(onClick = onNavigateBack),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = "Close",
+                        tint = premiumPalette.closeIconColor,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
                 BasicText(
-                    "Back",
+                    "VORMEX · MEMBERSHIP",
+                    modifier = Modifier.align(Alignment.Center),
                     style = TextStyle(
-                        color = contentColor,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium
+                        color = premiumPalette.headerTextColor,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 )
             }
 
-            MoreSectionHeader("Premium", sectionHeaderColor)
             MorePremiumPromoCard(
                 backdrop = backdrop,
                 isGlassTheme = isGlassTheme,
                 sectionSurfaceColor = sectionSurfaceColor,
-                dividerColor = dividerColor,
-                contentColor = contentColor,
-                secondaryTextColor = secondaryTextColor,
-                accentColor = accentColor,
+                dividerColor = premiumPalette.dividerColor,
+                contentColor = premiumPalette.contentColor,
+                secondaryTextColor = premiumPalette.secondaryTextColor,
+                accentColor = premiumPalette.accentColor,
+                palette = premiumPalette,
                 premiumState = premiumState,
+                playPlanOptions = playPlanOptions,
+                selectedBillingCycle = selectedBillingCycle,
                 isLoadingPremiumState = isLoadingPremiumState,
-                isLaunchingCheckout = isLaunchingCheckout,
+                isLoadingPlayPlans = billingState.isLoadingPlans,
+                isLaunchingCheckout = billingState.isProcessingPurchase,
                 isCancellingPremium = isCancellingPremium,
+                playBillingErrorMessage = billingState.errorMessage,
+                playPendingMessage = billingState.pendingMessage,
+                playBillingDiagnostic = playBillingDiagnostic,
+                canUsePlayCheckout = billingState.isAvailable,
                 showCelebration = showCelebration,
+                onBillingCycleChange = { selectedBillingCycle = it },
                 onStartCheckout = ::launchPremiumCheckout,
                 onCancelPremium = ::cancelPremiumAccess,
+                onManagePremium = ::managePremiumAccess,
                 onOpenAgent = onOpenAgent
             )
         }
@@ -5228,6 +6253,8 @@ private fun MorePremiumEntryCard(
     }
 }
 
+
+
 @Composable
 private fun MorePremiumPromoCard(
     backdrop: LayerBackdrop,
@@ -5237,23 +6264,27 @@ private fun MorePremiumPromoCard(
     contentColor: Color,
     secondaryTextColor: Color,
     accentColor: Color,
+    palette: PremiumMembershipPalette,
     premiumState: PremiumSubscriptionResponse?,
+    playPlanOptions: List<PremiumPlanOption>,
+    selectedBillingCycle: String,
     isLoadingPremiumState: Boolean,
+    isLoadingPlayPlans: Boolean,
     isLaunchingCheckout: Boolean,
     isCancellingPremium: Boolean,
+    playBillingErrorMessage: String?,
+    playPendingMessage: String?,
+    playBillingDiagnostic: String?,
+    canUsePlayCheckout: Boolean,
     showCelebration: Boolean,
+    onBillingCycleChange: (String) -> Unit,
     onStartCheckout: () -> Unit,
     onCancelPremium: () -> Unit,
+    onManagePremium: () -> Unit,
     onOpenAgent: () -> Unit
 ) {
     val context = LocalContext.current
     val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
-    val ctaComposition by rememberLottieComposition(LottieCompositionSpec.RawRes(R.raw.go_premium))
-    val ctaProgress by animateLottieCompositionAsState(
-        composition = ctaComposition,
-        iterations = LottieConstants.IterateForever,
-        isPlaying = !reduceAnimations
-    )
     val confettiComposition by rememberLottieComposition(
         LottieCompositionSpec.RawRes(R.raw.confetti_animation_01)
     )
@@ -5262,375 +6293,351 @@ private fun MorePremiumPromoCard(
         iterations = if (reduceAnimations) 1 else LottieConstants.IterateForever,
         isPlaying = showCelebration
     )
-    val featureHighlights = listOf(
-        PremiumHighlight(
-            title = "AI Agent",
-            detail = "Unlock the agent button and get premium AI help inside Vormex.",
-            icon = Icons.Outlined.AutoAwesome
-        ),
-        PremiumHighlight(
-            title = "Premium looks",
-            detail = "Use premium themes, stronger post styling, and a custom profile visitor look.",
-            icon = Icons.Outlined.Palette
-        ),
-        PremiumHighlight(
-            title = "Featured surfaces",
-            detail = "Open premium-only sections, featured cards, and standout profile surfaces.",
-            icon = Icons.Outlined.Widgets
-        ),
-        PremiumHighlight(
-            title = "Fast support",
-            detail = premiumState?.supportLabel ?: "24/7 fast support when you need help.",
-            icon = Icons.Outlined.SupportAgent
-        )
-    )
-    val checkoutEnabled = premiumState?.checkoutEnabled != false
+    val backendPlanOptions = premiumState?.planOptions?.takeIf { it.isNotEmpty() }
+    val planOptions = playPlanOptions.takeIf { it.isNotEmpty() } ?: backendPlanOptions ?: premiumDefaultPlanOptions()
+    val orderedPlanOptions = premiumOrderedPlanOptions(planOptions)
+    val selectedPlan = orderedPlanOptions.firstOrNull { it.billingCycle == selectedBillingCycle }
+        ?: orderedPlanOptions.first()
+    val monthlyPlan = orderedPlanOptions.firstOrNull { it.billingCycle == "monthly" }
     val isPremiumActive = premiumState?.isPremium == true
     val customPriceApplied = premiumState?.customPriceApplied == true
-    val ctaEnabled =
-        !isLoadingPremiumState && !isLaunchingCheckout && !isCancellingPremium && checkoutEnabled && !isPremiumActive
-    val badgeLabel = when {
+    val checkoutEnabled = premiumState?.checkoutEnabled != false
+    val canStartCheckout =
+        !isLoadingPremiumState &&
+            !isLaunchingCheckout &&
+            !isCancellingPremium &&
+            checkoutEnabled &&
+            !isPremiumActive
+    val primaryCtaLabel = when {
+        isLoadingPremiumState -> "Checking access"
+        isLoadingPlayPlans -> "Loading prices"
+        isLaunchingCheckout -> "Opening checkout"
+        isCancellingPremium -> "Updating premium"
+        isPremiumActive && premiumState.canUseAgent -> "Open AI Agent"
         isPremiumActive -> "Premium active"
-        customPriceApplied -> "Custom offer"
-        else -> "31-day premium"
+        !checkoutEnabled -> "Premium unavailable"
+        else -> "Start 7-day free trial"
     }
-    val secondaryBadgeLabel = when {
-        premiumState?.canUseAgent == true -> "AI Agent included"
-        premiumState?.canAccessProfileCustomization == true && !isPremiumActive -> "Customization ready"
+    val ctaPriceLabel = when {
+        isPremiumActive -> premiumState.displayAmount.takeIf { it.isNotBlank() }
+            ?: premiumCompactAmountLabel(selectedPlan)
+        selectedPlan.billingCycle == "yearly" -> "${premiumCompactAmountLabel(selectedPlan)}/yr"
+        selectedPlan.billingCycle == "monthly" -> "${premiumCompactAmountLabel(selectedPlan)}/mo"
+        else -> premiumCompactAmountLabel(selectedPlan)
+    }
+    val statusMessage = when {
+        !playPendingMessage.isNullOrBlank() -> playPendingMessage
+        !playBillingErrorMessage.isNullOrBlank() && !isPremiumActive -> playBillingErrorMessage
+        isLoadingPremiumState -> "Checking your premium access..."
+        isLoadingPlayPlans -> "Loading Google Play prices..."
+        isLaunchingCheckout -> "Opening Google Play checkout..."
+        isCancellingPremium -> "Updating premium access..."
+        !canUsePlayCheckout && !isPremiumActive -> "Google Play prices are not ready yet. Tap to retry."
+        customPriceApplied -> "A special premium price is active for this account."
         else -> null
     }
-    val description = premiumState?.description?.takeIf { it.isNotBlank() }
-        ?: "Unlock a sharper Vormex presence with AI Agent access, stronger styling, featured cards, themes, support, and premium-only upgrades."
-    val priceLabel = premiumState?.displayAmount?.takeIf { it.isNotBlank() } ?: "Premium access"
-    val durationLabel = premiumState?.premiumDurationDays?.takeIf { it > 0 }?.let { "$it days" } ?: "31 days"
-    val renewalLabel = premiumState?.renewalModeLabel ?: "Manual renewal"
-    val supportLabel = premiumState?.supportLabel ?: "24/7 fast support"
-    val creditsUsedLabel = "${premiumState?.creditsUsed ?: 0}"
-    val remainingDays = premiumState?.premiumDaysRemaining ?: 0
-    val statusSummary = when {
-        isLoadingPremiumState -> "Checking premium access..."
-        isLaunchingCheckout -> "Preparing secure checkout..."
-        isCancellingPremium -> "Cancelling premium access..."
-        isPremiumActive && remainingDays > 0 ->
-            "$remainingDays days left in your premium plan."
-        isPremiumActive -> "Premium is active on this account."
-        customPriceApplied -> "This account has a special premium price."
-        !checkoutEnabled -> "Premium checkout is not configured yet."
-        else -> "Upgrade once and keep premium access live for 31 days."
+    val includedFeatures = premiumState?.features
+        ?.takeIf { it.isNotEmpty() }
+        ?: listOf(
+            "Priority discovery placement",
+            "Premium verified badge",
+            "Profile reach boost - up to 3x",
+            "Better chance of profile views",
+            "Recommended to top creators",
+            "Unlimited AI Agent prompts",
+            "Teammate finder and intro help",
+            "Profile frames and visitor polish"
+        )
+    val priceHeader = when (selectedPlan.billingCycle) {
+        "yearly" -> "YEARLY · PER MONTH"
+        "monthly" -> "MONTHLY"
+        else -> selectedPlan.billingCycle.uppercase()
     }
-    val statusDetail = when {
-        isPremiumActive && premiumState.canUseAgent ->
-            "AI Agent is unlocked. Open it any time from here or from the More menu."
-        isPremiumActive ->
-            "Your premium look, featured design, and customization access stay active during this cycle."
-        premiumState?.canAccessProfileCustomization == true ->
-            "Profile customization is already enabled for this account."
-        else ->
-            "Premium also gives you featured designs, premium themes, better post styling, and support."
+    val priceLabel = if (selectedPlan.billingCycle == "yearly") {
+        premiumPerMonthLabel(selectedPlan, monthlyPlan)
+    } else {
+        premiumCompactAmountLabel(selectedPlan)
     }
+    val billingBase = premiumBillingBaseLabel(selectedPlan)
+    val billingSavings = premiumSavingsLabel(selectedPlan)
     val premiumFontFamily = FontFamily.SansSerif
 
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp))
             .then(
                 if (isGlassTheme) {
-                    Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { RoundedRectangle(22.dp) },
-                        effects = {
-                            vibrancy()
-                            blur(14f.dp.toPx())
-                            lens(8f.dp.toPx(), 16f.dp.toPx())
-                        },
-                        onDrawSurface = {
-                            drawRect(sectionSurfaceColor)
-                        }
-                    )
-                } else {
-                    Modifier.background(sectionSurfaceColor)
-                }
-            )
-            .border(1.dp, dividerColor, RoundedCornerShape(22.dp))
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            accentColor.copy(alpha = if (isGlassTheme) 0.22f else 0.14f),
-                            Color(0xFFFFC857).copy(alpha = if (isGlassTheme) 0.14f else 0.08f),
-                            Color.Transparent
-                        ),
-                        start = Offset.Zero,
-                        end = Offset(960f, 520f)
-                    )
-                )
-        )
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 10.dp, end = 12.dp)
-                .size(132.dp)
-                .background(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            accentColor.copy(alpha = 0.20f),
-                            Color.Transparent
+                    Modifier
+                        .vormexSurface(
+                            backdrop = backdrop,
+                            cornerRadius = 24.dp,
+                            blurRadius = 18.dp,
+                            lensRadius = 6.dp,
+                            lensDepth = 14.dp,
+                            surfaceColor = palette.glassPanelSurfaceColor,
+                            borderColor = palette.glassPanelBorderColor
                         )
-                    ),
-                    shape = CircleShape
-                )
-        )
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
-        ) {
-            androidx.compose.foundation.layout.FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(16.dp)
+                } else {
+                    Modifier
+                }
+            ),
+        verticalArrangement = Arrangement.spacedBy(20.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(accentColor.copy(alpha = 0.16f))
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                        .size(5.dp)
+                        .clip(CircleShape)
+                        .background(accentColor)
+                )
+                BasicText(
+                    if (isPremiumActive) "VORMEX+ ACTIVE" else "VORMEX+ MEMBERSHIP",
+                    style = TextStyle(
+                        color = accentColor,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = premiumFontFamily
+                    )
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                BasicText(
+                    "Grow louder.",
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 34.sp,
+                        lineHeight = 36.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = premiumFontFamily
+                    )
+                )
+                BasicText(
+                    "Build faster.",
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 32.sp,
+                        lineHeight = 34.sp,
+                        fontStyle = FontStyle.Italic,
+                        fontWeight = FontWeight.Medium,
+                        fontFamily = premiumFontFamily
+                    )
+                )
+            }
+
+            BasicText(
+                "Everything top creators on Vormex use to ship projects, get discovered, and find their next team.",
+                style = TextStyle(
+                    color = secondaryTextColor,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontFamily = premiumFontFamily
+                )
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(dividerColor)
+        )
+
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     BasicText(
-                        badgeLabel,
+                        priceHeader,
                         style = TextStyle(
-                            color = accentColor,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
+                            color = palette.metaTextColor,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
                             fontFamily = premiumFontFamily
                         )
                     )
-                }
-                secondaryBadgeLabel?.let { label ->
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(Color.White.copy(alpha = if (isGlassTheme) 0.14f else 0.36f))
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    BasicText(
+                        priceLabel,
+                        style = TextStyle(
+                            color = contentColor,
+                            fontSize = 39.sp,
+                            lineHeight = 41.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = premiumFontFamily
+                        )
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         BasicText(
-                            label,
+                            billingBase,
                             style = TextStyle(
-                                color = contentColor,
+                                color = secondaryTextColor,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium,
                                 fontFamily = premiumFontFamily
                             )
                         )
-                    }
-                }
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                BasicText(
-                    premiumState?.title ?: "Vormex Premium",
-                    style = TextStyle(
-                        color = contentColor,
-                        fontSize = 24.sp,
-                        lineHeight = 30.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = premiumFontFamily,
-                        letterSpacing = (-0.3).sp
-                    )
-                )
-                BasicText(
-                    description,
-                    style = TextStyle(
-                        color = secondaryTextColor,
-                        fontSize = 13.sp,
-                        lineHeight = 19.sp,
-                        fontFamily = premiumFontFamily
-                    )
-                )
-            }
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(Color.White.copy(alpha = if (isGlassTheme) 0.12f else 0.38f))
-                    .border(1.dp, dividerColor.copy(alpha = 0.72f), RoundedCornerShape(20.dp))
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                BasicText(
-                    statusSummary,
-                    style = TextStyle(
-                        color = contentColor,
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        fontFamily = premiumFontFamily
-                    )
-                )
-                BasicText(
-                    statusDetail,
-                    style = TextStyle(
-                        color = secondaryTextColor,
-                        fontSize = 12.sp,
-                        lineHeight = 17.sp,
-                        fontFamily = premiumFontFamily
-                    )
-                )
-                androidx.compose.foundation.layout.FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    MorePremiumFeaturePill(
-                        label = renewalLabel,
-                        accentColor = accentColor,
-                        contentColor = contentColor,
-                        fontFamily = premiumFontFamily
-                    )
-                    MorePremiumFeaturePill(
-                        label = supportLabel,
-                        accentColor = accentColor,
-                        contentColor = contentColor,
-                        fontFamily = premiumFontFamily
-                    )
-                    if (isPremiumActive && remainingDays > 0) {
-                        MorePremiumFeaturePill(
-                            label = "$remainingDays days remaining",
-                            accentColor = accentColor,
-                            contentColor = contentColor,
-                            fontFamily = premiumFontFamily
-                        )
-                    }
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                MorePremiumMetricCard(
-                    modifier = Modifier.weight(1f),
-                    label = if (isPremiumActive) "Current access" else "Price",
-                    value = priceLabel,
-                    supporting = if (customPriceApplied) "Custom offer active" else premiumBillingLabel(
-                        premiumState?.billingCycle,
-                        premiumState?.premiumDurationDays ?: 31
-                    ),
-                    accentColor = accentColor,
-                    dividerColor = dividerColor,
-                    contentColor = contentColor,
-                    secondaryTextColor = secondaryTextColor,
-                    isGlassTheme = isGlassTheme,
-                    fontFamily = premiumFontFamily
-                )
-                MorePremiumMetricCard(
-                    modifier = Modifier.weight(1f),
-                    label = if (isPremiumActive && remainingDays > 0) "Days left" else "Plan length",
-                    value = if (isPremiumActive && remainingDays > 0) "$remainingDays days" else durationLabel,
-                    supporting = if (isPremiumActive && remainingDays > 0) {
-                        "Remaining in the current premium cycle."
-                    } else {
-                        "One purchase covers the full premium window."
-                    },
-                    accentColor = accentColor,
-                    dividerColor = dividerColor,
-                    contentColor = contentColor,
-                    secondaryTextColor = secondaryTextColor,
-                    isGlassTheme = isGlassTheme,
-                    fontFamily = premiumFontFamily
-                )
-            }
-
-            MorePremiumMetricCard(
-                modifier = Modifier.fillMaxWidth(),
-                label = if (isPremiumActive) "Credits used" else "AI Agent access",
-                value = if (isPremiumActive) creditsUsedLabel else "Included",
-                supporting = if (isPremiumActive) {
-                    "Agent prompts used in the current premium window."
-                } else {
-                    "Premium unlocks the in-app AI Agent for this account."
-                },
-                accentColor = accentColor,
-                dividerColor = dividerColor,
-                contentColor = contentColor,
-                secondaryTextColor = secondaryTextColor,
-                isGlassTheme = isGlassTheme,
-                fontFamily = premiumFontFamily
-            )
-
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                BasicText(
-                    "Included with premium",
-                    style = TextStyle(
-                        color = contentColor,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        fontFamily = premiumFontFamily
-                    )
-                )
-                featureHighlights.chunked(2).forEach { rowItems ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        rowItems.forEach { item ->
-                            MorePremiumFeatureCard(
-                                modifier = Modifier.weight(1f),
-                                item = item,
-                                accentColor = accentColor,
-                                dividerColor = dividerColor,
-                                contentColor = contentColor,
-                                secondaryTextColor = secondaryTextColor,
-                                isGlassTheme = isGlassTheme,
-                                fontFamily = premiumFontFamily
+                        billingSavings?.let { savings ->
+                            BasicText(
+                                " · $savings",
+                                style = TextStyle(
+                                    color = accentColor,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = premiumFontFamily
+                                )
                             )
                         }
-                        if (rowItems.size == 1) {
-                            Spacer(modifier = Modifier.weight(1f))
-                        }
                     }
+                }
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    BasicText(
+                        "7-DAY",
+                        style = TextStyle(
+                            color = palette.metaTextColor,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = premiumFontFamily
+                        )
+                    )
+                    BasicText(
+                        "FREE TRIAL",
+                        style = TextStyle(
+                            color = palette.metaTextColor,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = premiumFontFamily
+                        )
+                    )
                 }
             }
 
-            if (isPremiumActive) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MorePremiumAnimatedButton(
-                        label = if (premiumState.canUseAgent) "Open AI Agent" else "Premium active",
-                        supporting = if (premiumState.canUseAgent) {
-                            "Your premium account has agent access right now."
-                        } else {
-                            "Premium is active. Agent access depends on rollout controls."
-                        },
-                        accentColor = accentColor,
-                        contentColor = contentColor,
-                        enabled = premiumState.canUseAgent,
-                        onClick = onOpenAgent,
-                        composition = ctaComposition,
-                        progress = ctaProgress,
-                        isGlassTheme = isGlassTheme,
-                        fontFamily = premiumFontFamily
-                    )
-                    if (premiumState.canCancel) {
-                        MorePremiumSecondaryButton(
-                            label = if (isCancellingPremium) "Cancelling..." else "Cancel premium now",
-                            contentColor = contentColor,
-                            dividerColor = dividerColor,
-                            fontFamily = premiumFontFamily,
-                            enabled = !isCancellingPremium,
-                            onClick = onCancelPremium
-                        )
-                    }
-                }
+            MorePremiumEditorialPlanSelector(
+                planOptions = orderedPlanOptions,
+                selectedBillingCycle = selectedPlan.billingCycle,
+                onBillingCycleChange = onBillingCycleChange,
+                contentColor = contentColor,
+                secondaryTextColor = secondaryTextColor,
+                accentColor = accentColor,
+                borderColor = dividerColor,
+                surfaceColor = palette.planSurfaceColor,
+                selectedSurfaceColor = palette.planSelectedSurfaceColor,
+                selectedTextColor = palette.planSelectedTextColor,
+                unselectedTextColor = palette.planUnselectedTextColor,
+                fontFamily = premiumFontFamily
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(dividerColor)
+        )
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            MorePremiumSpotlightCard(
+                label = "REACH",
+                title = "Land on more profiles",
+                detail = "Priority discovery placement, 3x reach boost, and a premium verified badge that builds instant trust.",
+                backgroundColor = palette.reachCardSurfaceColor,
+                labelBackgroundColor = palette.reachCardLabelSurfaceColor,
+                labelColor = palette.reachCardLabelTextColor,
+                titleColor = palette.reachCardTitleColor,
+                detailColor = palette.reachCardDetailColor,
+                fontFamily = premiumFontFamily
+            )
+            MorePremiumSpotlightCard(
+                label = "AI",
+                title = "An AI co-pilot for your profile",
+                detail = "Unlimited Agent prompts, teammate finder, and a sharper profile assistant for shipping faster.",
+                backgroundColor = palette.aiCardSurfaceColor,
+                labelBackgroundColor = palette.aiCardLabelSurfaceColor,
+                labelColor = palette.aiCardLabelTextColor,
+                titleColor = palette.aiCardTitleColor,
+                detailColor = palette.aiCardDetailColor,
+                fontFamily = premiumFontFamily
+            )
+        }
+
+        MorePremiumPrimaryCta(
+            label = primaryCtaLabel,
+            priceLabel = ctaPriceLabel,
+            enabled = if (isPremiumActive) premiumState.canUseAgent else canStartCheckout,
+            onClick = if (isPremiumActive) onOpenAgent else onStartCheckout,
+            backgroundColor = if (isPremiumActive && premiumState.canUseAgent) {
+                palette.activeCtaSurfaceColor
             } else {
-                MorePremiumAnimationCta(
-                    accentColor = accentColor,
-                    enabled = ctaEnabled,
-                    onClick = onStartCheckout,
-                    composition = ctaComposition,
-                    progress = ctaProgress
-                )
+                palette.ctaSurfaceColor
+            },
+            contentColor = if (isPremiumActive && premiumState.canUseAgent) {
+                palette.activeCtaContentColor
+            } else {
+                palette.ctaContentColor
+            },
+            fontFamily = premiumFontFamily
+        )
+
+
+
+        statusMessage?.let { message ->
+            MorePremiumStatusLine(
+                message = message,
+                contentColor = contentColor,
+                secondaryTextColor = secondaryTextColor,
+                borderColor = dividerColor,
+                surfaceColor = palette.statusSurfaceColor,
+                errorColor = palette.statusErrorTextColor,
+                fontFamily = premiumFontFamily
+            )
+        }
+
+        MorePremiumIncludedFeatureList(
+            features = includedFeatures,
+            contentColor = contentColor,
+            secondaryTextColor = secondaryTextColor,
+            borderColor = dividerColor,
+            metaTextColor = palette.metaTextColor,
+            accentColor = palette.featureAccentColor,
+            fontFamily = premiumFontFamily
+        )
+
+        if (isPremiumActive) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (premiumState.canManageInGooglePlay) {
+                    MorePremiumSecondaryButton(
+                        label = "Manage in Google Play",
+                        contentColor = contentColor,
+                        dividerColor = dividerColor,
+                        fontFamily = premiumFontFamily,
+                        enabled = true,
+                        onClick = onManagePremium
+                    )
+                } else if (premiumState.canCancel) {
+                    MorePremiumSecondaryButton(
+                        label = if (isCancellingPremium) "Cancelling..." else "Cancel premium now",
+                        contentColor = contentColor,
+                        dividerColor = dividerColor,
+                        fontFamily = premiumFontFamily,
+                        enabled = !isCancellingPremium,
+                        onClick = onCancelPremium
+                    )
+                }
             }
         }
     }
@@ -5651,14 +6658,7 @@ private fun MorePremiumPromoCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(28.dp))
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color(0xFF0E1527),
-                                    Color(0xFF1A2238)
-                                )
-                            )
-                        )
+                        .background(Color(0xFF1F1C18))
                         .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(28.dp))
                         .padding(24.dp)
                 ) {
@@ -5702,12 +6702,482 @@ private fun MorePremiumPromoCard(
     }
 }
 
+private fun premiumDefaultPlanOptions(): List<PremiumPlanOption> {
+    return listOf(
+        PremiumPlanOption(
+            billingCycle = "monthly",
+            amountMinor = 19900,
+            currency = "INR",
+            displayAmount = "₹199",
+            durationDays = 31,
+            label = "Monthly"
+        ),
+        PremiumPlanOption(
+            billingCycle = "yearly",
+            amountMinor = 149900,
+            currency = "INR",
+            displayAmount = "₹1499",
+            durationDays = 365,
+            label = "Yearly",
+            savingsLabel = "save 37%"
+        )
+    )
+}
+
+private fun premiumOrderedPlanOptions(planOptions: List<PremiumPlanOption>): List<PremiumPlanOption> {
+    val orderedCycles = listOf("monthly", "yearly")
+    val ordered = orderedCycles.mapNotNull { cycle ->
+        planOptions.firstOrNull { it.billingCycle == cycle }
+    }
+    return (ordered + planOptions.filterNot { plan -> ordered.any { it.billingCycle == plan.billingCycle } })
+        .ifEmpty { premiumDefaultPlanOptions() }
+}
+
+private fun premiumCompactAmountLabel(plan: PremiumPlanOption): String {
+    val amountFromMinor = premiumFormatAmountMinor(plan.amountMinor, plan.currency)
+    return amountFromMinor.ifBlank {
+        plan.displayAmount
+            .replace(".00", "")
+            .replace(",00", "")
+            .ifBlank { "₹0" }
+    }
+}
+
+private fun premiumPerMonthLabel(yearlyPlan: PremiumPlanOption, monthlyPlan: PremiumPlanOption?): String {
+    if (yearlyPlan.billingCycle != "yearly") return premiumCompactAmountLabel(yearlyPlan)
+    if (yearlyPlan.amountMinor > 0) {
+        val monthlyMinor = (yearlyPlan.amountMinor / 12f).roundToInt()
+        return premiumFormatAmountMinor(monthlyMinor, yearlyPlan.currency)
+    }
+    return monthlyPlan?.let { premiumCompactAmountLabel(it) } ?: premiumCompactAmountLabel(yearlyPlan)
+}
+
+private fun premiumFormatAmountMinor(amountMinor: Int, currency: String): String {
+    if (amountMinor <= 0) return ""
+    val amount = (amountMinor / 100f).roundToInt()
+    val symbol = when (currency.uppercase()) {
+        "INR" -> "₹"
+        "USD" -> "$"
+        else -> "$currency "
+    }
+    return "$symbol$amount"
+}
+
+private fun premiumBillingBaseLabel(plan: PremiumPlanOption): String {
+    val amount = premiumCompactAmountLabel(plan)
+    return when (plan.billingCycle) {
+        "yearly" -> "Billed $amount per year"
+        "monthly" -> "Billed $amount monthly"
+        else -> "Billed $amount"
+    }
+}
+
+private fun premiumSavingsLabel(plan: PremiumPlanOption): String? {
+    return plan.savingsLabel
+        ?.takeIf { it.isNotBlank() }
+        ?: if (plan.billingCycle == "yearly") "save 37%" else null
+}
+
+@Composable
+private fun MorePremiumEditorialPlanSelector(
+    planOptions: List<PremiumPlanOption>,
+    selectedBillingCycle: String,
+    onBillingCycleChange: (String) -> Unit,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    borderColor: Color,
+    surfaceColor: Color,
+    selectedSurfaceColor: Color,
+    selectedTextColor: Color,
+    unselectedTextColor: Color,
+    fontFamily: FontFamily
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .background(surfaceColor)
+            .border(1.dp, borderColor, RoundedCornerShape(9.dp))
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        planOptions.take(2).forEach { plan ->
+            val selected = plan.billingCycle == selectedBillingCycle
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(if (selected) selectedSurfaceColor else Color.Transparent)
+                    .clickable { onBillingCycleChange(plan.billingCycle) },
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BasicText(
+                        plan.label.ifBlank { plan.billingCycle.replaceFirstChar { it.uppercase() } },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = TextStyle(
+                            color = if (selected) selectedTextColor else unselectedTextColor,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = fontFamily
+                        )
+                    )
+                    if (plan.billingCycle == "yearly") {
+                        BasicText(
+                            "-37%",
+                            maxLines = 1,
+                            style = TextStyle(
+                                color = if (selected) {
+                                    selectedTextColor.copy(alpha = 0.82f)
+                                } else {
+                                    accentColor.copy(alpha = 0.86f)
+                                },
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                fontFamily = fontFamily
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MorePremiumSpotlightCard(
+    label: String,
+    title: String,
+    detail: String,
+    backgroundColor: Color,
+    labelBackgroundColor: Color,
+    labelColor: Color,
+    titleColor: Color,
+    detailColor: Color,
+    fontFamily: FontFamily
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 112.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(backgroundColor)
+            .padding(horizontal = 15.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(labelBackgroundColor)
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+        ) {
+            BasicText(
+                label,
+                style = TextStyle(
+                    color = labelColor,
+                    fontSize = 8.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = fontFamily
+                )
+            )
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            BasicText(
+                title,
+                style = TextStyle(
+                    color = titleColor,
+                    fontSize = 16.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = fontFamily
+                )
+            )
+            BasicText(
+                detail,
+                style = TextStyle(
+                    color = detailColor,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontFamily = fontFamily
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun MorePremiumPrimaryCta(
+    label: String,
+    priceLabel: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    backgroundColor: Color,
+    contentColor: Color,
+    fontFamily: FontFamily
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(54.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(backgroundColor.copy(alpha = if (enabled) 1f else 0.46f))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        BasicText(
+            label,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = fontFamily
+            )
+        )
+        BasicText(
+            "  →  ",
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.72f),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = fontFamily
+            )
+        )
+        BasicText(
+            priceLabel,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.76f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = fontFamily
+            )
+        )
+    }
+}
+
+@Composable
+private fun MorePremiumStatusLine(
+    message: String,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    borderColor: Color,
+    surfaceColor: Color,
+    errorColor: Color,
+    fontFamily: FontFamily
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(surfaceColor)
+            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
+            .padding(horizontal = 13.dp, vertical = 11.dp)
+    ) {
+        BasicText(
+            message,
+            style = TextStyle(
+                color = if (message.contains("not ready", ignoreCase = true) ||
+                    message.contains("unavailable", ignoreCase = true) ||
+                    message.contains("could not", ignoreCase = true)
+                ) {
+                    errorColor
+                } else {
+                    secondaryTextColor
+                },
+                fontSize = 11.sp,
+                lineHeight = 16.sp,
+                fontWeight = FontWeight.Medium,
+                fontFamily = fontFamily
+            )
+        )
+    }
+}
+
+@Composable
+private fun MorePremiumIncludedFeatureList(
+    features: List<String>,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    borderColor: Color,
+    metaTextColor: Color,
+    accentColor: Color,
+    fontFamily: FontFamily
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText(
+                "WHAT'S INCLUDED",
+                modifier = Modifier.weight(1f),
+                style = TextStyle(
+                    color = metaTextColor,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = fontFamily
+                )
+            )
+            BasicText(
+                "${features.size.coerceAtLeast(18)} FEATURES",
+                style = TextStyle(
+                    color = metaTextColor,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = fontFamily
+                )
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(borderColor)
+        )
+        BasicText(
+            "DISCOVERY",
+            style = TextStyle(
+                color = accentColor,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = fontFamily
+            )
+        )
+        features.take(8).forEachIndexed { index, feature ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 31.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BasicText(
+                    (index + 1).toString().padStart(2, '0'),
+                    modifier = Modifier.width(36.dp),
+                    style = TextStyle(
+                        color = secondaryTextColor.copy(alpha = 0.42f),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = fontFamily
+                    )
+                )
+                BasicText(
+                    feature,
+                    modifier = Modifier.weight(1f),
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.88f),
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        fontWeight = FontWeight.Medium,
+                        fontFamily = fontFamily
+                    )
+                )
+                Icon(
+                    imageVector = Icons.Outlined.Check,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            if (index != features.take(8).lastIndex) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(borderColor.copy(alpha = 0.72f))
+                )
+            }
+        }
+    }
+}
+
 private fun premiumBillingLabel(billingCycle: String?, durationDays: Int = 31): String {
     return when (billingCycle?.lowercase()) {
         "monthly" -> "monthly access"
         "yearly" -> "yearly access"
         "weekly" -> "weekly access"
         else -> "$durationDays-day access"
+    }
+}
+
+@Composable
+private fun MorePremiumPlanSelector(
+    planOptions: List<PremiumPlanOption>,
+    selectedBillingCycle: String,
+    onBillingCycleChange: (String) -> Unit,
+    accentColor: Color,
+    dividerColor: Color,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    fontFamily: FontFamily
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        planOptions.take(2).forEach { plan ->
+            val selected = plan.billingCycle == selectedBillingCycle
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(
+                        if (selected) accentColor.copy(alpha = 0.16f)
+                        else Color.White.copy(alpha = 0.12f)
+                    )
+                    .border(
+                        width = if (selected) 1.5.dp else 1.dp,
+                        color = if (selected) accentColor else dividerColor,
+                        shape = RoundedCornerShape(18.dp)
+                    )
+                    .clickable { onBillingCycleChange(plan.billingCycle) }
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                BasicText(
+                    plan.label.ifBlank { plan.billingCycle.replaceFirstChar { it.uppercase() } },
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = fontFamily
+                    )
+                )
+                BasicText(
+                    plan.displayAmount,
+                    style = TextStyle(
+                        color = if (selected) accentColor else contentColor,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = fontFamily
+                    )
+                )
+                BasicText(
+                    plan.savingsLabel ?: premiumBillingLabel(plan.billingCycle, plan.durationDays),
+                    style = TextStyle(
+                        color = secondaryTextColor,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        fontFamily = fontFamily
+                    )
+                )
+            }
+        }
     }
 }
 
@@ -6027,7 +7497,9 @@ private fun MoreQuickAccessHub(
     animationKey: Int,
     onOpenFullMoreScreen: () -> Unit
 ) {
-    val pinnedAgentAction = quickActions.firstOrNull { it.label == "AI Agent" || it.title == "AI Agent" || it.title == "Agent" }
+    val pinnedAiChatAction = quickActions.firstOrNull {
+        it.label == "vormex" || it.title == "vormex"
+    }
     val composition by rememberLottieComposition(
         LottieCompositionSpec.RawRes(R.raw.free_interactive_radial_menu)
     )
@@ -6049,6 +7521,8 @@ private fun MoreQuickAccessHub(
     } else {
         Color.Black.copy(alpha = 0.08f)
     }
+    val aiChatCardSurfaceColor = if (isDarkSurface) Color(0xFF181A20) else Color.White
+    val aiChatCardBorderColor = if (isDarkSurface) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.08f)
     val radius = 122f
     val angleStep = 360f / quickActions.size.coerceAtLeast(1)
     val lottieScale by animateFloatAsState(
@@ -6100,31 +7574,15 @@ private fun MoreQuickAccessHub(
             .padding(horizontal = 12.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center
     ) {
-        pinnedAgentAction?.let { action ->
+        pinnedAiChatAction?.let { action ->
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 12.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .then(
-                        if (isGlassTheme) {
-                            Modifier.drawBackdrop(
-                                backdrop = backdrop,
-                                shape = { RoundedRectangle(18.dp) },
-                                effects = {
-                                    vibrancy()
-                                    blur(12f.dp.toPx())
-                                    lens(6f.dp.toPx(), 10f.dp.toPx())
-                                },
-                                onDrawSurface = {
-                                    drawRect(actionSurfaceColor)
-                                }
-                            )
-                        } else {
-                            Modifier.background(actionSurfaceColor)
-                        }
-                    )
-                    .border(1.dp, actionBorderColor, RoundedCornerShape(18.dp))
+                    .widthIn(max = 330.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(aiChatCardSurfaceColor)
+                    .border(1.dp, aiChatCardBorderColor, RoundedCornerShape(12.dp))
                     .noRippleClickable {
                         launchHubAction(openFullMore = false) {
                             action.onClick()
@@ -6133,6 +7591,7 @@ private fun MoreQuickAccessHub(
                     .padding(horizontal = 16.dp, vertical = 14.dp)
             ) {
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -6140,20 +7599,25 @@ private fun MoreQuickAccessHub(
                         modifier = Modifier
                             .size(40.dp)
                             .clip(CircleShape)
-                            .background(accentColor.copy(alpha = 0.16f)),
+                            .background(accentColor.copy(alpha = 0.10f))
+                            .border(1.dp, aiChatCardBorderColor, CircleShape)
+                            .padding(7.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = action.icon,
-                            contentDescription = action.label,
-                            tint = accentColor,
-                            modifier = Modifier.size(20.dp)
+                        Image(
+                            painter = painterResource(R.drawable.vormex_logo),
+                            contentDescription = "Vormex logo",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit
                         )
                     }
 
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
                         BasicText(
-                            "AI Agent",
+                            "vormex",
                             style = TextStyle(
                                 color = contentColor,
                                 fontSize = 14.sp,
@@ -6161,11 +7625,39 @@ private fun MoreQuickAccessHub(
                             )
                         )
                         BasicText(
-                            "Open the agent instantly",
+                            "Open vormex",
                             style = TextStyle(
                                 color = contentColor.copy(alpha = 0.62f),
                                 fontSize = 11.sp
                             )
+                        )
+                    }
+
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(accentColor.copy(alpha = 0.13f))
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
+                        ) {
+                            BasicText(
+                                "Hi",
+                                style = TextStyle(
+                                    color = accentColor,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .width(34.dp)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(contentColor.copy(alpha = 0.10f))
                         )
                     }
                 }
@@ -8072,7 +9564,7 @@ private fun MoreMenuItemWithSubtitle(
                     )
                 }
             }
-            
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 trailingIconResId?.let { resId ->
                     Image(
@@ -8196,9 +9688,9 @@ private fun OnboardingPromptBanner(
                     style = TextStyle(fontSize = 28.sp)
                 )
             }
-            
+
             Spacer(Modifier.width(16.dp))
-            
+
             // Text content
             Column(modifier = Modifier.weight(1f)) {
                 BasicText(
@@ -8209,9 +9701,9 @@ private fun OnboardingPromptBanner(
                         fontWeight = FontWeight.Bold
                     )
                 )
-                
+
                 Spacer(Modifier.height(4.dp))
-                
+
                 BasicText(
                     "Fill in your details to unlock collaborations and connect with like-minded people",
                     style = TextStyle(
@@ -8220,9 +9712,9 @@ private fun OnboardingPromptBanner(
                         lineHeight = 18.sp
                     )
                 )
-                
+
                 Spacer(Modifier.height(12.dp))
-                
+
                 // Get Started button
                 Box(
                     modifier = Modifier
@@ -8300,7 +9792,7 @@ private fun MoreMenuItemWithAction(
                     )
                 }
             }
-            
+
             // Arrow indicator
             BasicText(
                 "→",
@@ -8405,7 +9897,7 @@ private fun OldProfileScreen(
             }
             return@Column
         }
-        
+
         // Error state
         error?.let { errorMsg ->
             Box(
@@ -8425,10 +9917,10 @@ private fun OldProfileScreen(
             }
             return@Column
         }
-        
+
         val user = profile?.user ?: return@Column
         val stats = profile.stats
-        
+
         // Banner Image
         Box(
             Modifier
@@ -8462,7 +9954,7 @@ private fun OldProfileScreen(
                 )
             }
         }
-        
+
         // Profile Card overlapping banner
         Box(
             Modifier
@@ -8551,25 +10043,16 @@ private fun OldProfileScreen(
                                     }
                                 }
                             }
-                            
-                            // Verified badge
-                            if (user.verified) {
-                                Box(
-                                    Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .size(28.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF1d9bf0))
-                                        .padding(4.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    BasicText("✓", style = TextStyle(Color.White, 14.sp, FontWeight.Bold))
-                                }
-                            }
+
+                            VerificationBadge(
+                                verified = user.hasVerificationBadge(),
+                                modifier = Modifier.align(Alignment.BottomEnd),
+                                size = VerificationBadgeSize.Large
+                            )
                         }
-                        
+
                         Spacer(Modifier.width(16.dp))
-                        
+
                         // Name, headline, location
                         Column(Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -8592,9 +10075,9 @@ private fun OldProfileScreen(
                                     }
                                 }
                             }
-                            
+
                             Spacer(Modifier.height(4.dp))
-                            
+
                             user.headline?.let { headline ->
                                 BasicText(
                                     headline,
@@ -8603,9 +10086,9 @@ private fun OldProfileScreen(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            
+
                             Spacer(Modifier.height(8.dp))
-                            
+
                             // Location + College
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -8626,9 +10109,9 @@ private fun OldProfileScreen(
                             }
                         }
                     }
-                    
+
                     Spacer(Modifier.height(8.dp))
-                    
+
                     // XP Level Bar
                     Column {
                         Row(
@@ -8667,9 +10150,9 @@ private fun OldProfileScreen(
                             )
                         }
                     }
-                    
+
                     Spacer(Modifier.height(16.dp))
-                    
+
                     // Stats Row with Public Streak Badge
                     Row(
                         Modifier.fillMaxWidth(),
@@ -8677,20 +10160,20 @@ private fun OldProfileScreen(
                         verticalAlignment = Alignment.Top
                     ) {
                         ProfileStat("Connections", stats.connectionsCount, contentColor)
-                        
+
                         // Prominent Public Streak Badge (Duolingo Effect)
                         PublicStreakBadge(
                             currentStreak = stats.currentStreak,
                             longestStreak = stats.longestStreak,
                             contentColor = contentColor
                         )
-                        
+
                         ProfileStat("Followers", stats.followersCount, contentColor)
                     }
                 }
             }
         }
-        
+
         // Content sections
         Column(
             Modifier
@@ -8712,7 +10195,7 @@ private fun OldProfileScreen(
                     )
                 }
             }
-            
+
             // Skills section
             if (profile.skills.isNotEmpty()) {
                 ProfileSection(
@@ -8730,7 +10213,7 @@ private fun OldProfileScreen(
                     }
                 }
             }
-            
+
             // Experience section
             if (profile.experiences.isNotEmpty()) {
                 ProfileSection(
@@ -8745,7 +10228,7 @@ private fun OldProfileScreen(
                     }
                 }
             }
-            
+
             // Education section
             if (profile.education.isNotEmpty()) {
                 ProfileSection(
@@ -8760,7 +10243,7 @@ private fun OldProfileScreen(
                     }
                 }
             }
-            
+
             // Projects section
             if (profile.projects.isNotEmpty()) {
                 ProfileSection(
@@ -8775,7 +10258,7 @@ private fun OldProfileScreen(
                     }
                 }
             }
-            
+
             // Achievements section
             if (profile.achievements.isNotEmpty()) {
                 ProfileSection(
@@ -8790,8 +10273,8 @@ private fun OldProfileScreen(
                     }
                 }
             }
-            
-            // Certificates section  
+
+            // Certificates section
             if (profile.certificates.isNotEmpty()) {
                 ProfileSection(
                     title = "Certificates",
@@ -8805,7 +10288,7 @@ private fun OldProfileScreen(
                     }
                 }
             }
-            
+
             // Logout button
             LiquidButton(
                 onClick = onLogout,
@@ -8820,7 +10303,7 @@ private fun OldProfileScreen(
                     style = TextStyle(Color.White, 15.sp, FontWeight.SemiBold)
                 )
             }
-            
+
             Spacer(Modifier.height(100.dp))
         }
     }
@@ -8830,7 +10313,7 @@ private fun OldProfileScreen(
 private fun ProfileStat(label: String, value: Int, contentColor: Color, emoji: String? = null) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            emoji?.let { 
+            emoji?.let {
                 BasicText(it, style = TextStyle(fontSize = 14.sp))
                 Spacer(Modifier.width(4.dp))
             }
@@ -9225,6 +10708,170 @@ private fun SignUpScreen(
 }
 
 @Composable
+private fun SavedPostDetailOverlay(
+    post: Post?,
+    isLoading: Boolean,
+    error: String?,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    glassBackgroundKey: String,
+    reduceAnimations: Boolean,
+    onNavigateBack: () -> Unit,
+    onLike: (String) -> Unit,
+    onComment: (String) -> Unit,
+    onShare: (String) -> Unit,
+    onVotePoll: (String, String) -> Unit,
+    onProfileClick: (String) -> Unit,
+    onMenuAction: (String, String) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+    ) {
+        SettingsHeader(
+            title = "Saved Post",
+            contentColor = contentColor,
+            onBack = onNavigateBack
+        )
+
+        when {
+            isLoading && post == null -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(color = accentColor)
+                }
+            }
+
+            post == null -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        error ?: "Post unavailable",
+                        style = TextStyle(contentColor.copy(alpha = 0.72f), 14.sp)
+                    )
+                }
+            }
+
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    item {
+                        ApiPostCard(
+                            post = post,
+                            backdrop = backdrop,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            glassBackgroundKey = glassBackgroundKey,
+                            onLike = onLike,
+                            onComment = onComment,
+                            onShare = onShare,
+                            onVotePoll = onVotePoll,
+                            onProfileClick = { onProfileClick(post.author.id) },
+                            onMentionClick = { username -> onProfileClick(username) },
+                            onMenuAction = onMenuAction,
+                            reduceAnimations = reduceAnimations
+                        )
+                    }
+                    item { Spacer(Modifier.height(80.dp)) }
+                }
+            }
+        }
+    }
+}
+
+private fun Author.displayName(): String =
+    name?.takeIf { it.isNotBlank() }
+        ?: username?.takeIf { it.isNotBlank() }
+        ?: "User"
+
+private fun authorInitials(author: Author): String =
+    author.displayName()
+        .split(Regex("\\s+"))
+        .mapNotNull { it.firstOrNull()?.uppercase() }
+        .take(2)
+        .joinToString("")
+        .ifEmpty { "U" }
+
+@Composable
+private fun PostAuthorAvatarStack(
+    authors: List<Author>,
+    accentColor: Color,
+    surfaceColor: Color,
+    imageCrossfadeMs: Int
+) {
+    val visibleAuthors = authors.take(2).ifEmpty { listOf(Author(id = "", name = "User")) }
+    Box(
+        modifier = Modifier
+            .width(if (visibleAuthors.size > 1) 68.dp else 44.dp)
+            .height(44.dp)
+    ) {
+        visibleAuthors.forEachIndexed { index, author ->
+            val authorName = author.displayName()
+            val profileImageUrl = author.profileImage
+            Box(
+                Modifier
+                    .offset(x = (index * 24).dp)
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.sweepGradient(
+                            listOf(
+                                accentColor,
+                                accentColor.copy(alpha = 0.5f),
+                                Color(0xFF16A34A),
+                                accentColor
+                            )
+                        )
+                    )
+                    .padding(2.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .background(surfaceColor),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.05f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (!profileImageUrl.isNullOrEmpty()) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(LocalContext.current)
+                                    .data(profileImageUrl)
+                                    .crossfade(imageCrossfadeMs)
+                                    .build(),
+                                contentDescription = "Profile picture of $authorName",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            BasicText(
+                                authorInitials(author),
+                                style = TextStyle(Color.White, 14.sp, FontWeight.Bold)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ApiPostCard(
     post: Post,
     backdrop: LayerBackdrop,
@@ -9238,29 +10885,37 @@ private fun ApiPostCard(
     onProfileClick: () -> Unit = {},
     onMentionClick: (String) -> Unit = {},
     onMenuAction: (String, String) -> Unit = { _, _ -> },
-    reduceAnimations: Boolean = false
+    reduceAnimations: Boolean = false,
+    playDefaultVideos: Boolean = !reduceAnimations
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val menuAnchorBoundsHolder = remember(post.id) { MenuAnchorBoundsHolder() }
     var menuAnchorBounds by remember(post.id) { mutableStateOf<Rect?>(null) }
     var showImageViewer by remember { mutableStateOf(false) }
     var selectedImageIndex by remember { mutableIntStateOf(0) }
     var showFullScreenVideo by remember { mutableStateOf(false) }
     var displayIsLiked by remember(post.id) { mutableStateOf(post.isLiked) }
     var displayLikesCount by remember(post.id) { mutableIntStateOf(post.likesCount) }
+    var displayIsSaved by remember(post.id) { mutableStateOf(post.isSaved) }
+    var likeEffectTrigger by remember(post.id) { mutableIntStateOf(0) }
+    var saveEffectTrigger by remember(post.id) { mutableIntStateOf(0) }
     var isLikePending by remember(post.id) { mutableStateOf(false) }
-    
+    var isSavePending by remember(post.id) { mutableStateOf(false) }
+
     // Mention preview state
     var showMentionPreview by remember { mutableStateOf(false) }
     var mentionUsername by remember { mutableStateOf("") }
     val context = LocalContext.current
     val relativeTimeLabel by rememberRelativeTimeLabel(post.createdAt)
 
-    LaunchedEffect(post.id, post.isLiked, post.likesCount) {
+    LaunchedEffect(post.id, post.isLiked, post.likesCount, post.isSaved) {
         displayIsLiked = post.isLiked
         displayLikesCount = post.likesCount
+        displayIsSaved = post.isSaved
         isLikePending = false
+        isSavePending = false
     }
-    
+
     // Red color for active likes
     val appearance = currentVormexAppearance()
     val likeActiveColor = Color(0xFFE53935)
@@ -9268,7 +10923,8 @@ private fun ApiPostCard(
     val containerShape = RoundedCornerShape(0.dp)
     val innerSectionShape = RoundedCornerShape(0.dp)
     val subtleTextColor = appearance.mutedContentColor
-    val hasMedia = !post.videoUrl.isNullOrEmpty() || post.mediaUrls.isNotEmpty()
+    val hasDefaultVideo = findDefaultPostVideo(post.defaultVideoId) != null
+    val hasMedia = !post.videoUrl.isNullOrEmpty() || post.mediaUrls.isNotEmpty() || hasDefaultVideo
     val hasLinkPreview = !post.linkUrl.isNullOrEmpty()
     val showContentBlock = !post.content.isNullOrBlank()
     val cardSurfaceColor = when {
@@ -9288,164 +10944,159 @@ private fun ApiPostCard(
     val privateMetricChipColor =
         if (appearance.isGlassTheme) Color.White.copy(alpha = 0.06f) else appearance.subtleColor
     val imageCrossfadeMs = if (reduceAnimations) 0 else 300
-    
+
     Box(
         Modifier
             .fillMaxWidth()
-            .clip(containerShape)
-            .vormexSurface(
-                backdrop = backdrop,
-                tone = VormexSurfaceTone.Card,
-                cornerRadius = 0.dp,
-                blurRadius = if (useCrystalPureGlass) 0.dp else 18.dp,
-                lensRadius = if (useCrystalPureGlass) 16.dp else 8.dp,
-                lensDepth = if (useCrystalPureGlass) 32.dp else 16.dp,
-                useBackdropEffects = !reduceAnimations,
-                surfaceColor = cardSurfaceColor,
-                borderColor = Color.Transparent
-            )
-            // Only left/right strokes — a full .border() also draws top+bottom, so when cards
-            // stack flush the adjacent top+bottom borders read as a gray seam between posts.
+            // Bottom hairline divider only — no card background
             .drawWithContent {
                 drawContent()
-                val strokeWidth = 1.dp.toPx()
+                val strokeWidth = 0.5.dp.toPx()
                 val c = cardBorderColor
                 drawLine(
                     color = c,
-                    start = Offset(strokeWidth / 2f, 0f),
-                    end = Offset(strokeWidth / 2f, size.height),
-                    strokeWidth = strokeWidth
-                )
-                drawLine(
-                    color = c,
-                    start = Offset(size.width - strokeWidth / 2f, 0f),
-                    end = Offset(size.width - strokeWidth / 2f, size.height),
+                    start = Offset(0f, size.height - strokeWidth / 2f),
+                    end = Offset(size.width, size.height - strokeWidth / 2f),
                     strokeWidth = strokeWidth
                 )
             }
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-            // Author info with menu
+            // Author info with menu — premium header layout
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 14.dp, top = 12.dp, end = 10.dp, bottom = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(start = 16.dp, top = 14.dp, end = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.Top
             ) {
-                // Profile image or initials fallback
-                val profileImageUrl = post.author.profileImage
-                val authorName = post.author.name ?: post.author.username ?: "U"
-                val initials = authorName.split(" ")
-                    .mapNotNull { it.firstOrNull()?.uppercase() }
-                    .take(2)
-                    .joinToString("")
-                    .ifEmpty { "U" }
-                
+                val collabAuthors = remember(post.author, post.collaborators) {
+                    (listOf(post.author) + post.collaborators)
+                        .distinctBy { it.id }
+                        .filter { it.id.isNotBlank() }
+                }
+                val isCollaborativePost = collabAuthors.size > 1
+                val authorName = if (isCollaborativePost) {
+                    val visibleNames = collabAuthors.take(2).joinToString(" & ") { collaborator ->
+                        collaborator.displayName()
+                    }
+                    if (collabAuthors.size > 2) {
+                        "$visibleNames +${collabAuthors.size - 2}"
+                    } else {
+                        visibleNames
+                    }
+                } else {
+                    post.author.displayName()
+                }
+                val showAuthorVerified = if (isCollaborativePost) {
+                    collabAuthors.any { it.hasVerificationBadge() }
+                } else {
+                    post.author.hasVerificationBadge()
+                }
+
                 // Clickable author section (avatar + name)
                 Row(
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(16.dp))
                         .noRippleClickable { onProfileClick() },
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.Top
                 ) {
-                    Box(
-                        Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(
-                                        accentColor.copy(alpha = 0.95f),
-                                        accentColor.copy(alpha = 0.55f)
-                                    )
-                                )
-                            )
-                            .padding(1.5.dp),
-                        contentAlignment = Alignment.Center
+                    PostAuthorAvatarStack(
+                        authors = collabAuthors.ifEmpty { listOf(post.author) },
+                        accentColor = accentColor,
+                        surfaceColor = cardSurfaceColor,
+                        imageCrossfadeMs = imageCrossfadeMs
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(
+                        modifier = Modifier.padding(top = 2.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .clip(CircleShape)
-                                .background(Color.Black.copy(alpha = 0.1f)),
-                            contentAlignment = Alignment.Center
+                        // Name + dot + time on one line
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            if (!profileImageUrl.isNullOrEmpty()) {
-                                AsyncImage(
-                                    model = ImageRequest.Builder(LocalContext.current)
-                                        .data(profileImageUrl)
-                                        .crossfade(imageCrossfadeMs)
-                                        .build(),
-                                    contentDescription = "Profile picture of $authorName",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            } else {
-                                BasicText(
-                                    initials,
-                                    style = TextStyle(Color.White, 13.sp, FontWeight.Bold)
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        BasicText(
-                            post.author.name ?: post.author.username ?: "Unknown",
-                            style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold)
-                        )
-                        post.author.headline?.let { headline ->
                             BasicText(
-                                headline,
-                                style = TextStyle(subtleTextColor, 11.sp),
+                                authorName,
+                                style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            VerificationBadge(
+                                verified = showAuthorVerified,
+                                size = VerificationBadgeSize.Small
+                            )
+                            BasicText(
+                                "·",
+                                style = TextStyle(subtleTextColor, 13.sp)
+                            )
+                            BasicText(
+                                relativeTimeLabel,
+                                style = TextStyle(subtleTextColor, 12.sp)
+                            )
+                        }
+                        // Headline as secondary text
+                        val headline = if (isCollaborativePost) {
+                            "Collaboration"
+                        } else {
+                            post.author.headline
+                        }
+                        headline?.let { headlineText ->
+                            BasicText(
+                                headlineText,
+                                style = TextStyle(subtleTextColor, 12.sp),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        if (isCollaborativePost) {
                             ApiMetricChip(
-                                label = relativeTimeLabel,
-                                contentColor = subtleTextColor,
-                                containerColor = Color.Transparent
+                                label = "Collab",
+                                contentColor = Color(0xFF16A34A),
+                                containerColor = Color(0xFF16A34A).copy(alpha = 0.12f),
+                                borderColor = Color(0xFF16A34A).copy(alpha = 0.2f)
                             )
-                            when (post.visibility) {
-                                "CONNECTIONS" -> ApiMetricChip(
-                                    label = "Connections",
-                                    contentColor = accentColor,
-                                    containerColor = accentColor.copy(alpha = 0.12f),
-                                    borderColor = accentColor.copy(alpha = 0.2f)
-                                )
-                                "PRIVATE" -> ApiMetricChip(
-                                    label = "Only me",
-                                    contentColor = subtleTextColor,
-                                    containerColor = privateMetricChipColor
-                                )
-                            }
+                        }
+                        // Visibility badge (only if not public)
+                        when (post.visibility) {
+                            "CONNECTIONS" -> ApiMetricChip(
+                                label = "Connections",
+                                contentColor = accentColor,
+                                containerColor = accentColor.copy(alpha = 0.12f),
+                                borderColor = accentColor.copy(alpha = 0.2f)
+                            )
+                            "PRIVATE" -> ApiMetricChip(
+                                label = "Only me",
+                                contentColor = subtleTextColor,
+                                containerColor = privateMetricChipColor
+                            )
                         }
                     }
                 }
-                
-                // Menu button (three dots) with SVG icon
+
+                // Menu button
                 Box(
                     Modifier
                         .onGloballyPositioned { coordinates ->
-                            menuAnchorBounds = coordinates.boundsInWindow()
+                            menuAnchorBoundsHolder.coordinates = coordinates
                         }
-                        .clickable { showMenu = true }
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                        .clip(CircleShape)
+                        .clickable {
+                            menuAnchorBounds = menuAnchorBoundsHolder.currentBounds()
+                            showMenu = true
+                        }
+                        .padding(8.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     MenuDotsIcon(
-                        color = contentColor,
+                        color = contentColor.copy(alpha = 0.6f),
                         size = 18.dp
                     )
                 }
             }
-            
+
             // Glass-themed dropdown menu
             if (showMenu) {
                 GlassDropdownMenu(
@@ -9459,11 +11110,22 @@ private fun ApiPostCard(
                     GlassMenuItem(
                         onClick = {
                             showMenu = false
-                            onMenuAction(post.id, "save")
+                            if (!isSavePending) {
+                                if (!displayIsSaved) saveEffectTrigger++
+                                displayIsSaved = !displayIsSaved
+                                isSavePending = true
+                                onMenuAction(post.id, "save")
+                            }
                         },
                         contentColor = contentColor,
-                        leadingIcon = { BookmarkIcon(contentColor, size = 18.dp) },
-                        text = "Save"
+                        leadingIcon = {
+                            BookmarkIcon(
+                                if (displayIsSaved) accentColor else contentColor,
+                                size = 18.dp,
+                                filled = displayIsSaved
+                            )
+                        },
+                        text = if (displayIsSaved) "Unsave" else "Save"
                     )
                     GlassMenuItem(
                         onClick = {
@@ -9547,13 +11209,11 @@ private fun ApiPostCard(
 
             // Media: Video or Image
             val isVideoPost = normalizedPostType == "VIDEO" || !post.videoUrl.isNullOrEmpty()
-            
+
             if (isVideoPost && !post.videoUrl.isNullOrEmpty()) {
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .clip(innerSectionShape)
-                        .background(mediaContainerColor)
                 ) {
                     VideoPlayer(
                         videoUrl = post.videoUrl,
@@ -9568,8 +11228,6 @@ private fun ApiPostCard(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .clip(innerSectionShape)
-                        .background(mediaContainerColor)
                 ) {
                     ApiImagePostGrid(
                         images = post.mediaUrls,
@@ -9578,6 +11236,23 @@ private fun ApiPostCard(
                             selectedImageIndex = index
                             showImageViewer = true
                         }
+                    )
+                }
+            }
+
+            if (hasDefaultVideo) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(innerSectionShape)
+                ) {
+                    DefaultPostVideoPlayer(
+                        defaultVideoId = post.defaultVideoId,
+                        modifier = Modifier.fillMaxWidth(),
+                        reduceAnimations = !playDefaultVideos,
+                        accentColor = accentColor,
+                        height = null,
+                        contentScale = ContentScale.FillWidth
                     )
                 }
             }
@@ -9615,77 +11290,156 @@ private fun ApiPostCard(
                         showResultsBeforeVote = post.showResultsBeforeVote,
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        reduceAnimations = reduceAnimations,
                         onVote = { optionId -> onVotePoll(post.id, optionId) }
                     )
                 }
             }
 
-            Column(
-                modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            // Thin divider before actions
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .height(0.5.dp)
+                    .background(contentColor.copy(alpha = 0.08f))
+            )
+
+            // Instagram-style action row: Like/Comment/Share left, Save right
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (displayLikesCount > 0) {
+                // Left: Like, Comment, Share with inline counts
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Like button with count
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .noRippleClickable {
+                                if (!isLikePending) {
+                                    val nextLiked = !displayIsLiked
+                                    if (nextLiked) likeEffectTrigger++
+                                    displayIsLiked = nextLiked
+                                    displayLikesCount = if (nextLiked) displayLikesCount + 1 else (displayLikesCount - 1).coerceAtLeast(0)
+                                    isLikePending = true
+                                    onLike(post.id)
+                                }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
-                        ApiMetricChip(
-                            icon = {
-                                LikeIcon(
-                                    color = if (displayIsLiked) likeActiveColor else contentColor.copy(alpha = 0.72f),
-                                    size = 13.dp,
-                                    filled = displayIsLiked
-                                )
-                            },
-                            label = "${displayLikesCount} like${if (displayLikesCount == 1) "" else "s"}",
-                            contentColor = contentColor,
-                            containerColor = Color.Transparent
+                        LikeIcon(
+                            color = if (displayIsLiked) likeActiveColor else contentColor.copy(alpha = 0.65f),
+                            size = 20.dp,
+                            filled = displayIsLiked
                         )
+                        if (displayLikesCount > 0) {
+                            BasicText(
+                                "$displayLikesCount",
+                                style = TextStyle(
+                                    color = if (displayIsLiked) likeActiveColor else contentColor.copy(alpha = 0.65f),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+                    }
+
+                    // Comment button with count
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .noRippleClickable { onComment(post.id) }
+                            .padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        CommentIcon(contentColor.copy(alpha = 0.65f), size = 20.dp)
+                        if (post.commentsCount > 0) {
+                            BasicText(
+                                "${post.commentsCount}",
+                                style = TextStyle(
+                                    contentColor.copy(alpha = 0.65f),
+                                    13.sp,
+                                    FontWeight.Medium
+                                )
+                            )
+                        }
+                    }
+
+                    // Share button with count
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .noRippleClickable { onShare(post.id) }
+                            .padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        ShareIcon(contentColor.copy(alpha = 0.65f), size = 20.dp)
+                        if (post.sharesCount > 0) {
+                            BasicText(
+                                "${post.sharesCount}",
+                                style = TextStyle(
+                                    contentColor.copy(alpha = 0.65f),
+                                    13.sp,
+                                    FontWeight.Medium
+                                )
+                            )
+                        }
                     }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                // Right: Save/Bookmark
+                Box(
+                    modifier = Modifier
+                        .size(44.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    ApiActionButton(
-                        modifier = Modifier.weight(1f),
-                        icon = {
-                            LikeIcon(
-                                color = if (displayIsLiked) likeActiveColor else contentColor.copy(alpha = 0.7f),
-                                size = 18.dp,
-                                filled = displayIsLiked
-                            )
-                        },
-                        label = "Like",
-                        onClick = {
-                            if (!isLikePending) {
-                                val nextLiked = !displayIsLiked
-                                displayIsLiked = nextLiked
-                                displayLikesCount = if (nextLiked) displayLikesCount + 1 else (displayLikesCount - 1).coerceAtLeast(0)
-                                isLikePending = true
-                                onLike(post.id)
-                            }
-                        }
-                    )
-                    ApiActionButton(
-                        modifier = Modifier.weight(1f),
-                        icon = { CommentIcon(contentColor.copy(alpha = 0.72f), size = 18.dp) },
-                        label = "Comment",
-                        onClick = { onComment(post.id) }
-                    )
-                    ApiActionButton(
-                        modifier = Modifier.weight(1f),
-                        icon = { ShareIcon(contentColor.copy(alpha = 0.72f), size = 18.dp) },
-                        label = "Share",
-                        onClick = { onShare(post.id) }
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(20.dp))
+                            .noRippleClickable {
+                                if (!isSavePending) {
+                                    if (!displayIsSaved) saveEffectTrigger++
+                                    displayIsSaved = !displayIsSaved
+                                    isSavePending = true
+                                    onMenuAction(post.id, "save")
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        BookmarkIcon(
+                            if (displayIsSaved) accentColor else contentColor.copy(alpha = 0.65f),
+                            size = 20.dp,
+                            filled = displayIsSaved
+                        )
+                    }
+                    SaveLottieEffect(
+                        trigger = saveEffectTrigger,
+                        modifier = Modifier.requiredSize(82.dp)
                     )
                 }
             }
         }
+
+        LikeHeartsEffect(
+            trigger = likeEffectTrigger,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .requiredSize(260.dp)
+        )
     }
-    
+
     // Full screen image viewer dialog
     if (showImageViewer && post.mediaUrls.isNotEmpty()) {
         androidx.compose.ui.window.Dialog(
@@ -9704,7 +11458,7 @@ private fun ApiPostCard(
             )
         }
     }
-    
+
     // Full screen video player dialog
     if (showFullScreenVideo && !post.videoUrl.isNullOrEmpty()) {
         androidx.compose.ui.window.Dialog(
@@ -9721,7 +11475,7 @@ private fun ApiPostCard(
             )
         }
     }
-    
+
     // Mention profile preview popup (glass theme with animation)
     if (showMentionPreview && mentionUsername.isNotEmpty()) {
         MentionProfilePreviewPopup(
@@ -9730,7 +11484,7 @@ private fun ApiPostCard(
             contentColor = contentColor,
             accentColor = accentColor,
             onDismiss = { showMentionPreview = false },
-            onViewProfile = { 
+            onViewProfile = {
                 showMentionPreview = false
                 onMentionClick(mentionUsername)
             }
@@ -9747,7 +11501,7 @@ private fun ApiActionButton(
 ) {
     Box(
         modifier
-            .clickable(onClickLabel = label, onClick = onClick)
+            .noRippleClickable(onClick = onClick)
             .padding(vertical = 12.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -9799,42 +11553,8 @@ private fun ApiArticleCard(
 ) {
     val context = LocalContext.current
     val cardModifier = Modifier
-        .padding(horizontal = 12.dp, vertical = 8.dp)
+        .padding(horizontal = 0.dp, vertical = 8.dp)
         .fillMaxWidth()
-        .clip(RoundedCornerShape(14.dp))
-        .then(
-            if (reduceAnimations) {
-                Modifier.background(
-                    brush = Brush.verticalGradient(
-                        listOf(
-                            accentColor.copy(alpha = 0.12f),
-                            Color.White.copy(alpha = 0.06f)
-                        )
-                    ),
-                    shape = RoundedCornerShape(14.dp)
-                )
-            } else {
-                Modifier.drawBackdrop(
-                    backdrop = backdrop,
-                    shape = { RoundedRectangle(14f.dp) },
-                    effects = {
-                        vibrancy()
-                        blur(18f.dp.toPx())
-                    },
-                    onDrawSurface = {
-                        drawRect(
-                            Brush.verticalGradient(
-                                listOf(
-                                    accentColor.copy(alpha = 0.14f),
-                                    Color.White.copy(alpha = 0.07f)
-                                )
-                            )
-                        )
-                    }
-                )
-            }
-        )
-        .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
 
     Column(modifier = cardModifier) {
         Box(
@@ -9947,57 +11667,25 @@ private fun ApiCelebrationHero(
     reduceAnimations: Boolean = false
 ) {
     val context = LocalContext.current
-    val pulse = rememberInfiniteTransition(label = "celebratePulse")
-    val pulseScale by pulse.animateFloat(
-        initialValue = 0.985f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1400, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "celebrateScale"
-    )
-    val scale = if (reduceAnimations) 1f else pulseScale
-    val heroSurface = if (reduceAnimations) {
-        Modifier.background(
-            brush = Brush.linearGradient(
-                listOf(
-                    accentColor.copy(alpha = 0.18f),
-                    Color(0xFFFFD54F).copy(alpha = 0.06f),
-                    Color.White.copy(alpha = 0.05f)
-                )
-            ),
-            shape = RoundedCornerShape(16.dp)
-        )
+    val scale = if (reduceAnimations) {
+        1f
     } else {
-        Modifier.drawBackdrop(
-            backdrop = backdrop,
-            shape = { RoundedRectangle(16f.dp) },
-            effects = {
-                vibrancy()
-                blur(20f.dp.toPx())
-            },
-            onDrawSurface = {
-                drawRect(
-                    Brush.linearGradient(
-                        listOf(
-                            accentColor.copy(alpha = 0.22f),
-                            Color(0xFFFFD54F).copy(alpha = 0.08f),
-                            Color.White.copy(alpha = 0.06f)
-                        )
-                    )
-                )
-            }
+        val pulse = rememberInfiniteTransition(label = "celebratePulse")
+        val pulseScale by pulse.animateFloat(
+            initialValue = 0.985f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1400, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "celebrateScale"
         )
+        pulseScale
     }
     Column(
         modifier = Modifier
-            .padding(horizontal = 12.dp, vertical = 8.dp)
             .fillMaxWidth()
             .scale(scale)
-            .clip(RoundedCornerShape(16.dp))
-            .then(heroSurface)
-            .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(16.dp))
     ) {
         Row(
             modifier = Modifier
@@ -10066,38 +11754,9 @@ private fun ApiLinkPreview(
 ) {
     if (url.isNullOrBlank()) return
 
-    val shimmer = rememberInfiniteTransition(label = "linkShimmer")
-    val shimmerShift by shimmer.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "shimmer"
-    )
-    val linkBg = if (reduceAnimations) {
-        Brush.linearGradient(
-            listOf(
-                Color.White.copy(alpha = 0.1f),
-                accentColor.copy(alpha = 0.08f)
-            )
-        )
-    } else {
-        Brush.linearGradient(
-            listOf(
-                Color.White.copy(alpha = 0.08f + 0.04f * shimmerShift),
-                accentColor.copy(alpha = 0.06f + 0.05f * (1f - shimmerShift))
-            )
-        )
-    }
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
-            .background(linkBg)
-            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
             .clickable(onClick = onClick)
     ) {
         if (!linkImage.isNullOrBlank()) {
@@ -10236,22 +11895,29 @@ private fun ApiPollContent(
     showResultsBeforeVote: Boolean,
     contentColor: Color,
     accentColor: Color,
+    reduceAnimations: Boolean = false,
     onVote: (String) -> Unit
 ) {
     val hasVoted = userVotedOptionId != null
     val showResults = hasVoted || showResultsBeforeVote
     val isPollEnded = isPollExpired(endsAt)
     val totalVotes = options.sumOf { it.votes }
-    val livePulse = rememberInfiniteTransition(label = "pollLive")
-    val liveAlpha by livePulse.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(900, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "liveA"
-    )
+    val isLive = !isPollEnded && !endsAt.isNullOrBlank()
+    val liveAlpha = if (reduceAnimations || !isLive) {
+        0.9f
+    } else {
+        val livePulse = rememberInfiniteTransition(label = "pollLive")
+        val animatedLiveAlpha by livePulse.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(900, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "liveA"
+        )
+        animatedLiveAlpha
+    }
 
     Column(
         modifier = Modifier
@@ -10271,7 +11937,7 @@ private fun ApiPollContent(
                 text = "Poll",
                 style = TextStyle(contentColor, 13.sp, FontWeight.SemiBold)
             )
-            if (!isPollEnded && !endsAt.isNullOrBlank()) {
+            if (isLive) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -10424,7 +12090,7 @@ private fun ApiImagePostGrid(
     val spacing = 3.dp
     val displayImages = images.take(9)
     val extraCount = (images.size - 9).coerceAtLeast(0)
-    
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -10626,7 +12292,7 @@ private fun ApiImagePostGrid(
                             }
                         }
                     }
-                    
+
                     if (displayImages.size > 3) {
                         val remainingImages = displayImages.drop(3)
                         remainingImages.chunked(3).forEachIndexed { rowIndex, rowImages ->
@@ -10637,7 +12303,7 @@ private fun ApiImagePostGrid(
                                 rowImages.forEachIndexed { colIndex, url ->
                                     val imageIndex = 3 + rowIndex * 3 + colIndex
                                     val isLastVisibleImage = imageIndex == 8 && extraCount > 0
-                                    
+
                                     Box(
                                         modifier = Modifier
                                             .weight(1f)
@@ -10654,7 +12320,7 @@ private fun ApiImagePostGrid(
                                                 .fillMaxSize()
                                                 .clickable { onImageClick(imageIndex) }
                                         )
-                                        
+
                                         if (isLastVisibleImage) {
                                             Box(
                                                 modifier = Modifier

@@ -20,10 +20,11 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -36,14 +37,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.catalog.BuildConfig
 import com.kyant.backdrop.catalog.components.LiquidToggle
@@ -51,6 +56,7 @@ import com.kyant.backdrop.catalog.data.SettingsPreferences
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.GrowthApiService
 import com.kyant.backdrop.catalog.notifications.PushTokenRegistrar
+import com.kyant.backdrop.catalog.ui.VormexFontOptions
 import kotlinx.coroutines.launch
 
 private data class HelpFaqItemData(
@@ -730,6 +736,11 @@ fun AppearanceSettingsScreen(
     val glassBackgroundKey by SettingsPreferences.glassBackgroundPreset(context)
         .collectAsState(initial = DefaultGlassBackgroundPresetKey)
     val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
+    val fontFamily by SettingsPreferences.fontFamily(context)
+        .collectAsState(initial = SettingsPreferences.FONT_FAMILY_SYSTEM)
+    val profileBadgeStyle by SettingsPreferences.profileBadgeStyle(context)
+        .collectAsState(initial = SettingsPreferences.PROFILE_BADGE_STYLE_STUDENT)
+    val showReelsOnHome by SettingsPreferences.showReelsOnHome(context).collectAsState(initial = false)
     
     SettingsScreenContainer(backdrop = backdrop, contentColor = contentColor, accentColor = accentColor) {
         SettingsHeader(
@@ -769,60 +780,41 @@ fun AppearanceSettingsScreen(
             
             // Theme Preview Cards
             item {
+                val selectedThemeKey = VormexThemeMode.fromKey(themeMode).key
+                val themeOptions = listOf(
+                    "glass" to "Glass",
+                    "warm_paper" to "Warm Paper",
+                    "black_green" to "Black Green",
+                    "light" to "White",
+                    "dark" to "Dark",
+                    "midnight_neon" to "Midnight Neon",
+                    "soft_graphite" to "Soft Graphite",
+                    "emerald_focus" to "Emerald Focus"
+                )
+
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // Glass Theme Card
-                    ThemePreviewCard(
-                        modifier = Modifier.weight(1f),
-                        themeName = "Glass",
-                        themeKey = "glass",
-                        isSelected = themeMode == "glass",
-                        contentColor = contentColor,
-                        backdrop = backdrop,
-                        accentColor = accentColor,
-                        onClick = {
-                            coroutineScope.launch {
-                                SettingsPreferences.setThemeMode(context, "glass")
-                                onThemeChange("glass")
+                    themeOptions.forEach { (themeKey, themeName) ->
+                        ThemePreviewCard(
+                            modifier = Modifier.width(132.dp),
+                            themeName = themeName,
+                            themeKey = themeKey,
+                            isSelected = selectedThemeKey == themeKey,
+                            contentColor = contentColor,
+                            backdrop = backdrop,
+                            accentColor = accentColor,
+                            onClick = {
+                                coroutineScope.launch {
+                                    SettingsPreferences.setThemeMode(context, themeKey)
+                                    onThemeChange(themeKey)
+                                }
                             }
-                        }
-                    )
-                    
-                    // White Theme Card
-                    ThemePreviewCard(
-                        modifier = Modifier.weight(1f),
-                        themeName = "White",
-                        themeKey = "light",
-                        isSelected = themeMode == "light",
-                        contentColor = contentColor,
-                        backdrop = backdrop,
-                        accentColor = accentColor,
-                        onClick = {
-                            coroutineScope.launch {
-                                SettingsPreferences.setThemeMode(context, "light")
-                                onThemeChange("light")
-                            }
-                        }
-                    )
-                    
-                    // Dark Theme Card
-                    ThemePreviewCard(
-                        modifier = Modifier.weight(1f),
-                        themeName = "Dark",
-                        themeKey = "dark",
-                        isSelected = themeMode == "dark",
-                        contentColor = contentColor,
-                        backdrop = backdrop,
-                        accentColor = accentColor,
-                        onClick = {
-                            coroutineScope.launch {
-                                SettingsPreferences.setThemeMode(context, "dark")
-                                onThemeChange("dark")
-                            }
-                        }
-                    )
+                        )
+                    }
                 }
             }
 
@@ -859,6 +851,63 @@ fun AppearanceSettingsScreen(
                         }
                     }
                 }
+            }
+
+            item {
+                SettingsOptionItem(
+                    title = "Font Family",
+                    subtitle = "Change the typeface used across Vormex",
+                    icon = Icons.Outlined.TextFields,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    options = VormexFontOptions.map { it.key to it.label },
+                    selectedOption = fontFamily,
+                    onOptionSelected = { nextFontFamily ->
+                        coroutineScope.launch {
+                            SettingsPreferences.setFontFamily(context, nextFontFamily)
+                        }
+                    }
+                )
+            }
+
+            item {
+                SettingsOptionItem(
+                    title = "Profile Badge",
+                    subtitle = "Choose the default badge preview shown on verified profiles",
+                    icon = Icons.Outlined.Verified,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    options = listOf(
+                        SettingsPreferences.PROFILE_BADGE_STYLE_STUDENT to "Student",
+                        SettingsPreferences.PROFILE_BADGE_STYLE_PROFESSIONAL to "Professional",
+                        SettingsPreferences.PROFILE_BADGE_STYLE_PREMIUM to "Premium"
+                    ),
+                    selectedOption = profileBadgeStyle,
+                    onOptionSelected = { badgeStyle ->
+                        coroutineScope.launch {
+                            SettingsPreferences.setProfileBadgeStyle(context, badgeStyle)
+                        }
+                    }
+                )
+            }
+
+            item {
+                SettingsSwitchItem(
+                    title = "Show Reels on Home Page",
+                    subtitle = "Display the trending reels row above your home feed",
+                    icon = Icons.Outlined.VideoLibrary,
+                    checked = showReelsOnHome,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onCheckedChange = {
+                        coroutineScope.launch {
+                            SettingsPreferences.setShowReelsOnHome(context, it)
+                        }
+                    }
+                )
             }
 
             // Accessibility Section
@@ -944,11 +993,46 @@ private fun ThemePreviewCard(
                                 Color(0xFF4DD0E1)
                             )
                         )
+                        "warm_paper" -> Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFFFFFCF7),
+                                Color(0xFFF7F2EA),
+                                Color(0xFFEAD8C3)
+                            )
+                        )
+                        "black_green" -> Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFF020604),
+                                Color(0xFF0B1F13),
+                                Color(0xFF22C55E)
+                            )
+                        )
                         "light" -> Brush.linearGradient(
                             colors = listOf(Color.White, Color(0xFFF5F5F5))
                         )
                         "dark" -> Brush.linearGradient(
                             colors = listOf(Color(0xFF1A1A1A), Color.Black)
+                        )
+                        "midnight_neon" -> Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFF050A12),
+                                Color(0xFF083B5C),
+                                Color(0xFF12C8FF)
+                            )
+                        )
+                        "soft_graphite" -> Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFFF8F9FB),
+                                Color(0xFFE7EAEE),
+                                Color(0xFFB8C1CC)
+                            )
+                        )
+                        "emerald_focus" -> Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFFF2FBF7),
+                                Color(0xFFDDF8EA),
+                                Color(0xFF18A66F)
+                            )
                         )
                         else -> Brush.linearGradient(
                             colors = listOf(Color(0xFF64B5F6), Color(0xFF26C6DA))
@@ -972,7 +1056,9 @@ private fun ThemePreviewCard(
                         .clip(RoundedCornerShape(3.dp))
                         .background(
                             when (themeKey) {
-                                "dark" -> Color.White.copy(alpha = 0.2f)
+                                "dark", "midnight_neon" -> Color.White.copy(alpha = 0.2f)
+                                "black_green" -> Color(0xFF8EF7B2).copy(alpha = 0.24f)
+                                "warm_paper" -> Color(0xFF2F2A24).copy(alpha = 0.12f)
                                 else -> Color.Black.copy(alpha = 0.1f)
                             }
                         )
@@ -989,8 +1075,12 @@ private fun ThemePreviewCard(
                             .clip(RoundedCornerShape(4.dp))
                             .background(
                                 when (themeKey) {
-                                    "dark" -> Color.White.copy(alpha = 0.15f)
+                                    "dark", "midnight_neon" -> Color.White.copy(alpha = 0.15f)
                                     "glass" -> Color.White.copy(alpha = 0.4f)
+                                    "black_green" -> Color(0xFF36D072).copy(alpha = 0.22f)
+                                    "warm_paper" -> Color(0xFFC96442).copy(alpha = 0.18f)
+                                    "soft_graphite" -> Color.Black.copy(alpha = 0.12f)
+                                    "emerald_focus" -> Color(0xFF047857).copy(alpha = 0.18f)
                                     else -> Color.Black.copy(alpha = 0.08f)
                                 }
                             )
@@ -1012,7 +1102,10 @@ private fun ThemePreviewCard(
                                 .clip(CircleShape)
                                 .background(
                                     when (themeKey) {
-                                        "dark" -> Color.White.copy(alpha = 0.3f)
+                                        "dark", "midnight_neon" -> Color.White.copy(alpha = 0.3f)
+                                        "black_green" -> Color(0xFF36D072).copy(alpha = 0.54f)
+                                        "warm_paper" -> Color(0xFFC96442).copy(alpha = 0.42f)
+                                        "emerald_focus" -> Color(0xFF047857).copy(alpha = 0.34f)
                                         else -> Color.Black.copy(alpha = 0.2f)
                                     }
                                 )
@@ -1030,9 +1123,14 @@ private fun ThemePreviewCard(
             Icon(
                 imageVector = when (themeKey) {
                     "glass" -> Icons.Outlined.BlurOn
+                    "warm_paper" -> Icons.Outlined.Palette
+                    "black_green" -> Icons.Outlined.DarkMode
                     "light" -> Icons.Outlined.LightMode
                     "dark" -> Icons.Outlined.DarkMode
-                    else -> Icons.Outlined.BlurOn
+                    "midnight_neon" -> Icons.Outlined.DarkMode
+                    "soft_graphite" -> Icons.Outlined.Palette
+                    "emerald_focus" -> Icons.Outlined.Palette
+                    else -> Icons.Outlined.Palette
                 },
                 contentDescription = null,
                 tint = if (isSelected) accentColor else contentColor.copy(alpha = 0.7f),
@@ -1045,7 +1143,9 @@ private fun ThemePreviewCard(
                     color = if (isSelected) accentColor else contentColor,
                     fontSize = 14.sp,
                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                )
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
         
@@ -2331,32 +2431,91 @@ fun SavedPostsScreen(
     val uiState by viewModel.uiState.collectAsState()
     var savedReels by remember { mutableStateOf<List<com.kyant.backdrop.catalog.network.models.Reel>>(emptyList()) }
     var isLoadingSavedReels by remember { mutableStateOf(false) }
-    
-    LaunchedEffect(Unit) {
-        viewModel.loadSavedPosts(refresh = true)
+    var isLoadingMoreSavedReels by remember { mutableStateOf(false) }
+    var savedReelsNextCursor by remember { mutableStateOf<String?>(null) }
+    var hasMoreSavedReels by remember { mutableStateOf(false) }
+    val savedListState = rememberLazyListState()
 
-        val userId = ApiClient.getCurrentUserId(context)
-        if (!userId.isNullOrBlank()) {
-            isLoadingSavedReels = true
-            ApiClient.getUserSavedReels(context, userId)
+    fun loadSavedReels(refresh: Boolean = false) {
+        if (refresh) {
+            if (isLoadingSavedReels) return
+        } else {
+            if (
+                isLoadingSavedReels ||
+                isLoadingMoreSavedReels ||
+                !hasMoreSavedReels ||
+                savedReelsNextCursor == null
+            ) return
+        }
+
+        scope.launch {
+            if (refresh) {
+                isLoadingSavedReels = true
+                savedReels = emptyList()
+                savedReelsNextCursor = null
+                hasMoreSavedReels = false
+            } else {
+                isLoadingMoreSavedReels = true
+            }
+
+            ApiClient.getMySavedReels(
+                context = context,
+                cursor = if (refresh) null else savedReelsNextCursor,
+                limit = 20
+            )
                 .onSuccess { response ->
-                    savedReels = response.reels
+                    val existing = if (refresh) emptyList() else savedReels
+                    savedReels = (existing + response.reels).distinctBy { it.id }
+                    savedReelsNextCursor = response.nextCursor
+                    hasMoreSavedReels = response.hasMore
                     isLoadingSavedReels = false
+                    isLoadingMoreSavedReels = false
                 }
                 .onFailure {
                     isLoadingSavedReels = false
+                    isLoadingMoreSavedReels = false
                 }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.loadSavedPosts(refresh = true)
+        loadSavedReels(refresh = true)
+    }
+
+    LaunchedEffect(
+        savedListState,
+        savedReels.size,
+        uiState.savedPosts.size,
+        hasMoreSavedReels,
+        uiState.hasSavedMore,
+        isLoadingMoreSavedReels,
+        uiState.isLoadingMoreSaved
+    ) {
+        snapshotFlow {
+            val layout = savedListState.layoutInfo
+            val lastVisibleIndex = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
+            lastVisibleIndex to layout.totalItemsCount
+        }.collect { (lastVisibleIndex, totalItems) ->
+            if (totalItems > 0 && lastVisibleIndex >= totalItems - 5) {
+                if (hasMoreSavedReels && !isLoadingMoreSavedReels) {
+                    loadSavedReels(refresh = false)
+                }
+                if (uiState.hasSavedMore && !uiState.isLoadingMoreSaved) {
+                    viewModel.loadSavedPosts(refresh = false)
+                }
+            }
         }
     }
     
     SettingsScreenContainer(backdrop = backdrop, contentColor = contentColor, accentColor = accentColor) {
         SettingsHeader(
-            title = "Saved Posts",
+            title = "Saved",
             contentColor = contentColor,
             onBack = onNavigateBack
         )
         
-        if (uiState.isLoading && uiState.savedPosts.isEmpty() && isLoadingSavedReels) {
+        if ((uiState.isLoadingSaved || isLoadingSavedReels) && uiState.savedPosts.isEmpty() && savedReels.isEmpty()) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
@@ -2369,6 +2528,7 @@ fun SavedPostsScreen(
             )
         } else {
             LazyColumn(
+                state = savedListState,
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -2387,6 +2547,7 @@ fun SavedPostsScreen(
                             reel = reel,
                             backdrop = backdrop,
                             contentColor = contentColor,
+                            accentColor = accentColor,
                             onClick = { onNavigateToReel(reel.id) },
                             onUnsave = {
                                     scope.launch {
@@ -2421,9 +2582,119 @@ fun SavedPostsScreen(
                         onUnsave = { viewModel.toggleSave(post.id) }
                     )
                 }
+
+                if (hasMoreSavedReels || uiState.hasSavedMore || isLoadingMoreSavedReels || uiState.isLoadingMoreSaved) {
+                    item {
+                        val isLoadingMoreSaved = isLoadingMoreSavedReels || uiState.isLoadingMoreSaved
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable(enabled = !isLoadingMoreSaved) {
+                                    loadSavedReels(refresh = false)
+                                    viewModel.loadSavedPosts(refresh = false)
+                                }
+                                .padding(vertical = 14.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isLoadingMoreSaved) {
+                                CircularProgressIndicator(
+                                    color = accentColor,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            } else {
+                                BasicText(
+                                    "Load more saved items",
+                                    style = TextStyle(accentColor, 13.sp, FontWeight.SemiBold)
+                                )
+                            }
+                        }
+                    }
+                }
                 
                 item { Spacer(Modifier.height(80.dp)) }
             }
+        }
+    }
+}
+
+private fun String?.savedPreviewSnippet(fallback: String): String =
+    this?.trim()?.takeIf { it.isNotBlank() } ?: fallback
+
+private fun com.kyant.backdrop.catalog.network.models.FullPost.savedPreviewImageUrl(): String? =
+    when {
+        !videoThumbnail.isNullOrBlank() -> videoThumbnail
+        mediaUrls.isNotEmpty() -> mediaUrls.firstOrNull()
+        !articleCoverImage.isNullOrBlank() -> articleCoverImage
+        !linkImage.isNullOrBlank() -> linkImage
+        !documentThumbnail.isNullOrBlank() -> documentThumbnail
+        !celebrationGifUrl.isNullOrBlank() -> celebrationGifUrl
+        else -> null
+    }
+
+private fun com.kyant.backdrop.catalog.network.models.FullPost.savedPreviewText(): String =
+    listOf(content, articleTitle, linkTitle, documentName)
+        .firstOrNull { !it.isNullOrBlank() }
+        .savedPreviewSnippet(
+            when {
+                type.equals("VIDEO", ignoreCase = true) || !videoUrl.isNullOrBlank() -> "Video post"
+                type.equals("IMAGE", ignoreCase = true) || mediaUrls.isNotEmpty() -> "Photo post"
+                type.equals("POLL", ignoreCase = true) -> "Poll post"
+                type.equals("ARTICLE", ignoreCase = true) -> "Article post"
+                else -> "Saved post"
+            }
+        )
+
+@Composable
+private fun SavedMediaThumbnail(
+    imageUrl: String?,
+    isVideo: Boolean,
+    fallbackIcon: ImageVector,
+    contentColor: Color,
+    accentColor: Color,
+    contentDescription: String?,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(contentColor.copy(alpha = 0.08f)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (!imageUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(imageUrl)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            if (isVideo) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.42f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.PlayCircleOutline,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+        } else {
+            Icon(
+                imageVector = fallbackIcon,
+                contentDescription = null,
+                tint = accentColor.copy(alpha = 0.78f),
+                modifier = Modifier.size(28.dp)
+            )
         }
     }
 }
@@ -2433,6 +2704,7 @@ private fun SavedReelItem(
     reel: com.kyant.backdrop.catalog.network.models.Reel,
     backdrop: LayerBackdrop,
     contentColor: Color,
+    accentColor: Color,
     onClick: () -> Unit,
     onUnsave: () -> Unit
 ) {
@@ -2447,6 +2719,18 @@ private fun SavedReelItem(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.Top
         ) {
+            SavedMediaThumbnail(
+                imageUrl = reel.thumbnailUrl ?: reel.previewGifUrl,
+                isVideo = true,
+                fallbackIcon = Icons.Outlined.PlayCircleOutline,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                contentDescription = "Reel thumbnail",
+                modifier = Modifier.size(width = 72.dp, height = 96.dp)
+            )
+
+            Spacer(Modifier.width(12.dp))
+
             Column(modifier = Modifier.weight(1f)) {
                 BasicText(
                     reel.author.name ?: "Unknown",
@@ -2454,9 +2738,11 @@ private fun SavedReelItem(
                 )
 
                 BasicText(
-                    (reel.caption ?: "").take(100) + if ((reel.caption?.length ?: 0) > 100) "..." else "",
+                    (reel.caption ?: reel.title).savedPreviewSnippet("Saved reel"),
                     style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp),
-                    modifier = Modifier.padding(top = 4.dp)
+                    modifier = Modifier.padding(top = 4.dp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
 
                 Row(
@@ -2506,6 +2792,19 @@ private fun SavedPostItem(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.Top
         ) {
+            val isVideoPost = post.type.equals("VIDEO", ignoreCase = true) || !post.videoUrl.isNullOrBlank()
+            SavedMediaThumbnail(
+                imageUrl = post.savedPreviewImageUrl(),
+                isVideo = isVideoPost,
+                fallbackIcon = if (isVideoPost) Icons.Outlined.PlayCircleOutline else Icons.Outlined.Image,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                contentDescription = "Post thumbnail",
+                modifier = Modifier.size(width = 88.dp, height = 74.dp)
+            )
+
+            Spacer(Modifier.width(12.dp))
+
             Column(modifier = Modifier.weight(1f)) {
                 BasicText(
                     post.author.name ?: "Unknown",
@@ -2513,9 +2812,11 @@ private fun SavedPostItem(
                 )
                 
                 BasicText(
-                    (post.content ?: "").take(100) + if ((post.content?.length ?: 0) > 100) "..." else "",
+                    post.savedPreviewText(),
                     style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp),
-                    modifier = Modifier.padding(top = 4.dp)
+                    modifier = Modifier.padding(top = 4.dp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
                 
                 Row(
@@ -2550,6 +2851,9 @@ private fun SavedPostItem(
 fun LogoutConfirmationDialog(
     contentColor: Color,
     accentColor: Color,
+    title: String = "Log Out",
+    message: String = "Are you sure you want to log out? You'll need to sign in again to access your account.",
+    confirmText: String = "Log Out",
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -2560,14 +2864,14 @@ fun LogoutConfirmationDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                "Log Out",
+                title,
                 color = dialogTextColor,
                 fontWeight = FontWeight.Bold
             )
         },
         text = {
             Text(
-                "Are you sure you want to log out? You'll need to sign in again to access your account.",
+                message,
                 color = dialogTextColor.copy(alpha = 0.74f)
             )
         },
@@ -2576,7 +2880,7 @@ fun LogoutConfirmationDialog(
                 onClick = onConfirm,
                 colors = ButtonDefaults.textButtonColors(contentColor = Color.Red)
             ) {
-                Text("Log Out")
+                Text(confirmText)
             }
         },
         dismissButton = {

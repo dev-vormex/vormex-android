@@ -9,7 +9,9 @@ data class Author(
     val username: String? = null,
     val name: String? = null,
     val profileImage: String? = null,
-    val headline: String? = null
+    val headline: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -22,6 +24,10 @@ data class Post(
     val content: String? = null,
     val contentType: String = "text/plain",
     val mentions: List<String> = emptyList(),
+    val collaboratorIds: List<String> = emptyList(),
+    val pendingCollaboratorIds: List<String> = emptyList(),
+    val collaborators: List<Author> = emptyList(),
+    val collaborationStatus: String? = null,
     val mediaUrls: List<String> = emptyList(),
     val mediaCount: Int = 0,
     val videoUrl: String? = null,
@@ -29,6 +35,7 @@ data class Post(
     val videoDuration: Int? = null,
     val videoSize: Long? = null,
     val videoFormat: String? = null,
+    val defaultVideoId: String? = null,
     val documentUrl: String? = null,
     val documentName: String? = null,
     val documentType: String? = null,
@@ -121,8 +128,11 @@ data class User(
 
 @Serializable
 data class AuthResponse(
-    val token: String,
-    val user: User
+    val user: User,
+    val token: String? = null,
+    val refreshToken: String? = null,
+    val message: String? = null,
+    val requiresVerification: Boolean = false
 )
 
 @Serializable
@@ -135,9 +145,34 @@ data class LikeResponse(
 data class ApiError(
     val error: String? = null,
     val message: String? = null,
-    val statusCode: Int? = null
+    val statusCode: Int? = null,
+    val code: String? = null,
+    val requestId: String? = null,
+    val retryAfterSeconds: Int? = null
 ) {
-    fun getErrorMessage(): String = error ?: message ?: "Unknown error"
+    fun getErrorMessage(): String {
+        val base = error ?: message ?: "Unknown error"
+        val retryAfter = retryAfterSeconds
+        return if (retryAfter != null && retryAfter > 0) {
+            "$base Try again in ${formatRetryAfter(retryAfter)}."
+        } else {
+            base
+        }
+    }
+
+    private fun formatRetryAfter(seconds: Int): String {
+        return when {
+            seconds < 60 -> "$seconds seconds"
+            seconds < 3600 -> {
+                val minutes = (seconds + 59) / 60
+                if (minutes == 1) "1 minute" else "$minutes minutes"
+            }
+            else -> {
+                val hours = (seconds + 3599) / 3600
+                if (hours == 1) "1 hour" else "$hours hours"
+            }
+        }
+    }
 }
 
 @Serializable
@@ -208,6 +243,7 @@ data class Story(
     val linkTitle: String? = null,
     val viewsCount: Int = 0,
     val reactionsCount: Int = 0,
+    val isViewed: Boolean = false,
     val isOwn: Boolean = false,
     val createdAt: String,
     val expiresAt: String
@@ -344,7 +380,9 @@ data class PersonInfo(
     val connectionStatus: String = "none", // none, pending_sent, pending_received, connected
     val mutualConnections: Int = 0,
     val contactName: String? = null,
-    val isInContacts: Boolean = false
+    val isInContacts: Boolean = false,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -354,6 +392,7 @@ data class PeopleResponse(
     val page: Int = 1,
     val totalPages: Int = 1,
     val hasMore: Boolean = false,
+    val nextCursor: String? = null,
     val userCollege: String? = null // For same-college endpoint
 )
 
@@ -429,7 +468,9 @@ data class SmartMatchUser(
     val githubConnected: Boolean = false,
     val skills: List<String> = emptyList(),
     val onboarding: SmartMatchOnboarding? = null,
-    val stats: SmartMatchStats? = null
+    val stats: SmartMatchStats? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -490,7 +531,9 @@ data class NearbyUser(
     val interests: List<String> = emptyList(),
     val distance: Double = 0.0,
     val isOnline: Boolean = false,
-    val location: NearbyUserLocation? = null
+    val location: NearbyUserLocation? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -544,7 +587,9 @@ data class PendingConnectionRequestUser(
     val name: String? = null,
     val profileImage: String? = null,
     val headline: String? = null,
-    val college: String? = null
+    val college: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -573,7 +618,9 @@ data class ProfileRelationshipUser(
     val profileImage: String? = null,
     val headline: String? = null,
     val college: String? = null,
-    val isOnline: Boolean = false
+    val isOnline: Boolean = false,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -603,6 +650,21 @@ data class ProfileFollowerItem(
 @Serializable
 data class FollowersListResponse(
     val followers: List<ProfileFollowerItem> = emptyList(),
+    val total: Int = 0,
+    val page: Int = 1,
+    val hasMore: Boolean = false
+)
+
+@Serializable
+data class ProfileFollowingItem(
+    val id: String,
+    val createdAt: String = "",
+    val user: ProfileRelationshipUser
+)
+
+@Serializable
+data class FollowingListResponse(
+    val following: List<ProfileFollowingItem> = emptyList(),
     val total: Int = 0,
     val page: Int = 1,
     val hasMore: Boolean = false
@@ -641,6 +703,7 @@ data class ProfileUser(
     val lastActiveAt: String? = null,
     val profileVisibility: String = "PUBLIC",
     val verified: Boolean = false,
+    val isVerified: Boolean = false,
     val interests: List<String> = emptyList(),
     val profileRing: String? = null,
     /** When set, visitors see this loader while opening this user's profile (client + optional API). */
@@ -728,6 +791,18 @@ data class GitHubStats(
     val following: Int = 0,
     val topLanguages: Map<String, LanguageStat> = emptyMap(),
     val topRepos: List<TopRepo> = emptyList()
+)
+
+@Serializable
+data class GitHubOAuthStartResponse(
+    val authUrl: String
+)
+
+@Serializable
+data class GitHubSyncResponse(
+    val message: String = "",
+    val stats: JsonElement? = null,
+    val syncedAt: String? = null
 )
 
 @Serializable
@@ -979,6 +1054,7 @@ data class FeedItem(
     val mediaUrls: List<String>? = null,
     val videoUrl: String? = null,
     val videoThumbnail: String? = null,
+    val defaultVideoId: String? = null,
     val linkUrl: String? = null,
     val linkTitle: String? = null,
     val linkDescription: String? = null,
@@ -1062,7 +1138,9 @@ data class MutualConnection(
     val id: String,
     val name: String? = null,
     val username: String? = null,
-    val avatar: String? = null
+    val avatar: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -1075,6 +1153,7 @@ data class MutualInfoResponse(
 
 @Serializable
 data class ProfileUpdateRequest(
+    val name: String? = null,
     val headline: String? = null,
     val bio: String? = null,
     val location: String? = null,
@@ -1397,7 +1476,9 @@ data class ProfileViewerPerson(
     val profileImage: String? = null,
     val college: String? = null,
     val headline: String? = null,
-    val isSameCollege: Boolean = false
+    val isSameCollege: Boolean = false,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 // ==================== Chat / Messaging Models ====================
@@ -1409,7 +1490,9 @@ data class ChatUser(
     val name: String? = null,
     val profileImage: String? = null,
     val isOnline: Boolean = false,
-    val lastActiveAt: String? = null
+    val lastActiveAt: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -1438,6 +1521,7 @@ data class ReplyTo(
 @Serializable
 data class Message(
     val id: String,
+    val clientMessageId: String? = null,
     val conversationId: String,
     val senderId: String,
     val receiverId: String,
@@ -1486,6 +1570,13 @@ data class Conversation(
 )
 
 @Serializable
+data class ConversationStatusResponse(
+    val hasConversation: Boolean = false,
+    val hasMessages: Boolean = false,
+    val conversation: Conversation? = null
+)
+
+@Serializable
 data class ConversationsResponse(
     val conversations: List<Conversation>,
     val hasMore: Boolean = false,
@@ -1528,7 +1619,8 @@ data class SendMessageRequest(
     val mediaType: String? = null,
     val fileName: String? = null,
     val fileSize: Int? = null,
-    val replyToId: String? = null
+    val replyToId: String? = null,
+    val clientMessageId: String? = null
 )
 
 @Serializable
@@ -1547,9 +1639,12 @@ data class EditMessageRequest(
 // Shared post content parsed from message content
 @Serializable
 data class SharedPostAuthor(
+    val id: String? = null,
     val name: String? = null,
     val username: String? = null,
-    val profileImage: String? = null
+    val profileImage: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -1557,9 +1652,20 @@ data class SharedPostContent(
     val type: String = "",
     val postId: String = "",
     val postUrl: String = "",
+    val reelId: String = "",
+    val reelUrl: String = "",
     val preview: String = "",
     val author: SharedPostAuthor? = null,
-    val mediaUrl: String? = null
+    val mediaUrl: String? = null,
+    val videoUrl: String? = null,
+    val hlsUrl: String? = null,
+    val previewGifUrl: String? = null,
+    val title: String? = null,
+    val caption: String? = null,
+    val durationSeconds: Int = 0,
+    val width: Int = 1080,
+    val height: Int = 1920,
+    val hashtags: List<String> = emptyList()
 ) {
     companion object {
         private val lenientJson = kotlinx.serialization.json.Json {
@@ -1569,7 +1675,12 @@ data class SharedPostContent(
         
         fun tryParse(content: String): SharedPostContent? {
             return try {
-                if (content.contains("\"type\":\"shared_post\"") || content.contains("\"type\": \"shared_post\"")) {
+                if (
+                    content.contains("\"type\":\"shared_post\"") ||
+                    content.contains("\"type\": \"shared_post\"") ||
+                    content.contains("\"type\":\"shared_reel\"") ||
+                    content.contains("\"type\": \"shared_reel\"")
+                ) {
                     lenientJson.decodeFromString<SharedPostContent>(content)
                 } else null
             } catch (e: Exception) {
@@ -1625,7 +1736,9 @@ data class ReelAuthor(
     val name: String? = null,
     val profileImage: String? = null,
     val headline: String? = null,
-    val isFollowing: Boolean = false
+    val isFollowing: Boolean = false,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -1665,6 +1778,9 @@ data class Reel(
     val topics: List<String> = emptyList(),
     val category: String? = null,
     val locationName: String? = null,
+    val isResponse: Boolean = false,
+    val responseType: String? = null,
+    val originalReelId: String? = null,
     val pollQuestion: String? = null,
     val pollOptions: List<ReelPollOption>? = null,
     val pollEndsAt: String? = null,
@@ -1673,10 +1789,15 @@ data class Reel(
     val quizOptions: List<ReelPollOption>? = null,
     val codeSnippet: String? = null,
     val codeLanguage: String? = null,
+    val codeFileName: String? = null,
+    val repoUrl: String? = null,
     val visibility: String = "PUBLIC",
     val allowComments: Boolean = true,
+    val allowDuets: Boolean = true,
+    val allowStitch: Boolean = true,
     val allowDownload: Boolean = true,
     val allowSharing: Boolean = true,
+    val muteOriginalAudio: Boolean = false,
     val status: String = "PUBLISHED",
     val viewsCount: Int = 0,
     val likesCount: Int = 0,
@@ -1686,7 +1807,8 @@ data class Reel(
     val isLiked: Boolean = false,
     val isSaved: Boolean = false,
     val publishedAt: String? = null,
-    val createdAt: String = ""
+    val createdAt: String = "",
+    val updatedAt: String? = null
 )
 
 @Serializable
@@ -1939,7 +2061,9 @@ data class NotificationActor(
     val id: String,
     val username: String? = null,
     val name: String? = null,
-    val profileImage: String? = null
+    val profileImage: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false
 )
 
 @Serializable
@@ -1961,6 +2085,13 @@ data class NotificationsResponse(
     val notifications: List<Notification> = emptyList(),
     val nextCursor: String? = null,
     val hasMore: Boolean = false
+)
+
+@Serializable
+data class PostCollabResponse(
+    val success: Boolean = false,
+    val status: String? = null,
+    val post: Post? = null
 )
 
 @Serializable

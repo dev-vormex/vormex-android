@@ -30,8 +30,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -136,6 +136,24 @@ class SkillPassportViewModel(private val context: Context) : ViewModel() {
                         isRefreshing = false,
                         error = error.message ?: "Could not load Skill Passport"
                     )
+                }
+        }
+    }
+
+    fun linkVerificationProfile(
+        userId: String = "me",
+        provider: String,
+        username: String,
+        profileUrl: String? = null
+    ) {
+        viewModelScope.launch {
+            SkillsApiService.upsertVerificationLink(applicationContext, provider, username, profileUrl)
+                .onSuccess {
+                    Toast.makeText(applicationContext, "Skill verification linked", Toast.LENGTH_SHORT).show()
+                    load(userId, forceRefresh = true)
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(error = error.message ?: "Could not link verification profile")
                 }
         }
     }
@@ -325,9 +343,23 @@ fun SkillPassportScreen(
         factory = SkillPassportViewModel.Factory(context)
     )
     val uiState by viewModel.uiState.collectAsState()
+    var verificationProvider by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(userId) {
         viewModel.load(userId)
+    }
+
+    verificationProvider?.let { provider ->
+        SkillVerificationLinkDialog(
+            provider = provider,
+            contentColor = contentColor,
+            accentColor = accentColor,
+            onDismiss = { verificationProvider = null },
+            onConfirm = { username, profileUrl ->
+                verificationProvider = null
+                viewModel.linkVerificationProfile(userId, provider, username, profileUrl)
+            }
+        )
     }
 
     Column(
@@ -358,7 +390,8 @@ fun SkillPassportScreen(
                 contentColor = contentColor,
                 accentColor = accentColor,
                 onOpenSkillSwap = onOpenSkillSwap,
-                onOpenProfile = onOpenProfile
+                onOpenProfile = onOpenProfile,
+                onLinkVerification = { provider -> verificationProvider = provider }
             )
         }
     }
@@ -371,7 +404,8 @@ private fun SkillPassportContent(
     contentColor: Color,
     accentColor: Color,
     onOpenSkillSwap: () -> Unit,
-    onOpenProfile: (String) -> Unit
+    onOpenProfile: (String) -> Unit,
+    onLinkVerification: (String) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -383,7 +417,8 @@ private fun SkillPassportContent(
                 backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
-                onOpenSkillSwap = onOpenSkillSwap
+                onOpenSkillSwap = onOpenSkillSwap,
+                onLinkVerification = onLinkVerification
             )
         }
 
@@ -440,7 +475,8 @@ private fun SkillPassportHero(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
-    onOpenSkillSwap: () -> Unit
+    onOpenSkillSwap: () -> Unit,
+    onLinkVerification: (String) -> Unit
 ) {
     SkillSurfaceCard(
         backdrop = backdrop,
@@ -477,6 +513,10 @@ private fun SkillPassportHero(
                     SkillMetricChip("${passport.summary.evidenceCount}", "Proof", contentColor, accentColor)
                     SkillMetricChip("${passport.summary.endorsementsCount}", "Votes", contentColor, accentColor)
                 }
+                if (passport.summary.hasVerifiedSkillsBadge) {
+                    Spacer(Modifier.height(10.dp))
+                    SkillRoleChip("Premium", "Verified skills", Color(0xFF22C55E), contentColor)
+                }
             }
         }
 
@@ -500,7 +540,123 @@ private fun SkillPassportHero(
             onClick = onOpenSkillSwap,
             modifier = Modifier.fillMaxWidth()
         )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SkillSecondaryButton(
+                text = "GitHub",
+                icon = Icons.Outlined.Code,
+                contentColor = contentColor,
+                onClick = { onLinkVerification("github") },
+                modifier = Modifier.weight(1f)
+            )
+            SkillSecondaryButton(
+                text = "LeetCode",
+                icon = Icons.Outlined.Verified,
+                contentColor = contentColor,
+                onClick = { onLinkVerification("leetcode") },
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (passport.verificationLinks.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                passport.verificationLinks.take(3).forEach { link ->
+                    SkillTinyChip("${link.provider.replaceFirstChar { it.uppercase() }} linked", Color(0xFF22C55E), contentColor)
+                }
+            }
+        }
     }
+}
+
+@Composable
+private fun SkillVerificationLinkDialog(
+    provider: String,
+    contentColor: Color,
+    accentColor: Color,
+    onDismiss: () -> Unit,
+    onConfirm: (username: String, profileUrl: String?) -> Unit
+) {
+    var username by rememberSaveable { mutableStateOf("") }
+    var profileUrl by rememberSaveable { mutableStateOf("") }
+    val providerLabel = provider.replaceFirstChar { it.uppercase() }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(if (contentColor == Color.White) Color(0xFF111827) else Color.White)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            BasicText(
+                "Link $providerLabel",
+                style = TextStyle(contentColor, 20.sp, FontWeight.Bold)
+            )
+            BasicText(
+                "This adds verified evidence to your Skill Passport.",
+                style = TextStyle(contentColor.copy(alpha = 0.64f), 13.sp)
+            )
+            SkillDialogField(
+                value = username,
+                onValueChange = { username = it },
+                placeholder = if (provider == "github") "GitHub username" else "LeetCode username",
+                contentColor = contentColor,
+                accentColor = accentColor
+            )
+            SkillDialogField(
+                value = profileUrl,
+                onValueChange = { profileUrl = it },
+                placeholder = "Profile URL optional",
+                contentColor = contentColor,
+                accentColor = accentColor
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SkillSecondaryButton(
+                    text = "Cancel",
+                    icon = Icons.Outlined.Close,
+                    contentColor = contentColor,
+                    modifier = Modifier.weight(1f),
+                    onClick = onDismiss
+                )
+                SkillPrimaryButton(
+                    text = "Link",
+                    icon = Icons.Outlined.Verified,
+                    accentColor = accentColor,
+                    modifier = Modifier.weight(1f),
+                    enabled = username.isNotBlank(),
+                    onClick = { onConfirm(username, profileUrl.takeIf { it.isNotBlank() }) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SkillDialogField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    contentColor: Color,
+    accentColor: Color
+) {
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        textStyle = TextStyle(contentColor, 15.sp),
+        cursorBrush = SolidColor(accentColor),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(contentColor.copy(alpha = 0.08f))
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        decorationBox = { inner ->
+            if (value.isBlank()) {
+                BasicText(placeholder, style = TextStyle(contentColor.copy(alpha = 0.42f), 15.sp))
+            }
+            inner()
+        }
+    )
 }
 
 @Composable

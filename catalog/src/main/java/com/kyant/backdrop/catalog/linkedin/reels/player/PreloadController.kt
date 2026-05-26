@@ -1,3 +1,5 @@
+@file:androidx.media3.common.util.UnstableApi
+
 package com.kyant.backdrop.catalog.linkedin.reels.player
 
 import android.content.Context
@@ -80,11 +82,14 @@ internal class PreloadController(context: Context) {
         val trackSelector = buildTrackSelectorFactory().createTrackSelector(appContext) as DefaultTrackSelector
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                12_000,
-                90_000,
-                250,
-                750
+                5_000,
+                25_000,
+                350,
+                1_200
             )
+            .setTargetBufferBytes(48 * 1024 * 1024)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .setBackBuffer(3_000, false)
             .build()
 
         return preloadManagerBuilder.buildExoPlayer(
@@ -107,8 +112,8 @@ internal class PreloadController(context: Context) {
 
         targetStatusControl.currentPlayingIndex = currentIndex
 
-        val keepStart = (currentIndex - 6).coerceAtLeast(0)
-        val keepEnd = (currentIndex + 20).coerceAtMost(reels.lastIndex)
+        val keepStart = (currentIndex - 2).coerceAtLeast(0)
+        val keepEnd = (currentIndex + 4).coerceAtMost(reels.lastIndex)
         val desiredIds = LinkedHashSet<String>()
 
         for (index in keepStart..keepEnd) {
@@ -174,12 +179,18 @@ internal class PreloadController(context: Context) {
             DefaultTrackSelector(
                 context,
                 AdaptiveTrackSelection.Factory(
-                    500,
-                    3_000,
-                    1_000,
-                    0.75f
+                    4_000,
+                    7_500,
+                    2_500,
+                    0.70f
                 )
-            )
+            ).apply {
+                setParameters(
+                    buildUponParameters()
+                        .setMaxVideoSize(720, 1280)
+                        .setMaxVideoBitrate(2_800_000)
+                )
+            }
         }
     }
 }
@@ -191,40 +202,22 @@ private class ReelsTargetPreloadStatusControl : TargetPreloadStatusControl<Int> 
     override fun getTargetPreloadStatus(index: Int): DefaultPreloadManager.Status? {
         val distance = index - currentPlayingIndex
         return when {
-            distance == -2 -> DefaultPreloadManager.Status(
-                DefaultPreloadManager.Status.STAGE_SOURCE_PREPARED
-            )
-
             distance == -1 -> DefaultPreloadManager.Status(
                 DefaultPreloadManager.Status.STAGE_LOADED_FOR_DURATION_MS,
-                4_000L
+                2_000L
             )
 
             distance == 1 -> DefaultPreloadManager.Status(
                 DefaultPreloadManager.Status.STAGE_LOADED_FOR_DURATION_MS,
-                15_000L
+                5_000L
             )
 
             distance == 2 -> DefaultPreloadManager.Status(
                 DefaultPreloadManager.Status.STAGE_LOADED_FOR_DURATION_MS,
-                12_000L
+                2_000L
             )
 
-            distance == 3 -> DefaultPreloadManager.Status(
-                DefaultPreloadManager.Status.STAGE_LOADED_FOR_DURATION_MS,
-                8_000L
-            )
-
-            distance == 4 -> DefaultPreloadManager.Status(
-                DefaultPreloadManager.Status.STAGE_LOADED_FOR_DURATION_MS,
-                5_000L
-            )
-
-            distance in 5..10 -> DefaultPreloadManager.Status(
-                DefaultPreloadManager.Status.STAGE_TRACKS_SELECTED
-            )
-
-            distance in 11..14 -> DefaultPreloadManager.Status(
+            distance in -2..4 -> DefaultPreloadManager.Status(
                 DefaultPreloadManager.Status.STAGE_SOURCE_PREPARED
             )
 

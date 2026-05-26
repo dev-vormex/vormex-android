@@ -17,6 +17,7 @@ data class NotificationsInboxUiState(
     val isMarkingAllRead: Boolean = false,
     val unreadOnly: Boolean = false,
     val notifications: List<Notification> = emptyList(),
+    val respondingCollabInviteIds: Set<String> = emptySet(),
     val unreadCount: Int = 0,
     val error: String? = null
 )
@@ -140,6 +141,31 @@ class NotificationsInboxViewModel(
                 .onFailure {
                     _uiState.value = previous.copy(error = it.message ?: "Failed to mark notification as read")
                 }
+        }
+    }
+
+    fun respondToCollabInvite(notificationId: String, postId: String, accept: Boolean) {
+        if (notificationId in _uiState.value.respondingCollabInviteIds) return
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                respondingCollabInviteIds = _uiState.value.respondingCollabInviteIds + notificationId,
+                error = null
+            )
+
+            ApiClient.respondToPostCollabInvite(context, postId, accept)
+                .onSuccess {
+                    refresh()
+                }
+                .onFailure {
+                    _uiState.value = _uiState.value.copy(
+                        error = it.message ?: "Failed to respond to collaboration invite"
+                    )
+                }
+
+            _uiState.value = _uiState.value.copy(
+                respondingCollabInviteIds = _uiState.value.respondingCollabInviteIds - notificationId
+            )
         }
     }
 

@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -22,14 +23,15 @@ import androidx.core.view.WindowCompat
 import com.kyant.backdrop.catalog.network.ChatSocketManager
 import com.kyant.backdrop.catalog.network.GroupSocketManager
 import com.kyant.backdrop.catalog.data.ChatMutePreferences
+import com.kyant.backdrop.catalog.data.SettingsPreferences
+import com.kyant.backdrop.catalog.deeplink.VormexDeepLinks
 import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
 import com.kyant.backdrop.catalog.notifications.PushTokenRegistrar
 import com.kyant.backdrop.catalog.notifications.VormexMessagingService
 import com.kyant.backdrop.catalog.onboarding.AppRoot
 import com.kyant.backdrop.catalog.payments.PremiumCheckoutManager
+import com.kyant.backdrop.catalog.ui.ProvideVormexFontFamily
 import com.google.firebase.messaging.FirebaseMessaging
-import com.razorpay.PaymentData
-import com.razorpay.PaymentResultWithDataListener
 
 /**
  * Deep link navigation state from push notifications
@@ -40,13 +42,18 @@ data class NotificationDeepLink(
     val connectionId: String? = null,
     val postId: String? = null,
     val reelId: String? = null,
+    val commentId: String? = null,
+    val parentCommentId: String? = null,
     val conversationId: String? = null,
     val groupId: String? = null,
+    val groupInviteCode: String? = null,
     val referralCode: String? = null,
-    val authMode: String? = null
+    val authMode: String? = null,
+    val githubStatus: String? = null,
+    val githubMessage: String? = null
 )
 
-class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
+class MainActivity : ComponentActivity() {
     
     companion object {
         private const val TAG = "MainActivity"
@@ -89,6 +96,7 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
         
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        preferSmoothDisplayRefreshRate()
         
         // Request notification permission (Android 13+)
         requestNotificationPermission()
@@ -103,15 +111,33 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
 
         setContent {
             val isLightTheme = !isSystemInDarkTheme()
+            val fontFamilyKey by SettingsPreferences.fontFamily(this@MainActivity)
+                .collectAsState(initial = SettingsPreferences.FONT_FAMILY_SYSTEM)
 
-            CompositionLocalProvider(
-                LocalIndication provides ripple(color = if (isLightTheme) Color.Black else Color.White)
-            ) {
-                AppRoot(
-                    initialDeepLink = pendingDeepLink,
-                    onDeepLinkConsumed = { pendingDeepLink = null }
-                )
+            ProvideVormexFontFamily(fontFamilyKey) {
+                CompositionLocalProvider(
+                    LocalIndication provides ripple(color = if (isLightTheme) Color.Black else Color.White)
+                ) {
+                    AppRoot(
+                        initialDeepLink = pendingDeepLink,
+                        onDeepLinkConsumed = { pendingDeepLink = null }
+                    )
+                }
             }
+        }
+    }
+
+    private fun preferSmoothDisplayRefreshRate() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+
+        @Suppress("DEPRECATION")
+        val highestRefreshRate = windowManager.defaultDisplay.supportedModes
+            .maxOfOrNull { it.refreshRate }
+            ?.takeIf { it > 60f }
+            ?: return
+
+        window.attributes = window.attributes.apply {
+            preferredRefreshRate = highestRefreshRate
         }
     }
     
@@ -124,6 +150,7 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
     override fun onStart() {
         super.onStart()
         isInForeground = true
+        PremiumCheckoutManager.restorePurchases(applicationContext)
     }
 
     override fun onStop() {
@@ -131,33 +158,15 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
         super.onStop()
     }
 
-    override fun onPaymentSuccess(
-        razorpayPaymentId: String?,
-        paymentData: PaymentData?
-    ) {
-        PremiumCheckoutManager.handlePaymentSuccess(
-            activity = this,
-            razorpayPaymentId = razorpayPaymentId,
-            paymentData = paymentData
-        )
-    }
-
-    override fun onPaymentError(
-        code: Int,
-        response: String?,
-        paymentData: PaymentData?
-    ) {
-        PremiumCheckoutManager.handlePaymentError(
-            activity = this,
-            code = code,
-            response = response
-        )
-    }
-    
     private fun handleIntent(intent: Intent?) {
         intent ?: return
 
         intent.data?.let { uri ->
+            VormexDeepLinks.parse(uri)?.let { deepLink ->
+                pendingDeepLink = deepLink
+                return
+            }
+
             if (uri.path?.contains("agent", ignoreCase = true) == true) {
                 pendingDeepLink = NotificationDeepLink(action = "ai_agent")
                 return
@@ -180,10 +189,12 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
             val connectionId = intent.getStringExtra(VormexMessagingService.EXTRA_CONNECTION_ID)
             val postId = intent.getStringExtra(VormexMessagingService.EXTRA_POST_ID)
             val reelId = intent.getStringExtra(VormexMessagingService.EXTRA_REEL_ID)
+            val commentId = intent.getStringExtra(VormexMessagingService.EXTRA_COMMENT_ID)
+            val parentCommentId = intent.getStringExtra(VormexMessagingService.EXTRA_PARENT_COMMENT_ID)
             val conversationId = intent.getStringExtra(VormexMessagingService.EXTRA_CONVERSATION_ID)
             val groupId = intent.getStringExtra(VormexMessagingService.EXTRA_GROUP_ID)
             
-            Log.d(TAG, "Handling deep link: action=$action, userId=$userId, postId=$postId, reelId=$reelId, conversationId=$conversationId, groupId=$groupId")
+            Log.d(TAG, "Handling deep link: action=$action, userId=$userId, postId=$postId, reelId=$reelId, commentId=$commentId, conversationId=$conversationId, groupId=$groupId")
             
             pendingDeepLink = NotificationDeepLink(
                 action = action,
@@ -191,6 +202,8 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
                 connectionId = connectionId,
                 postId = postId,
                 reelId = reelId,
+                commentId = commentId,
+                parentCommentId = parentCommentId,
                 conversationId = conversationId,
                 groupId = groupId
             )

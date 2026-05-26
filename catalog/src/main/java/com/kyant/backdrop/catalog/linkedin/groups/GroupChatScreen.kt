@@ -29,8 +29,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -54,6 +55,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,14 +75,23 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.catalog.ai.VormexAiGateway
+import com.kyant.backdrop.catalog.ai.VormexAiSurface
+import com.kyant.backdrop.catalog.ai.VormexAiTextResult
+import com.kyant.backdrop.catalog.chat.isSystemEmojiOnlyMessage
 import com.kyant.backdrop.catalog.chat.shouldShowClusterMetaForGroup
+import com.kyant.backdrop.catalog.chat.systemEmojiMessageFontSizeSp
 import com.kyant.backdrop.catalog.data.ChatMutePreferences
+import com.kyant.backdrop.catalog.linkedin.VerificationBadge
+import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
+import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
 import com.kyant.backdrop.catalog.network.GroupSocketManager
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.vibrancy
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -100,8 +111,11 @@ fun GroupChatScreen(
     val context = LocalContext.current
     val viewModel: GroupsViewModel = viewModel(factory = GroupsViewModel.Factory(context))
     val chatState by viewModel.chatState.collectAsState()
+    val grammarScope = rememberCoroutineScope()
+    val aiGateway = remember { VormexAiGateway(context.applicationContext) }
     
     var messageInput by remember { mutableStateOf("") }
+    var isFixingGrammar by remember(groupId) { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val groupMuteKey = remember(groupId) { MessageNotificationManager.groupNotificationKey(groupId) }
     var muteUntilMillis by remember(groupId) {
@@ -125,6 +139,38 @@ fun GroupChatScreen(
     LaunchedEffect(chatState.messages.size) {
         if (chatState.messages.isNotEmpty()) {
             listState.animateScrollToItem(chatState.messages.size - 1)
+        }
+    }
+
+    fun fixGroupComposerGrammar() {
+        if (messageInput.isBlank() || isFixingGrammar) return
+        grammarScope.launch {
+            isFixingGrammar = true
+            val result = runCatching {
+                aiGateway.proofread(
+                    text = messageInput,
+                    surface = VormexAiSurface.CHAT,
+                    allowCloudFallback = true
+                )
+            }.getOrElse {
+                VormexAiTextResult.Failure(it.message ?: "AI failed.")
+            }
+            when (result) {
+                is VormexAiTextResult.Success -> {
+                    messageInput = result.text
+                    viewModel.sendTyping(result.text.isNotEmpty())
+                }
+                is VormexAiTextResult.NeedsDownload -> {
+                    Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
+                }
+                is VormexAiTextResult.Blocked -> {
+                    Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
+                }
+                is VormexAiTextResult.Failure -> {
+                    Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
+                }
+            }
+            isFixingGrammar = false
         }
     }
     
@@ -297,6 +343,8 @@ fun GroupChatScreen(
                 viewModel.sendTyping(it.isNotEmpty())
             },
             isSending = chatState.isSending,
+            isFixingGrammar = isFixingGrammar,
+            onFixGrammar = ::fixGroupComposerGrammar,
             onSend = {
                 if (messageInput.isNotBlank()) {
                     viewModel.sendMessage(messageInput)
@@ -477,8 +525,12 @@ private fun MessageBubble(
     onAuthorClick: () -> Unit
 ) {
     val context = LocalContext.current
+    val isEmojiOnlyMessage = !message.isDeleted &&
+        message.mediaUrl.isNullOrBlank() &&
+        isSystemEmojiOnlyMessage(message.content)
+    val emojiFontSizeSp = if (isEmojiOnlyMessage) systemEmojiMessageFontSizeSp(message.content) else 14
     val bubbleColor = if (isOwnMessage) accentColor else contentColor.copy(alpha = 0.1f)
-    val textColor = if (isOwnMessage) Color.White else contentColor
+    val textColor = if (isOwnMessage && !isEmojiOnlyMessage) Color.White else contentColor
     
     Row(
         Modifier
@@ -515,17 +567,29 @@ private fun MessageBubble(
         ) {
             // Sender name (for others)
             if (!isOwnMessage) {
-                BasicText(
-                    message.sender.name ?: message.sender.username ?: "Unknown",
-                    style = TextStyle(
-                        color = accentColor,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium
-                    ),
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
                     modifier = Modifier
                         .clickable(onClick = onAuthorClick)
                         .padding(start = 4.dp, bottom = 2.dp)
-                )
+                ) {
+                    BasicText(
+                        message.sender.name ?: message.sender.username ?: "Unknown",
+                        style = TextStyle(
+                            color = accentColor,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    VerificationBadge(
+                        verified = message.sender.hasVerificationBadge(),
+                        size = VerificationBadgeSize.Micro
+                    )
+                }
             }
             
             // Reply preview
@@ -563,7 +627,16 @@ private fun MessageBubble(
             }
             
             // Message content
-            Box(
+            val messageContentModifier = if (isEmojiOnlyMessage) {
+                Modifier
+                    .widthIn(max = 280.dp)
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onLongPress = { onLongPress() }
+                        )
+                    }
+                    .padding(horizontal = 2.dp, vertical = 1.dp)
+            } else {
                 Modifier
                     .widthIn(max = 280.dp)
                     .background(
@@ -581,6 +654,10 @@ private fun MessageBubble(
                         )
                     }
                     .padding(horizontal = 12.dp, vertical = 8.dp)
+            }
+
+            Box(
+                messageContentModifier
             ) {
                 Column {
                     // Media content
@@ -651,10 +728,18 @@ private fun MessageBubble(
                     if (message.content.isNotEmpty()) {
                         BasicText(
                             message.content,
-                            style = TextStyle(
-                                color = textColor,
-                                fontSize = 14.sp
-                            )
+                            style = if (isEmojiOnlyMessage) {
+                                TextStyle(
+                                    color = textColor,
+                                    fontSize = emojiFontSizeSp.sp,
+                                    lineHeight = (emojiFontSizeSp + 4).sp
+                                )
+                            } else {
+                                TextStyle(
+                                    color = textColor,
+                                    fontSize = 14.sp
+                                )
+                            }
                         )
                     }
                     
@@ -663,7 +748,11 @@ private fun MessageBubble(
                         BasicText(
                             formatTime(message.createdAt),
                             style = TextStyle(
-                                color = textColor.copy(alpha = 0.6f),
+                                color = if (isEmojiOnlyMessage) {
+                                    contentColor.copy(alpha = 0.5f)
+                                } else {
+                                    textColor.copy(alpha = 0.6f)
+                                },
                                 fontSize = 10.sp
                             ),
                             modifier = Modifier.align(Alignment.End)
@@ -713,8 +802,12 @@ private fun ChatInputBar(
     value: String,
     onValueChange: (String) -> Unit,
     isSending: Boolean,
+    isFixingGrammar: Boolean,
+    onFixGrammar: () -> Unit,
     onSend: () -> Unit
 ) {
+    val canFixGrammar = value.isNotBlank() && !isSending && !isFixingGrammar
+
     Row(
         Modifier
             .fillMaxWidth()
@@ -772,6 +865,36 @@ private fun ChatInputBar(
             )
         }
         
+        Spacer(Modifier.width(8.dp))
+
+        // Grammar fix button
+        Box(
+            Modifier
+                .size(40.dp)
+                .background(
+                    if (canFixGrammar) accentColor.copy(alpha = 0.2f) else contentColor.copy(alpha = 0.08f),
+                    CircleShape
+                )
+                .clip(CircleShape)
+                .clickable(enabled = canFixGrammar, onClick = onFixGrammar),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isFixingGrammar) {
+                CircularProgressIndicator(
+                    color = accentColor,
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp
+                )
+            } else {
+                Icon(
+                    Icons.Outlined.AutoAwesome,
+                    contentDescription = "Fix grammar",
+                    tint = if (value.isNotBlank()) accentColor else contentColor.copy(alpha = 0.4f),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+
         Spacer(Modifier.width(8.dp))
         
         // Send button

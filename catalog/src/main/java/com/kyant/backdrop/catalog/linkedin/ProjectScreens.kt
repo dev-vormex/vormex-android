@@ -28,8 +28,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -849,32 +849,13 @@ fun ProjectDetailScreen(
     val appearance = currentVormexAppearance(themeMode)
     val isGlassTheme = appearance.isGlassTheme
     val isDarkTheme = appearance.isDarkTheme
-    val heroAccent = if (project.featured) Color(0xFFFFD66B) else accentColor
-    val surfaceBorder = if (project.featured) heroAccent.copy(alpha = 0.26f) else contentColor.copy(alpha = 0.1f)
     val baseBackground = when {
         isDarkTheme -> Color(0xFF101318)
         isGlassTheme -> Color(0xFFF2F6FA)
         else -> Color(0xFFF9FAFC)
     }
-    val backgroundBrush = Brush.verticalGradient(
-        colors = when {
-            isDarkTheme -> listOf(
-                accentColor.copy(alpha = 0.22f),
-                Color(0xFF161C25),
-                baseBackground
-            )
-            isGlassTheme -> listOf(
-                accentColor.copy(alpha = 0.14f),
-                Color.White.copy(alpha = 0.34f),
-                baseBackground
-            )
-            else -> listOf(
-                accentColor.copy(alpha = 0.12f),
-                Color.White.copy(alpha = 0.72f),
-                baseBackground
-            )
-        }
-    )
+    val subtleLineColor = contentColor.copy(alpha = if (isDarkTheme) 0.12f else 0.09f)
+    val mutedTextColor = contentColor.copy(alpha = 0.58f)
     val timelineLabel = projectDetailTimeline(project)
     val detailLinks = buildList {
         project.projectUrl?.takeIf { it.isNotBlank() }?.let { url ->
@@ -883,7 +864,7 @@ fun ProjectDetailScreen(
                     title = "Live experience",
                     subtitle = projectLinkHost(url),
                     iconRes = R.drawable.ic_open_in_browser,
-                    tint = heroAccent,
+                    tint = contentColor,
                     url = url,
                     isPrimary = true
                 )
@@ -914,77 +895,50 @@ fun ProjectDetailScreen(
                 )
             }
     }
-    val overviewItems = buildList {
-        project.role?.takeIf { it.isNotBlank() }?.let { role ->
-            add(
-                ProjectDetailOverviewItem(
-                    label = "Role",
-                    value = role,
-                    iconRes = R.drawable.ic_work,
-                    tint = heroAccent
-                )
-            )
-        }
-        add(
-            ProjectDetailOverviewItem(
-                label = "Timeline",
-                value = timelineLabel,
-                iconRes = R.drawable.ic_calendar,
-                tint = contentColor.copy(alpha = 0.72f)
-            )
-        )
-        add(
-            ProjectDetailOverviewItem(
-                label = "Status",
-                value = if (project.isCurrent) "Active now" else "Completed",
-                iconRes = if (project.isCurrent) R.drawable.ic_check else R.drawable.ic_sparkles,
-                tint = if (project.isCurrent) heroAccent else contentColor.copy(alpha = 0.72f)
-            )
-        )
-        if (project.images.isNotEmpty()) {
-            add(
-                ProjectDetailOverviewItem(
-                    label = "Media",
-                    value = "${project.images.size} visual${if (project.images.size > 1) "s" else ""}",
-                    iconRes = R.drawable.ic_image,
-                    tint = contentColor.copy(alpha = 0.72f)
-                )
-            )
-        }
-        if (detailLinks.isNotEmpty()) {
-            add(
-                ProjectDetailOverviewItem(
-                    label = "Links",
-                    value = "${detailLinks.size} destination${if (detailLinks.size > 1) "s" else ""}",
-                    iconRes = R.drawable.ic_link,
-                    tint = contentColor.copy(alpha = 0.72f)
-                )
-            )
-        }
-    }
-
     Box(
         Modifier
             .fillMaxSize()
             .background(baseBackground)
-            .background(backgroundBrush)
     ) {
         Column(
             Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
         ) {
-            ProjectDetailSurface(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, top = 16.dp),
-                backdrop = backdrop,
-                borderColor = surfaceBorder
+                    .padding(horizontal = 18.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(22.dp)
             ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ProjectDetailPlainAction(
+                        iconRes = R.drawable.ic_back,
+                        label = "Back",
+                        contentColor = contentColor,
+                        onClick = onBack
+                    )
+
+                    if (isOwner) {
+                        ProjectDetailPlainAction(
+                            iconRes = R.drawable.ic_edit,
+                            label = "Edit",
+                            contentColor = contentColor,
+                            onClick = onEdit
+                        )
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .aspectRatio(16f / 10f)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(contentColor.copy(alpha = 0.045f))
+                        .aspectRatio(16f / 9f)
                 ) {
                     if (project.images.isNotEmpty()) {
                         AsyncImage(
@@ -997,187 +951,125 @@ fun ProjectDetailScreen(
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(
-                                    Brush.linearGradient(
-                                        colors = listOf(
-                                            heroAccent.copy(alpha = 0.42f),
-                                            accentColor.copy(alpha = 0.2f),
-                                            contentColor.copy(alpha = 0.08f)
-                                        )
-                                    )
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Image(
-                                painter = painterResource(
-                                    when {
-                                        !project.githubUrl.isNullOrBlank() -> R.drawable.ic_code
-                                        !project.projectUrl.isNullOrBlank() -> R.drawable.ic_globe
-                                        else -> R.drawable.ic_work
-                                    }
-                                ),
-                                contentDescription = null,
-                                modifier = Modifier.size(48.dp),
-                                colorFilter = ColorFilter.tint(heroAccent)
-                            )
-                        }
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color.Black.copy(alpha = 0.14f),
-                                        Color.Transparent,
-                                        Color.Black.copy(alpha = 0.46f)
-                                    )
-                                )
-                            )
-                    )
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        ProjectDetailHeroButton(
-                            label = "Back",
-                            onClick = onBack
-                        )
-
-                        if (isOwner) {
-                            ProjectDetailHeroButton(
-                                iconRes = R.drawable.ic_edit,
-                                label = "Edit",
-                                onClick = onEdit
-                            )
-                        }
-                    }
-
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            if (project.featured) {
-                                ProjectDetailBadge(
-                                    iconRes = R.drawable.ic_sparkles,
-                                    label = "Featured",
-                                    tint = heroAccent,
-                                    background = Color.Black.copy(alpha = 0.28f)
-                                )
-                            }
-                            if (project.isCurrent) {
-                                ProjectDetailBadge(
-                                    iconRes = R.drawable.ic_check,
-                                    label = "Active",
-                                    tint = Color.White,
-                                    background = Color.White.copy(alpha = 0.14f)
-                                )
-                            }
-                        }
-
-                        BasicText(
-                            text = project.name,
-                            style = TextStyle(Color.White, 28.sp, FontWeight.Bold),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-
-                        project.role?.takeIf { it.isNotBlank() }?.let { role ->
-                            BasicText(
-                                text = role,
-                                style = TextStyle(
-                                    color = Color.White.copy(alpha = 0.88f),
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium
-                                ),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        BasicText(
-                            text = timelineLabel,
-                            style = TextStyle(
-                                color = Color.White.copy(alpha = 0.7f),
-                                fontSize = 12.sp
+                        Image(
+                            painter = painterResource(
+                                when {
+                                    !project.githubUrl.isNullOrBlank() -> R.drawable.ic_code
+                                    !project.projectUrl.isNullOrBlank() -> R.drawable.ic_globe
+                                    else -> R.drawable.ic_work
+                                }
                             ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            contentDescription = null,
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .size(42.dp),
+                            colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.42f))
                         )
                     }
                 }
-            }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                ProjectDetailSectionSurface(
-                    title = "Overview",
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    borderColor = surfaceBorder
-                ) {
-                    ProjectDetailOverviewBlock(
-                        project = project,
-                        overviewItems = overviewItems,
-                        contentColor = contentColor,
-                        accentColor = heroAccent
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BasicText(
+                            text = if (project.isCurrent) "Active" else "Completed",
+                            style = TextStyle(
+                                color = mutedTextColor,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        )
+                        if (project.featured) {
+                            Box(
+                                Modifier
+                                    .width(4.dp)
+                                    .height(4.dp)
+                                    .clip(CircleShape)
+                                    .background(mutedTextColor)
+                            )
+                            BasicText(
+                                text = "Featured",
+                                style = TextStyle(
+                                    color = mutedTextColor,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+                    }
+
+                    BasicText(
+                        text = project.name,
+                        style = TextStyle(
+                            color = contentColor,
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold,
+                            lineHeight = 34.sp
+                        ),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
                     )
+                }
+
+                Column {
+                    project.role?.takeIf { it.isNotBlank() }?.let { role ->
+                        ProjectDetailPlainInfoRow(
+                            iconRes = R.drawable.ic_work,
+                            label = "Role",
+                            value = role,
+                            contentColor = contentColor,
+                            lineColor = subtleLineColor
+                        )
+                    }
+                    ProjectDetailPlainInfoRow(
+                        iconRes = R.drawable.ic_calendar,
+                        label = "Timeline",
+                        value = timelineLabel.ifBlank { "Timeline not set" },
+                        contentColor = contentColor,
+                        lineColor = subtleLineColor
+                    )
+                    if (project.images.isNotEmpty()) {
+                        ProjectDetailPlainInfoRow(
+                            iconRes = R.drawable.ic_image,
+                            label = "Media",
+                            value = "${project.images.size} visual${if (project.images.size > 1) "s" else ""}",
+                            contentColor = contentColor,
+                            lineColor = subtleLineColor
+                        )
+                    }
                 }
 
                 if (project.description.isNotBlank()) {
-                    ProjectDetailSectionSurface(
-                        title = "About this project",
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        borderColor = surfaceBorder
+                    ProjectDetailPlainSection(
+                        title = "About",
+                        contentColor = contentColor
                     ) {
                         BasicText(
                             text = project.description,
                             style = TextStyle(
-                                color = contentColor.copy(alpha = 0.84f),
-                                fontSize = 14.sp,
-                                lineHeight = 21.sp
+                                color = contentColor.copy(alpha = 0.82f),
+                                fontSize = 15.sp,
+                                lineHeight = 23.sp
                             )
                         )
                     }
                 }
 
                 if (project.techStack.isNotEmpty()) {
-                    ProjectDetailSectionSurface(
+                    ProjectDetailPlainSection(
                         title = "Stack",
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        borderColor = surfaceBorder
+                        contentColor = contentColor
                     ) {
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             project.techStack.forEach { tech ->
-                                ProjectDetailBadge(
-                                    iconRes = R.drawable.ic_code,
-                                    label = tech,
-                                    tint = heroAccent,
-                                    background = heroAccent.copy(alpha = 0.12f),
-                                    textColor = contentColor
+                                ProjectDetailPlainTag(
+                                    text = tech,
+                                    contentColor = contentColor
                                 )
                             }
                         }
@@ -1185,36 +1077,36 @@ fun ProjectDetailScreen(
                 }
 
                 if (detailLinks.isNotEmpty()) {
-                    ProjectDetailSectionSurface(
-                        title = "Explore",
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        borderColor = surfaceBorder
+                    ProjectDetailPlainSection(
+                        title = "Links",
+                        contentColor = contentColor
                     ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            detailLinks.forEach { link ->
-                                ProjectDetailLinkRow(
+                        Column {
+                            detailLinks.forEachIndexed { index, link ->
+                                ProjectDetailPlainLinkRow(
                                     link = link,
                                     contentColor = contentColor,
+                                    lineColor = subtleLineColor,
                                     onClick = {
                                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link.url)))
                                     }
                                 )
+                                if (index != detailLinks.lastIndex) {
+                                    ProjectDetailPlainDivider(subtleLineColor)
+                                }
                             }
                         }
                     }
                 }
 
                 if (project.images.size > 1) {
-                    ProjectDetailSectionSurface(
+                    ProjectDetailPlainSection(
                         title = "Gallery",
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        borderColor = surfaceBorder
+                        contentColor = contentColor
                     ) {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             items(project.images.drop(1)) { imageUrl ->
-                                ProjectDetailGalleryCard(
+                                ProjectDetailPlainGalleryImage(
                                     imageUrl = imageUrl,
                                     projectName = project.name
                                 )
@@ -1223,10 +1115,236 @@ fun ProjectDetailScreen(
                     }
                 }
 
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(20.dp))
             }
         }
     }
+}
+
+@Composable
+private fun ProjectDetailPlainAction(
+    iconRes: Int,
+    label: String,
+    contentColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .background(contentColor.copy(alpha = 0.055f))
+            .padding(horizontal = 11.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Image(
+            painter = painterResource(iconRes),
+            contentDescription = label,
+            modifier = Modifier.size(14.dp),
+            colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.82f))
+        )
+        BasicText(
+            text = label,
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.86f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+    }
+}
+
+@Composable
+private fun ProjectDetailPlainSection(
+    title: String,
+    contentColor: Color,
+    content: @Composable () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        BasicText(
+            text = title,
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+        content()
+    }
+}
+
+@Composable
+private fun ProjectDetailPlainInfoRow(
+    iconRes: Int,
+    label: String,
+    value: String,
+    contentColor: Color,
+    lineColor: Color
+) {
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 13.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Image(
+                painter = painterResource(iconRes),
+                contentDescription = label,
+                modifier = Modifier.size(18.dp),
+                colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.55f))
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                BasicText(
+                    text = label,
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.5f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+                BasicText(
+                    text = value,
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.9f),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        ProjectDetailPlainDivider(lineColor)
+    }
+}
+
+@Composable
+private fun ProjectDetailPlainTag(
+    text: String,
+    contentColor: Color
+) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(9.dp))
+            .background(contentColor.copy(alpha = 0.055f))
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .width(2.dp)
+                .height(12.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(contentColor.copy(alpha = 0.44f))
+        )
+        BasicText(
+            text = text,
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.82f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun ProjectDetailPlainLinkRow(
+    link: ProjectDetailLinkEntry,
+    contentColor: Color,
+    lineColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Image(
+            painter = painterResource(link.iconRes),
+            contentDescription = link.title,
+            modifier = Modifier.size(18.dp),
+            colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.58f))
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            BasicText(
+                text = link.title,
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.9f),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            BasicText(
+                text = link.subtitle,
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.5f),
+                    fontSize = 12.sp
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        BasicText(
+            text = "Open",
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.62f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+    }
+}
+
+@Composable
+private fun ProjectDetailPlainDivider(color: Color) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(color)
+    )
+}
+
+@Composable
+private fun ProjectDetailPlainGalleryImage(
+    imageUrl: String,
+    projectName: String
+) {
+    val context = LocalContext.current
+
+    AsyncImage(
+        model = ImageRequest.Builder(context)
+            .data(imageUrl)
+            .crossfade(true)
+            .build(),
+        contentDescription = projectName,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier
+            .height(132.dp)
+            .aspectRatio(16f / 10f)
+            .clip(RoundedCornerShape(14.dp))
+    )
 }
 
 private data class ProjectDetailOverviewItem(

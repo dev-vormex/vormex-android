@@ -17,10 +17,12 @@ import com.kyant.backdrop.catalog.chat.cache.CachedMessagesSnapshot
 import com.kyant.backdrop.catalog.chat.cache.ChatCacheRepository
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.ChatSocketManager
+import com.kyant.backdrop.catalog.network.models.ChatUser
 import com.kyant.backdrop.catalog.network.models.Conversation
 import com.kyant.backdrop.catalog.network.models.ConversationLastMessage
 import com.kyant.backdrop.catalog.network.models.Message
 import com.kyant.backdrop.catalog.network.models.MessageReaction
+import com.kyant.backdrop.catalog.network.models.MessagesResponse
 import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -41,6 +43,9 @@ import java.util.TimeZone
 private const val TAG = "ChatViewModel"
 private const val OUTGOING_TYPING_STOP_DELAY_MS = 3_000L
 private const val OUTGOING_TYPING_HEARTBEAT_MS = 1_500L
+private const val REFRESH_CONVERSATIONS_DEBOUNCE_MS = 500L
+private const val UNREAD_COUNT_DEBOUNCE_MS = 1_000L
+private const val REFRESH_CONVERSATIONS_MIN_INTERVAL_MS = 2_000L
 
 enum class ChatThreadReadyState {
     CACHED_READY,
@@ -76,7 +81,8 @@ data class ChatUiState(
     val isUploadingAttachment: Boolean = false,
     val attachmentUploadError: String? = null,
     val isRecordingVoice: Boolean = false,
-    val threadReadyState: ChatThreadReadyState = ChatThreadReadyState.EMPTY_THREAD
+    val threadReadyState: ChatThreadReadyState = ChatThreadReadyState.EMPTY_THREAD,
+    val initialDraftMessage: String? = null
 )
 
 class ChatViewModel(private val context: Context) : ViewModel() {
@@ -93,23 +99,16 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     private var preloadJob: Job? = null
     private var typingIndicatorTimeoutJob: Job? = null
     private var outgoingTypingStopJob: Job? = null
+    private val readReceiptJobs = mutableMapOf<String, Job>()
     private var hasLoadedConversations: Boolean = false
     private var conversationsLastLoadedAt: Long = 0L
     private var lastPreloadedUserId: String? = null
-    private val conversationsCacheTtlMs: Long = 90_000L
     private var isOutgoingTyping = false
     private var outgoingTypingConversationId: String? = null
     private var lastOutgoingTypingSentAt: Long = 0L
-
-    private data class CachedConversationMessages(
-        val messages: List<Message>,
-        val nextCursor: String?,
-        val hasMore: Boolean,
-        val cachedAt: Long
-    )
-
-    private val messagesCacheByConversation = mutableMapOf<String, CachedConversationMessages>()
-    private val messagesCacheTtlMs: Long = 2 * 60_000L
+    private var refreshConversationsJob: Job? = null
+    private var lastRefreshConversationsAt: Long = 0L
+    private var loadUnreadCountJob: Job? = null
     private val isoFormatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
         timeZone = TimeZone.getTimeZone("UTC")
     }
@@ -122,16 +121,39 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         viewModelScope.launch {
             val token = ApiClient.getToken(context)
             val userId = ApiClient.getCurrentUserId(context)
+            ChatSocketManager.currentUserId = userId
+            _uiState.update { it.copy(currentUserId = userId) }
+            userId?.let { hydrateCachedConversations(it) }
             if (!token.isNullOrEmpty()) {
                 ChatSocketManager.connect(token)
+                ChatSocketManager.currentUserId = userId
             } else {
                 Log.w(TAG, "No token available, socket not connected")
             }
-            ChatSocketManager.currentUserId = userId
-            _uiState.update { it.copy(currentUserId = userId) }
         }
         collectSocketEvents()
         collectConnectionState()
+    }
+
+    fun onSessionChanged(currentUserId: String?) {
+        viewModelScope.launch {
+            val normalizedUserId = currentUserId?.takeIf { it.isNotBlank() }
+            if (_uiState.value.currentUserId != normalizedUserId) {
+                resetForSession(normalizedUserId)
+            }
+
+            if (normalizedUserId == null) {
+                ChatSocketManager.resetSession()
+                return@launch
+            }
+
+            ChatSocketManager.currentUserId = normalizedUserId
+            hydrateCachedConversations(normalizedUserId)
+            ApiClient.getToken(context)?.takeIf { it.isNotBlank() }?.let { token ->
+                ChatSocketManager.connect(token)
+                ChatSocketManager.currentUserId = normalizedUserId
+            }
+        }
     }
 
     private fun collectConnectionState() {
@@ -149,12 +171,17 @@ class ChatViewModel(private val context: Context) : ViewModel() {
             ChatSocketManager.newMessageFlow.collect { (conversationId, messageJson) ->
                 try {
                     val message = json.decodeFromString(Message.serializer(), messageJson)
-                    val currentUserId = ensureCurrentUserId()
+                    val currentUserId = _uiState.value.currentUserId?.takeIf { it.isNotBlank() }
+                        ?: ensureCurrentUserId()
+                        ?: ChatSocketManager.currentUserId?.takeIf { it.isNotBlank() }
+                    if (!currentUserId.isNullOrBlank() && _uiState.value.currentUserId != currentUserId) {
+                        _uiState.update { it.copy(currentUserId = currentUserId) }
+                    }
                     val isSelectedConversation = _uiState.value.selectedConversation?.id == conversationId
                     var conversationKnown = false
 
                     if (isSelectedConversation) {
-                        if (message.senderId != _uiState.value.currentUserId) {
+                        if (message.senderId != currentUserId) {
                             markAsRead()
                         }
                         _uiState.update { state ->
@@ -180,20 +207,20 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                             incrementUnread = false
                         )
                     } else {
-                        currentUserId?.let {
-                            chatCacheRepository.upsertIncomingMessage(
-                                cacheOwnerId = it,
-                                conversationId = conversationId,
-                                message = message,
-                                currentUserId = _uiState.value.currentUserId,
-                                incrementUnread = true
-                            )
-                        }
                         conversationKnown = applyConversationPreviewFromMessage(
                             conversationId = conversationId,
                             message = message,
                             incrementUnread = true
                         )
+                        currentUserId?.let {
+                            chatCacheRepository.upsertIncomingMessage(
+                                cacheOwnerId = it,
+                                conversationId = conversationId,
+                                message = message,
+                                currentUserId = currentUserId,
+                                incrementUnread = true
+                            )
+                        }
                     }
 
                     if (conversationKnown) {
@@ -368,7 +395,6 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 val currentUserId = ensureCurrentUserId()
                 stopOutgoingTyping()
                 clearTypingIndicator()
-                messagesCacheByConversation.clear()
                 hasLoadedConversations = true
                 conversationsLastLoadedAt = System.currentTimeMillis()
                 ChatSocketManager.activeConversationId = null
@@ -408,7 +434,11 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         viewModelScope.launch {
             val token = ApiClient.getToken(context)
             if (!token.isNullOrEmpty()) {
-                ChatSocketManager.reconnectIfNeeded()
+                if (ChatSocketManager.isConnected()) {
+                    ChatSocketManager.reconnectIfNeeded()
+                } else {
+                    ChatSocketManager.connect(token)
+                }
             }
         }
     }
@@ -422,56 +452,19 @@ class ChatViewModel(private val context: Context) : ViewModel() {
             ChatSocketManager.connect(token)
 
             val currentUserId = ensureCurrentUserId() ?: return@launch
-            if (_uiState.value.conversations.isEmpty()) {
-                hydrateCachedConversations(currentUserId)
-            }
-
-            val now = System.currentTimeMillis()
-            val shouldRefresh =
-                forceRefresh ||
-                currentUserId != lastPreloadedUserId ||
-                _uiState.value.conversations.isEmpty() ||
-                (now - conversationsLastLoadedAt) >= conversationsCacheTtlMs
-
             lastPreloadedUserId = currentUserId
-            if (shouldRefresh) {
-                loadConversationsInternal(
-                    cacheOwnerId = currentUserId,
-                    prefetchRecentMessages = true
-                )
-            } else {
-                loadUnreadAndRequestsCount()
-                runCatching {
-                    chatCacheRepository.prefetchRecentMessages(
-                        cacheOwnerId = currentUserId,
-                        conversations = _uiState.value.conversations
-                    )
-                }.onFailure { error ->
-                    Log.w(TAG, "Failed to prefetch cached chats", error)
-                }
-            }
+            loadConversationsInternal(
+                cacheOwnerId = currentUserId,
+                prefetchRecentMessages = true,
+                forceRefresh = forceRefresh
+            )
         }
     }
 
     fun ensureConversationsLoaded(forceRefresh: Boolean = false) {
         viewModelScope.launch {
             val currentUserId = ensureCurrentUserId() ?: return@launch
-            if (_uiState.value.conversations.isEmpty()) {
-                hydrateCachedConversations(currentUserId)
-            }
-
-            val now = System.currentTimeMillis()
-            val hasFreshCache =
-                hasLoadedConversations &&
-                _uiState.value.conversations.isNotEmpty() &&
-                (now - conversationsLastLoadedAt) < conversationsCacheTtlMs
-
-            if (!forceRefresh && hasFreshCache) {
-                loadUnreadAndRequestsCount()
-                return@launch
-            }
-
-            loadConversationsInternal(cacheOwnerId = currentUserId)
+            loadConversationsInternal(cacheOwnerId = currentUserId, forceRefresh = forceRefresh)
         }
     }
 
@@ -503,88 +496,38 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     error = null,
                     isLoadingMessages = false,
                     isLoadingMoreMessages = false,
-                    threadReadyState = ChatThreadReadyState.EMPTY_THREAD
+                    threadReadyState = ChatThreadReadyState.EMPTY_THREAD,
+                    initialDraftMessage = null
                 )
             }
             return
         }
 
-        val inMemoryCache = messagesCacheByConversation[conversation.id]
-        val hasFreshInMemoryCache = inMemoryCache != null &&
-            (System.currentTimeMillis() - inMemoryCache.cachedAt) < messagesCacheTtlMs
-        val freshInMemoryCache = inMemoryCache?.takeIf { hasFreshInMemoryCache }
-
         _uiState.update {
             it.copy(
                 selectedConversation = conversation,
                 isResolvingConversationOpen = false,
-                messages = freshInMemoryCache?.messages.orEmpty(),
-                messagesNextCursor = freshInMemoryCache?.nextCursor,
-                hasMoreMessages = freshInMemoryCache?.hasMore ?: false,
+                messages = emptyList(),
+                messagesNextCursor = null,
+                hasMoreMessages = false,
                 typingUserId = null,
                 error = null,
-                isLoadingMessages = !hasFreshInMemoryCache,
+                isLoadingMessages = true,
                 isLoadingMoreMessages = false,
-                threadReadyState = when {
-                    freshInMemoryCache?.messages?.isNotEmpty() == true -> ChatThreadReadyState.CACHED_READY
-                    hasFreshInMemoryCache -> ChatThreadReadyState.EMPTY_THREAD
-                    else -> ChatThreadReadyState.LOADING_WITHOUT_CACHE
-                }
+                initialDraftMessage = null,
+                threadReadyState = ChatThreadReadyState.LOADING_WITHOUT_CACHE
             )
         }
 
         ChatSocketManager.joinChat(conversation.id)
+        ensureSocketConnected()
 
         viewModelScope.launch {
-            ApiClient.markAsRead(context, conversation.id)
-                .onFailure { ChatSocketManager.markRead(conversation.id) }
             val currentUserId = ensureCurrentUserId()
-            currentUserId?.let {
-                chatCacheRepository.markConversationRead(it, conversation.id)
-            }
-
-            val cachedSnapshot = if (!hasFreshInMemoryCache && !currentUserId.isNullOrBlank()) {
-                hydrateCachedMessages(currentUserId, conversation.id)
-            } else {
-                null
-            }
-            val hasFreshLocalSnapshot = cachedSnapshot != null &&
-                (System.currentTimeMillis() - cachedSnapshot.cachedAt) < messagesCacheTtlMs
-
-            if (cachedSnapshot != null && _uiState.value.selectedConversation?.id == conversation.id) {
-                _uiState.update { state ->
-                    state.copy(
-                        messages = cachedSnapshot.messages,
-                        messagesNextCursor = cachedSnapshot.nextCursor,
-                        hasMoreMessages = cachedSnapshot.hasMore,
-                        isLoadingMessages = false,
-                        error = null,
-                        threadReadyState = when {
-                            cachedSnapshot.messages.isNotEmpty() -> ChatThreadReadyState.CACHED_READY
-                            hasFreshLocalSnapshot -> ChatThreadReadyState.EMPTY_THREAD
-                            else -> ChatThreadReadyState.LOADING_WITHOUT_CACHE
-                        }
-                    )
-                }
-            }
-
-            val shouldLoadFromNetwork =
-                (!hasFreshInMemoryCache && !hasFreshLocalSnapshot) ||
-                    (_uiState.value.messages.isEmpty() && conversation.lastMessage != null)
-
-            if (shouldLoadFromNetwork) {
-                loadMessages(conversation.id)
-            } else {
-                _uiState.update {
-                    it.copy(
-                        isLoadingMessages = false,
-                        threadReadyState = resolveThreadReadyState(
-                            messages = it.messages,
-                            fromCache = true
-                        )
-                    )
-                }
-            }
+            currentUserId?.let { hydrateCachedMessages(it, conversation.id) }
+            markConversationReadLocally(conversation.id)
+            markAsRead(immediate = true)
+            loadMessages(conversation.id)
         }
     }
 
@@ -594,15 +537,19 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         loadMessagesJob?.cancel()
         loadMessagesJob = viewModelScope.launch {
             val currentUserId = ensureCurrentUserId() ?: return@launch
+            if (cursor == null && _uiState.value.messages.isEmpty()) {
+                hydrateCachedMessages(currentUserId, conversationId)
+            }
             if (cursor == null) {
                 _uiState.update {
+                    val hasCachedMessages = it.messages.isNotEmpty()
                     it.copy(
-                        isLoadingMessages = true,
+                        isLoadingMessages = !hasCachedMessages,
                         error = null,
-                        threadReadyState = if (it.messages.isEmpty()) {
-                            ChatThreadReadyState.LOADING_WITHOUT_CACHE
-                        } else {
+                        threadReadyState = if (hasCachedMessages) {
                             it.threadReadyState
+                        } else {
+                            ChatThreadReadyState.LOADING_WITHOUT_CACHE
                         }
                     )
                 }
@@ -619,7 +566,10 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 .onSuccess { response ->
                     _uiState.update { state ->
                         val updatedMessages = if (cursor == null) {
-                            dedupeAndSortByCreatedAt(response.messages)
+                            mergeRefreshedMessagesWithLocalState(
+                                currentMessages = state.messages,
+                                refreshedMessages = response.messages
+                            )
                         } else {
                             dedupeAndSortByCreatedAt(state.messages + response.messages)
                         }
@@ -627,8 +577,16 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                             messages = updatedMessages,
                             isLoadingMessages = false,
                             isLoadingMoreMessages = false,
-                            hasMoreMessages = response.hasMore,
-                            messagesNextCursor = response.nextCursor,
+                            hasMoreMessages = resolveHasMoreAfterRefresh(
+                                state = state,
+                                response = response,
+                                cursor = cursor
+                            ),
+                            messagesNextCursor = resolveNextCursorAfterRefresh(
+                                state = state,
+                                response = response,
+                                cursor = cursor
+                            ),
                             error = null,
                             threadReadyState = resolveThreadReadyState(
                                 messages = updatedMessages,
@@ -643,7 +601,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                         it.copy(
                             isLoadingMessages = false,
                             isLoadingMoreMessages = false,
-                            error = error.message,
+                            error = if (it.messages.isEmpty()) error.message else null,
                             threadReadyState = if (it.messages.isEmpty()) {
                                 ChatThreadReadyState.EMPTY_THREAD
                             } else {
@@ -675,7 +633,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         replyToId: String? = null
     ) {
         val conversation = _uiState.value.selectedConversation ?: return
-        val currentUserId = _uiState.value.currentUserId.orEmpty()
+        val currentUserId = conversation.currentParticipantId(_uiState.value.currentUserId).orEmpty()
         val contentType = when {
             mimeType.startsWith("image/") -> "image"
             mimeType.startsWith("video/") -> "video"
@@ -693,6 +651,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         val optimisticFileSize = fileSize?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt()
         val optimisticMessage = Message(
             id = pendingId,
+            clientMessageId = pendingId,
             conversationId = conversation.id,
             senderId = currentUserId,
             receiverId = conversation.otherParticipant.id,
@@ -717,6 +676,8 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
 
         viewModelScope.launch {
+            persistSelectedConversationSnapshot()
+
             ApiClient.uploadChatMedia(
                 context = context,
                 uri = uri,
@@ -734,17 +695,18 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     }
                 }
 
-                ApiClient.sendMessage(
-                    context,
-                    conversation.id,
-                    content,
-                    contentType,
+                sendMessageReliable(
+                    conversationId = conversation.id,
+                    content = content,
+                    contentType = contentType,
                     mediaUrl = upload.mediaUrl,
                     mediaType = upload.mediaType,
                     fileName = upload.fileName,
                     fileSize = upload.fileSize,
-                    replyToId = replyToId
+                    replyToId = replyToId,
+                    clientMessageId = pendingId
                 ).onSuccess { message ->
+                    reconcileCurrentUserIdFromSentMessage(conversation, message)
                     _uiState.update { state ->
                         val withoutPending = state.messages.filterNot { it.id == pendingId }
                         state.copy(
@@ -763,11 +725,26 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 }.onFailure { error ->
                     _uiState.update { state ->
                         state.copy(
-                            messages = state.messages.filterNot { it.id == pendingId },
+                            messages = state.messages.map { current ->
+                                if (current.id == pendingId) {
+                                    current.copy(
+                                        content = content,
+                                        mediaUrl = upload.mediaUrl,
+                                        mediaType = upload.mediaType,
+                                        fileName = upload.fileName,
+                                        fileSize = upload.fileSize,
+                                        status = "FAILED",
+                                        updatedAt = isoFormatter.format(Date())
+                                    )
+                                } else {
+                                    current
+                                }
+                            },
                             isUploadingAttachment = false,
                             attachmentUploadError = error.message
                         )
                     }
+                    persistSelectedConversationSnapshot()
                 }
             }.onFailure { error ->
                 _uiState.update { state ->
@@ -777,6 +754,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                         attachmentUploadError = error.message
                     )
                 }
+                persistSelectedConversationSnapshot()
             }
         }
     }
@@ -790,7 +768,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         replyToId: String? = null
     ) {
         val conversation = _uiState.value.selectedConversation ?: return
-        val currentUserId = _uiState.value.currentUserId.orEmpty()
+        val currentUserId = conversation.currentParticipantId(_uiState.value.currentUserId).orEmpty()
         val contentType = when {
             mimeType.startsWith("image/") -> "image"
             mimeType.startsWith("video/") -> "video"
@@ -807,6 +785,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         val nowIso = isoFormatter.format(Date())
         val optimisticMessage = Message(
             id = pendingId,
+            clientMessageId = pendingId,
             conversationId = conversation.id,
             senderId = currentUserId,
             receiverId = conversation.otherParticipant.id,
@@ -831,6 +810,8 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
 
         viewModelScope.launch {
+            persistSelectedConversationSnapshot()
+
             ApiClient.uploadChatMedia(context, fileBytes, fileName, mimeType)
                 .onSuccess { upload ->
                     val content = caption.ifBlank {
@@ -842,17 +823,18 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                         }
                     }
 
-                    ApiClient.sendMessage(
-                        context,
-                        conversation.id,
-                        content,
-                        contentType,
+                    sendMessageReliable(
+                        conversationId = conversation.id,
+                        content = content,
+                        contentType = contentType,
                         mediaUrl = upload.mediaUrl,
                         mediaType = upload.mediaType,
                         fileName = upload.fileName,
                         fileSize = upload.fileSize,
-                        replyToId = replyToId
+                        replyToId = replyToId,
+                        clientMessageId = pendingId
                     ).onSuccess { message ->
+                        reconcileCurrentUserIdFromSentMessage(conversation, message)
                         _uiState.update { state ->
                             val withoutPending = state.messages.filterNot { it.id == pendingId }
                             state.copy(
@@ -871,11 +853,26 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     }.onFailure { error ->
                         _uiState.update { state ->
                             state.copy(
-                                messages = state.messages.filterNot { it.id == pendingId },
+                                messages = state.messages.map { current ->
+                                    if (current.id == pendingId) {
+                                        current.copy(
+                                            content = content,
+                                            mediaUrl = upload.mediaUrl,
+                                            mediaType = upload.mediaType,
+                                            fileName = upload.fileName,
+                                            fileSize = upload.fileSize,
+                                            status = "FAILED",
+                                            updatedAt = isoFormatter.format(Date())
+                                        )
+                                    } else {
+                                        current
+                                    }
+                                },
                                 isUploadingAttachment = false,
                                 attachmentUploadError = error.message
                             )
                         }
+                        persistSelectedConversationSnapshot()
                     }
                 }
                 .onFailure { error ->
@@ -886,6 +883,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                             attachmentUploadError = error.message
                         )
                     }
+                    persistSelectedConversationSnapshot()
                 }
         }
     }
@@ -987,36 +985,129 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
     }
 
+    private suspend fun sendMessageReliable(
+        conversationId: String,
+        content: String,
+        contentType: String = "text",
+        mediaUrl: String? = null,
+        mediaType: String? = null,
+        fileName: String? = null,
+        fileSize: Int? = null,
+        replyToId: String?,
+        clientMessageId: String
+    ): Result<Message> {
+        val realtimeResult = sendMessageViaRealtime(
+            conversationId = conversationId,
+            content = content,
+            contentType = contentType,
+            mediaUrl = mediaUrl,
+            mediaType = mediaType,
+            fileName = fileName,
+            fileSize = fileSize,
+            replyToId = replyToId,
+            clientMessageId = clientMessageId
+        )
+
+        if (realtimeResult.isSuccess) return realtimeResult
+
+        val realtimeError = realtimeResult.exceptionOrNull()
+        if (!shouldFallbackToRestSend(realtimeError)) {
+            return realtimeResult
+        }
+
+        return ApiClient.sendMessage(
+            context = context,
+            conversationId = conversationId,
+            content = content,
+            contentType = contentType,
+            mediaUrl = mediaUrl,
+            mediaType = mediaType,
+            fileName = fileName,
+            fileSize = fileSize,
+            replyToId = replyToId,
+            clientMessageId = clientMessageId
+        )
+    }
+
+    private suspend fun sendMessageViaRealtime(
+        conversationId: String,
+        content: String,
+        contentType: String,
+        mediaUrl: String?,
+        mediaType: String?,
+        fileName: String?,
+        fileSize: Int?,
+        replyToId: String?,
+        clientMessageId: String
+    ): Result<Message> {
+        val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+        ChatSocketManager.currentUserId = ensureCurrentUserId()
+        ChatSocketManager.connect(token)
+        ChatSocketManager.joinChat(conversationId)
+
+        return ChatSocketManager.sendMessageWithAck(
+            conversationId = conversationId,
+            content = content,
+            contentType = contentType,
+            mediaUrl = mediaUrl,
+            mediaType = mediaType,
+            fileName = fileName,
+            fileSize = fileSize,
+            replyToId = replyToId,
+            clientMessageId = clientMessageId
+        ).mapCatching { messageJson ->
+            json.decodeFromString(Message.serializer(), messageJson)
+        }
+    }
+
+    private fun shouldFallbackToRestSend(error: Throwable?): Boolean {
+        val message = error?.message.orEmpty().lowercase(Locale.US)
+        return message.contains("realtime connection unavailable") ||
+            message.contains("not authenticated") ||
+            message.contains("socket authentication failed") ||
+            message.contains("acknowledgement timed out")
+    }
+
     fun sendMessage(content: String, replyToId: String? = null) {
         val conversation = _uiState.value.selectedConversation ?: return
         if (content.isBlank()) return
 
         val nowIso = isoFormatter.format(Date())
         val tempMessageId = "local-${System.currentTimeMillis()}"
+        val optimisticMessage = Message(
+            id = tempMessageId,
+            clientMessageId = tempMessageId,
+            conversationId = conversation.id,
+            senderId = conversation.currentParticipantId(_uiState.value.currentUserId).orEmpty(),
+            receiverId = conversation.otherParticipant.id,
+            content = content,
+            contentType = "text",
+            status = "SENDING",
+            createdAt = nowIso,
+            updatedAt = nowIso
+        )
+
+        _uiState.update { state ->
+            state.copy(
+                messages = dedupeAndSortByCreatedAt(state.messages + optimisticMessage),
+                isSending = true,
+                error = null,
+                threadReadyState = ChatThreadReadyState.MESSAGES_READY
+            )
+        }
 
         viewModelScope.launch {
-            _uiState.update { state ->
-                val optimisticMessage = Message(
-                    id = tempMessageId,
-                    conversationId = conversation.id,
-                    senderId = state.currentUserId.orEmpty(),
-                    receiverId = conversation.otherParticipant.id,
-                    content = content,
-                    contentType = "text",
-                    status = "SENT",
-                    createdAt = nowIso,
-                    updatedAt = nowIso
-                )
-                state.copy(
-                    messages = dedupeAndSortByCreatedAt(state.messages + optimisticMessage),
-                    isSending = true,
-                    error = null,
-                    threadReadyState = ChatThreadReadyState.MESSAGES_READY
-                )
-            }
+            persistSelectedConversationSnapshot()
 
-            ApiClient.sendMessage(context, conversation.id, content, "text", replyToId = replyToId)
+            sendMessageReliable(
+                conversationId = conversation.id,
+                content = content,
+                contentType = "text",
+                replyToId = replyToId,
+                clientMessageId = tempMessageId
+            )
                 .onSuccess { message ->
+                    reconcileCurrentUserIdFromSentMessage(conversation, message)
                     _uiState.update { state ->
                         val withoutTemp = state.messages.filterNot { it.id == tempMessageId }
                         state.copy(
@@ -1035,11 +1126,95 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 .onFailure { error ->
                     _uiState.update { state ->
                         state.copy(
-                            messages = state.messages.filterNot { it.id == tempMessageId },
+                            messages = state.messages.map { message ->
+                                if (message.id == tempMessageId) {
+                                    message.copy(status = "FAILED", updatedAt = isoFormatter.format(Date()))
+                                } else {
+                                    message
+                                }
+                            },
                             isSending = false,
                             error = error.message
                         )
                     }
+                    persistSelectedConversationSnapshot()
+                }
+        }
+    }
+
+    fun retryMessage(message: Message) {
+        val conversation = _uiState.value.selectedConversation ?: return
+        if (!message.status.equals("FAILED", ignoreCase = true)) return
+        if (message.contentType.lowercase(Locale.US) != "text" || !message.mediaUrl.isNullOrBlank()) {
+            _uiState.update { it.copy(error = "Please resend this attachment.") }
+            return
+        }
+
+        val retryClientMessageId = message.clientMessageId
+            ?.takeIf { it.isNotBlank() }
+            ?: "retry-${System.currentTimeMillis()}"
+        val nowIso = isoFormatter.format(Date())
+
+        _uiState.update { state ->
+            state.copy(
+                messages = state.messages.map { current ->
+                    if (current.id == message.id) {
+                        current.copy(
+                            clientMessageId = retryClientMessageId,
+                            status = "SENDING",
+                            updatedAt = nowIso
+                        )
+                    } else {
+                        current
+                    }
+                },
+                isSending = true,
+                error = null
+            )
+        }
+
+        viewModelScope.launch {
+            persistSelectedConversationSnapshot()
+
+            sendMessageReliable(
+                conversationId = conversation.id,
+                content = message.content,
+                contentType = "text",
+                replyToId = message.replyToId,
+                clientMessageId = retryClientMessageId
+            )
+                .onSuccess { sentMessage ->
+                    reconcileCurrentUserIdFromSentMessage(conversation, sentMessage)
+                    _uiState.update { state ->
+                        val withoutFailed = state.messages.filterNot { it.id == message.id }
+                        state.copy(
+                            messages = dedupeAndSortByCreatedAt(withoutFailed + sentMessage),
+                            isSending = false,
+                            threadReadyState = ChatThreadReadyState.MESSAGES_READY
+                        )
+                    }
+                    persistSelectedConversationSnapshot()
+                    if (applyConversationPreviewFromMessage(conversation.id, sentMessage, incrementUnread = false)) {
+                        loadUnreadAndRequestsCount()
+                    } else {
+                        refreshConversations()
+                    }
+                }
+                .onFailure { error ->
+                    _uiState.update { state ->
+                        state.copy(
+                            messages = state.messages.map { current ->
+                                if (current.id == message.id) {
+                                    current.copy(status = "FAILED", updatedAt = isoFormatter.format(Date()))
+                                } else {
+                                    current
+                                }
+                            },
+                            isSending = false,
+                            error = error.message
+                        )
+                    }
+                    persistSelectedConversationSnapshot()
                 }
         }
     }
@@ -1075,15 +1250,26 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
     }
 
-    fun markAsRead() {
+    fun markAsRead(immediate: Boolean = false) {
         _uiState.value.selectedConversation?.let { conversation ->
-            viewModelScope.launch {
-                ApiClient.markAsRead(context, conversation.id)
-                    .onFailure { ChatSocketManager.markRead(conversation.id) }
-                ensureCurrentUserId()?.let { userId ->
-                    chatCacheRepository.markConversationRead(userId, conversation.id)
-                }
+            markConversationReadLocally(conversation.id)
+            enqueueReadReceipt(conversation.id, immediate)
+        }
+    }
+
+    private fun enqueueReadReceipt(conversationId: String, immediate: Boolean) {
+        readReceiptJobs.remove(conversationId)?.cancel()
+        readReceiptJobs[conversationId] = viewModelScope.launch {
+            val waitMillis = ChatReadReceiptPolicy.delayMillis(immediate)
+            if (waitMillis > 0) {
+                delay(waitMillis)
             }
+            ApiClient.markAsRead(context, conversationId)
+                .onFailure { ChatSocketManager.markRead(conversationId) }
+            ensureCurrentUserId()?.let { userId ->
+                chatCacheRepository.markConversationRead(userId, conversationId)
+            }
+            readReceiptJobs.remove(conversationId)
         }
     }
 
@@ -1169,9 +1355,15 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
     }
 
-    fun openChatWithUser(userId: String) {
+    fun openChatWithUser(userId: String, initialDraft: String? = null) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isResolvingConversationOpen = true, error = null) }
+            val selectedOtherUserId = _uiState.value.selectedConversation?.otherParticipant?.id
+            if (_uiState.value.selectedConversation != null && selectedOtherUserId != userId) {
+                beginConversationOpenResolution()
+            } else {
+                _uiState.update { it.copy(isResolvingConversationOpen = true, error = null) }
+            }
+
             val currentUserId = ensureCurrentUserId()
             val existingConversation = _uiState.value.conversations.firstOrNull { it.otherParticipant.id == userId }
                 ?: currentUserId?.let { cacheOwnerId ->
@@ -1224,6 +1416,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                             )
                         }
                     }
+                    applyInitialDraftIfEmpty(conversation, initialDraft)
                 }
                 .onFailure { error ->
                     Log.e(TAG, "Failed to open chat with user $userId", error)
@@ -1237,10 +1430,36 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
     }
 
-    fun openConversationById(conversationId: String) {
-        _uiState.update { it.copy(isResolvingConversationOpen = true, error = null) }
+    fun clearInitialDraftMessage() {
+        _uiState.update { it.copy(initialDraftMessage = null) }
+    }
 
-        _uiState.value.conversations.firstOrNull { it.id == conversationId }?.let { conversation ->
+    private fun applyInitialDraftIfEmpty(conversation: Conversation, initialDraft: String?) {
+        val trimmedDraft = initialDraft?.trim().orEmpty()
+        if (trimmedDraft.isBlank() || conversation.lastMessage != null) return
+
+        _uiState.update { state ->
+            if (state.selectedConversation?.id == conversation.id) {
+                state.copy(initialDraftMessage = trimmedDraft)
+            } else {
+                state
+            }
+        }
+    }
+
+    fun openConversationById(conversationId: String) {
+        val targetConversationId = conversationId.trim()
+        if (targetConversationId.isBlank()) return
+
+        if (_uiState.value.selectedConversation?.id != targetConversationId) {
+            beginConversationOpenResolution()
+        } else {
+            _uiState.update { it.copy(isResolvingConversationOpen = true, error = null) }
+        }
+
+        MessageNotificationManager.clearConversationNotification(context, targetConversationId)
+
+        _uiState.value.conversations.firstOrNull { it.id == targetConversationId }?.let { conversation ->
             selectConversation(conversation)
             return
         }
@@ -1249,7 +1468,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
             val currentUserId = ensureCurrentUserId()
             val cachedConversation = currentUserId?.let {
                 runCatching {
-                    chatCacheRepository.getCachedConversation(it, conversationId)
+                    chatCacheRepository.getCachedConversation(it, targetConversationId)
                 }.getOrNull()
             }
             if (cachedConversation != null) {
@@ -1263,7 +1482,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 selectConversation(cachedConversation)
             }
 
-            ApiClient.getConversation(context, conversationId)
+            ApiClient.getConversation(context, targetConversationId)
                 .onSuccess { conversation ->
                     currentUserId?.let { userId ->
                         chatCacheRepository.upsertConversation(userId, conversation)
@@ -1285,7 +1504,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     }
                 }
                 .onFailure { error ->
-                    Log.e(TAG, "Failed to open conversation $conversationId", error)
+                    Log.e(TAG, "Failed to open conversation $targetConversationId", error)
                     _uiState.update {
                         it.copy(
                             isResolvingConversationOpen = false,
@@ -1293,6 +1512,30 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                         )
                     }
                 }
+        }
+    }
+
+    private fun beginConversationOpenResolution() {
+        stopOutgoingTyping()
+        _uiState.value.selectedConversation?.let { ChatSocketManager.leaveChat(it.id) }
+        loadMessagesJob?.cancel()
+        clearTypingIndicator()
+        ChatSocketManager.activeConversationId = null
+
+        _uiState.update {
+            it.copy(
+                selectedConversation = null,
+                isResolvingConversationOpen = true,
+                messages = emptyList(),
+                messagesNextCursor = null,
+                hasMoreMessages = false,
+                typingUserId = null,
+                error = null,
+                isLoadingMessages = false,
+                isLoadingMoreMessages = false,
+                threadReadyState = ChatThreadReadyState.LOADING_WITHOUT_CACHE,
+                initialDraftMessage = null
+            )
         }
     }
 
@@ -1482,25 +1725,83 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     }
 
     private suspend fun ensureCurrentUserId(): String? {
-        val existing = _uiState.value.currentUserId
-        if (!existing.isNullOrBlank()) return existing
-
         val userId = ApiClient.getCurrentUserId(context)
-        if (!userId.isNullOrBlank()) {
-            ChatSocketManager.currentUserId = userId
-            _uiState.update { it.copy(currentUserId = userId) }
+        val normalizedUserId = userId?.takeIf { it.isNotBlank() }
+        val existing = _uiState.value.currentUserId
+
+        if (existing != normalizedUserId) {
+            resetForSession(normalizedUserId)
         }
-        return userId
+
+        ChatSocketManager.currentUserId = normalizedUserId
+        return normalizedUserId
+    }
+
+    private fun resetForSession(currentUserId: String?) {
+        stopOutgoingTyping()
+        clearTypingIndicator()
+        _uiState.value.selectedConversation?.let { ChatSocketManager.leaveChat(it.id) }
+        ChatSocketManager.activeConversationId = null
+        hasLoadedConversations = false
+        conversationsLastLoadedAt = 0L
+        lastPreloadedUserId = null
+        loadConversationsJob?.cancel()
+        loadMessagesJob?.cancel()
+        preloadJob?.cancel()
+        _uiState.value = ChatUiState(
+            currentUserId = currentUserId,
+            socketConnected = ChatSocketManager.isConnected()
+        )
+        ChatSocketManager.currentUserId = currentUserId
+        MessageNotificationManager.clearAll(context)
+    }
+
+    private fun Conversation.currentParticipantId(currentUserId: String?): String? {
+        if (!currentUserId.isNullOrBlank() && (currentUserId == participant1Id || currentUserId == participant2Id)) {
+            return currentUserId
+        }
+
+        return when (otherParticipant.id) {
+            participant1Id -> participant2Id
+            participant2Id -> participant1Id
+            else -> currentUserId?.takeIf { it.isNotBlank() }
+        }
+    }
+
+    private fun reconcileCurrentUserIdFromSentMessage(conversation: Conversation, message: Message) {
+        val senderId = message.senderId.takeIf { it.isNotBlank() } ?: return
+        if (senderId == conversation.otherParticipant.id) return
+        if (senderId != conversation.participant1Id && senderId != conversation.participant2Id) return
+
+        ChatSocketManager.currentUserId = senderId
+        _uiState.update { state ->
+            if (state.currentUserId == senderId) state else state.copy(currentUserId = senderId)
+        }
     }
 
     private fun loadConversationsInternal(
         cacheOwnerId: String,
-        prefetchRecentMessages: Boolean = false
+        prefetchRecentMessages: Boolean = false,
+        forceRefresh: Boolean = false
     ) {
         if (loadConversationsJob?.isActive == true) return
 
         loadConversationsJob = viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingConversations = true, error = null) }
+            hydrateCachedConversations(cacheOwnerId)
+
+            val hasVisibleConversations = _uiState.value.conversations.isNotEmpty()
+            val isFreshEnough =
+                hasLoadedConversations &&
+                    !forceRefresh &&
+                    conversationsLastLoadedAt > 0L &&
+                    System.currentTimeMillis() - conversationsLastLoadedAt < 30_000L
+
+            if (isFreshEnough && hasVisibleConversations) {
+                loadUnreadAndRequestsCount()
+                return@launch
+            }
+
+            _uiState.update { it.copy(isLoadingConversations = !hasVisibleConversations, error = null) }
             chatCacheRepository.refreshConversations(cacheOwnerId = cacheOwnerId)
                 .onSuccess { response ->
                     hasLoadedConversations = true
@@ -1510,7 +1811,10 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                             response.conversations.firstOrNull { it.id == selected.id } ?: selected
                         }
                         state.copy(
-                            conversations = response.conversations,
+                            conversations = mergeRefreshedConversationsWithLocalState(
+                                currentConversations = state.conversations,
+                                refreshedConversations = response.conversations
+                            ),
                             selectedConversation = refreshedSelectedConversation,
                             isLoadingConversations = false,
                             error = null
@@ -1528,8 +1832,11 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     }
                 }
                 .onFailure { error ->
-                    _uiState.update {
-                        it.copy(isLoadingConversations = false, error = error.message)
+                    _uiState.update { state ->
+                        state.copy(
+                            isLoadingConversations = false,
+                            error = if (state.conversations.isEmpty()) error.message else state.error
+                        )
                     }
                 }
             loadUnreadAndRequestsCount()
@@ -1537,18 +1844,28 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     }
 
     private fun refreshConversations() {
-        viewModelScope.launch {
+        refreshConversationsJob?.cancel()
+        refreshConversationsJob = viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val elapsed = now - lastRefreshConversationsAt
+            if (elapsed < REFRESH_CONVERSATIONS_MIN_INTERVAL_MS) {
+                delay(REFRESH_CONVERSATIONS_DEBOUNCE_MS)
+            }
             val currentUserId = ensureCurrentUserId() ?: return@launch
             chatCacheRepository.refreshConversations(cacheOwnerId = currentUserId)
                 .onSuccess { response ->
                     hasLoadedConversations = true
                     conversationsLastLoadedAt = System.currentTimeMillis()
+                    lastRefreshConversationsAt = System.currentTimeMillis()
                     _uiState.update { state ->
                         val refreshedSelectedConversation = state.selectedConversation?.let { selected ->
                             response.conversations.firstOrNull { it.id == selected.id } ?: selected
                         }
                         state.copy(
-                            conversations = response.conversations,
+                            conversations = mergeRefreshedConversationsWithLocalState(
+                                currentConversations = state.conversations,
+                                refreshedConversations = response.conversations
+                            ),
                             selectedConversation = refreshedSelectedConversation
                         )
                     }
@@ -1557,17 +1874,26 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
     }
 
-    private suspend fun hydrateCachedConversations(cacheOwnerId: String) {
-        runCatching {
-            chatCacheRepository.getCachedConversations(cacheOwnerId)
-        }.onSuccess { conversations ->
-            if (conversations.isNotEmpty()) {
-                _uiState.update { state ->
-                    state.copy(conversations = conversations, error = null)
-                }
-            }
-        }.onFailure { error ->
+    private suspend fun hydrateCachedConversations(cacheOwnerId: String?) {
+        val userId = cacheOwnerId?.takeIf { it.isNotBlank() } ?: return
+        val cachedConversations = runCatching {
+            chatCacheRepository.getCachedConversations(userId)
+        }.getOrElse { error ->
             Log.w(TAG, "Failed to hydrate cached conversations", error)
+            emptyList()
+        }
+        if (cachedConversations.isEmpty()) return
+
+        _uiState.update { state ->
+            val refreshedSelectedConversation = state.selectedConversation?.let { selected ->
+                cachedConversations.firstOrNull { it.id == selected.id } ?: selected
+            }
+            state.copy(
+                conversations = cachedConversations,
+                selectedConversation = refreshedSelectedConversation,
+                isLoadingConversations = false,
+                error = null
+            )
         }
     }
 
@@ -1575,46 +1901,90 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         cacheOwnerId: String,
         conversationId: String
     ): CachedMessagesSnapshot? {
-        return runCatching {
+        val snapshot = runCatching {
             chatCacheRepository.getCachedMessagesSnapshot(cacheOwnerId, conversationId)
-        }.onSuccess { snapshot ->
-            if (snapshot != null) {
-                messagesCacheByConversation[conversationId] = CachedConversationMessages(
-                    messages = snapshot.messages,
-                    nextCursor = snapshot.nextCursor,
-                    hasMore = snapshot.hasMore,
-                    cachedAt = snapshot.cachedAt
+        }.getOrElse { error ->
+            Log.w(TAG, "Failed to hydrate cached messages", error)
+            null
+        } ?: return null
+
+        _uiState.update { state ->
+            if (state.selectedConversation?.id != conversationId) {
+                state
+            } else {
+                state.copy(
+                    messages = dedupeAndSortByCreatedAt(snapshot.messages),
+                    isLoadingMessages = false,
+                    hasMoreMessages = snapshot.hasMore,
+                    messagesNextCursor = snapshot.nextCursor,
+                    threadReadyState = resolveThreadReadyState(
+                        messages = snapshot.messages,
+                        fromCache = true
+                    )
                 )
             }
-        }.onFailure { error ->
-            Log.w(TAG, "Failed to hydrate cached messages for $conversationId", error)
-        }.getOrNull()
+        }
+        return snapshot
     }
 
-    private fun cacheCurrentMessages(conversationId: String) {
-        messagesCacheByConversation[conversationId] = CachedConversationMessages(
-            messages = _uiState.value.messages,
-            nextCursor = _uiState.value.messagesNextCursor,
-            hasMore = _uiState.value.hasMoreMessages,
-            cachedAt = System.currentTimeMillis()
+    private fun resolveNextCursorAfterRefresh(
+        state: ChatUiState,
+        response: MessagesResponse,
+        cursor: String?
+    ): String? {
+        if (cursor != null) return response.nextCursor
+
+        val hasCachedOlderHistory =
+            state.messages.size > response.messages.size &&
+                !state.messagesNextCursor.isNullOrBlank()
+
+        return if (hasCachedOlderHistory) state.messagesNextCursor else response.nextCursor
+    }
+
+    private fun resolveHasMoreAfterRefresh(
+        state: ChatUiState,
+        response: MessagesResponse,
+        cursor: String?
+    ): Boolean {
+        if (cursor != null) return response.hasMore
+
+        val hasCachedOlderHistory =
+            state.messages.size > response.messages.size &&
+                !state.messagesNextCursor.isNullOrBlank()
+
+        return if (hasCachedOlderHistory) state.hasMoreMessages else response.hasMore
+    }
+
+    private suspend fun cacheCurrentMessages(conversationId: String) {
+        val currentUserId = ensureCurrentUserId() ?: return
+        val state = _uiState.value
+        if (state.selectedConversation?.id != conversationId) return
+        chatCacheRepository.cacheConversationMessagesSnapshot(
+            cacheOwnerId = currentUserId,
+            conversation = state.selectedConversation,
+            messages = state.messages,
+            nextCursor = state.messagesNextCursor,
+            hasMore = state.hasMoreMessages
         )
     }
 
     private suspend fun persistSelectedConversationSnapshot() {
         val currentUserId = ensureCurrentUserId() ?: return
-        val conversation = _uiState.value.selectedConversation ?: return
+        val state = _uiState.value
+        val conversation = state.selectedConversation ?: return
         chatCacheRepository.cacheConversationMessagesSnapshot(
             cacheOwnerId = currentUserId,
             conversation = conversation,
-            messages = _uiState.value.messages,
-            nextCursor = _uiState.value.messagesNextCursor,
-            hasMore = _uiState.value.hasMoreMessages
+            messages = state.messages,
+            nextCursor = state.messagesNextCursor,
+            hasMore = state.hasMoreMessages
         )
-        cacheCurrentMessages(conversation.id)
     }
 
     private fun loadUnreadAndRequestsCount() {
-        viewModelScope.launch {
+        loadUnreadCountJob?.cancel()
+        loadUnreadCountJob = viewModelScope.launch {
+            delay(UNREAD_COUNT_DEBOUNCE_MS)
             ApiClient.getUnreadCount(context).onSuccess { count ->
                 _uiState.update { it.copy(unreadCount = count) }
             }
@@ -1624,8 +1994,40 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
     }
 
+    private fun markConversationReadLocally(conversationId: String) {
+        _uiState.update { state ->
+            val currentUnread = state.conversations.firstOrNull { it.id == conversationId }?.unreadCount
+                ?: state.selectedConversation?.takeIf { it.id == conversationId }?.unreadCount
+                ?: 0
+            state.copy(
+                conversations = state.conversations.map { conversation ->
+                    if (conversation.id == conversationId) {
+                        conversation.copy(unreadCount = 0)
+                    } else {
+                        conversation
+                    }
+                },
+                selectedConversation = state.selectedConversation?.let { selected ->
+                    if (selected.id == conversationId) selected.copy(unreadCount = 0) else selected
+                },
+                unreadCount = (state.unreadCount - currentUnread).coerceAtLeast(0)
+            )
+        }
+    }
+
     private fun upsertMessage(messages: List<Message>, message: Message): List<Message> {
         return dedupeAndSortByCreatedAt(messages.filterNot { it.id == message.id } + message)
+    }
+
+    private fun mergeRefreshedConversationsWithLocalState(
+        currentConversations: List<Conversation>,
+        refreshedConversations: List<Conversation>
+    ): List<Conversation> {
+        val refreshedIds = refreshedConversations.map { it.id }.toSet()
+        return (refreshedConversations + currentConversations.filterNot { it.id in refreshedIds })
+            .sortedByDescending { conversation ->
+                conversation.lastMessageAt ?: conversation.updatedAt.ifBlank { conversation.createdAt }
+            }
     }
 
     private fun applyConversationPreviewFromMessage(
@@ -1656,10 +2058,25 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                         conversation.unreadCount
                     }
                 )
-            }.sortedByDescending { it.lastMessageAt ?: it.updatedAt.ifBlank { it.createdAt } }
+            }
+
+            val conversationsWithInstantInsert = if (foundConversation) {
+                updatedConversations
+            } else {
+                buildInstantConversationFromMessage(
+                    state = state,
+                    conversationId = conversationId,
+                    message = message,
+                    incrementUnread = incrementUnread
+                )?.let { instantConversation ->
+                    listOf(instantConversation) + updatedConversations
+                } ?: updatedConversations
+            }
 
             state.copy(
-                conversations = updatedConversations,
+                conversations = conversationsWithInstantInsert.sortedByDescending { conversation ->
+                    conversation.lastMessageAt ?: conversation.updatedAt.ifBlank { conversation.createdAt }
+                },
                 unreadCount = if (
                     incrementUnread &&
                     message.senderId != state.currentUserId &&
@@ -1673,6 +2090,49 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
 
         return foundConversation
+    }
+
+    private fun buildInstantConversationFromMessage(
+        state: ChatUiState,
+        conversationId: String,
+        message: Message,
+        incrementUnread: Boolean
+    ): Conversation? {
+        val currentUserId = state.currentUserId?.takeIf { it.isNotBlank() } ?: return null
+        val sender = message.sender ?: ChatUser(id = message.senderId)
+        val otherParticipant = if (message.senderId == currentUserId) {
+            ChatUser(id = message.receiverId)
+        } else {
+            sender
+        }
+        val participant1Id = if (message.senderId == currentUserId) {
+            message.senderId
+        } else {
+            message.receiverId.takeIf { it == currentUserId } ?: currentUserId
+        }
+        val participant2Id = if (participant1Id == message.senderId) {
+            message.receiverId
+        } else {
+            message.senderId
+        }
+        val shouldIncrementUnread =
+            incrementUnread &&
+                message.senderId != currentUserId &&
+                state.selectedConversation?.id != conversationId
+
+        return Conversation(
+            id = conversationId,
+            participant1Id = participant1Id,
+            participant2Id = participant2Id,
+            participant1 = if (participant1Id == sender.id) sender else ChatUser(id = participant1Id),
+            participant2 = if (participant2Id == sender.id) sender else ChatUser(id = participant2Id),
+            otherParticipant = otherParticipant,
+            lastMessage = message.toPreviewMessage(),
+            lastMessageAt = message.createdAt,
+            unreadCount = if (shouldIncrementUnread) 1 else 0,
+            createdAt = message.createdAt,
+            updatedAt = message.updatedAt
+        )
     }
 
     private fun Message.toPreviewMessage(): ConversationLastMessage {
@@ -1731,13 +2191,61 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     }
 
     private fun replaceMatchingPendingMessage(messages: List<Message>, serverMessage: Message): List<Message> {
-        val pending = messages.firstOrNull {
-            it.id.startsWith("local-") &&
+        val pending = serverMessage.clientMessageId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { clientMessageId -> messages.firstOrNull { it.id == clientMessageId } }
+            ?: messages.firstOrNull {
+                (it.id.startsWith("local-") || it.id.startsWith("pending-")) &&
                 it.senderId == serverMessage.senderId &&
                 it.conversationId == serverMessage.conversationId &&
                 it.content == serverMessage.content
-        } ?: return messages
+            }
+            ?: return messages
         return dedupeAndSortByCreatedAt(messages.filterNot { it.id == pending.id } + serverMessage)
+    }
+
+    private fun mergeRefreshedMessagesWithLocalState(
+        currentMessages: List<Message>,
+        refreshedMessages: List<Message>
+    ): List<Message> {
+        val refreshedIds = refreshedMessages.map { it.id }.toSet()
+        val refreshedClientIds = refreshedMessages
+            .mapNotNull { it.clientMessageId?.takeIf(String::isNotBlank) }
+            .toSet()
+        val localMessagesInFlight = currentMessages.filter { message ->
+            val clientMessageId = message.clientMessageId
+            val isLocalMessage =
+                message.id.startsWith("local-") ||
+                    message.id.startsWith("pending-") ||
+                    clientMessageId?.startsWith("local-") == true ||
+                    clientMessageId?.startsWith("pending-") == true
+            val isPendingOrFailed =
+                message.status.equals("SENDING", ignoreCase = true) ||
+                    message.status.equals("FAILED", ignoreCase = true)
+
+            isLocalMessage &&
+                isPendingOrFailed &&
+                message.id !in refreshedIds &&
+                clientMessageId?.let { it !in refreshedClientIds } != false
+        }
+
+        if (refreshedMessages.isEmpty()) {
+            return dedupeAndSortByCreatedAt(localMessagesInFlight)
+        }
+
+        val oldestRefreshedCreatedAt = refreshedMessages.first().createdAt
+        val preservedOlderCachedMessages = currentMessages.filter { message ->
+            val clientMessageId = message.clientMessageId
+            val isLocalInFlight = localMessagesInFlight.any { it.id == message.id }
+            !isLocalInFlight &&
+                message.id !in refreshedIds &&
+                clientMessageId?.let { it !in refreshedClientIds } != false &&
+                message.createdAt < oldestRefreshedCreatedAt
+        }
+
+        return dedupeAndSortByCreatedAt(
+            preservedOlderCachedMessages + refreshedMessages + localMessagesInFlight
+        )
     }
 
     private fun dedupeAndSortByCreatedAt(messages: List<Message>): List<Message> {
@@ -1749,6 +2257,8 @@ class ChatViewModel(private val context: Context) : ViewModel() {
 
     override fun onCleared() {
         stopOutgoingTyping()
+        readReceiptJobs.values.forEach { it.cancel() }
+        readReceiptJobs.clear()
         _uiState.value.selectedConversation?.let { ChatSocketManager.leaveChat(it.id) }
         clearTypingIndicator()
         super.onCleared()

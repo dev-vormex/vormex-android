@@ -24,6 +24,8 @@ import com.kyant.backdrop.catalog.network.models.AgentTurnRequest
 import com.kyant.backdrop.catalog.network.models.AgentTurnResponse
 import com.kyant.backdrop.catalog.network.models.AgentVoiceTurnResponse
 import com.kyant.backdrop.catalog.network.models.ApiError
+import com.kyant.backdrop.catalog.network.models.ConversationStartersRequest
+import com.kyant.backdrop.catalog.network.models.ConversationStartersResponse
 import com.kyant.backdrop.catalog.network.models.SmartRepliesRequest
 import com.kyant.backdrop.catalog.network.models.SmartRepliesResponse
 import io.ktor.client.HttpClient
@@ -31,6 +33,7 @@ import io.ktor.client.call.body
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.plugins.logging.LogLevel
 import io.ktor.client.plugins.logging.Logger
 import io.ktor.client.plugins.logging.Logging
@@ -58,6 +61,7 @@ object AgentApiService {
     private val baseUrl = BuildConfig.API_BASE_URL
     private val agentSessionKey = stringPreferencesKey("agent_session_id")
     private val agentAutoRunKey = booleanPreferencesKey("agent_auto_run_enabled")
+    private val agentAutonomyModeKey = stringPreferencesKey("agent_autonomy_mode")
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -93,6 +97,10 @@ object AgentApiService {
             connectTimeoutMillis = 30000
             socketTimeoutMillis = 120000
         }
+        installVormexAppCheckInterceptor()
+        defaultRequest {
+            applyVormexClientHeaders()
+        }
     }
 
     private suspend fun authToken(context: Context): String? = ApiClient.getToken(context)
@@ -111,12 +119,27 @@ object AgentApiService {
     }
 
     suspend fun getStoredAutoRunEnabled(context: Context): Boolean {
-        return context.agentDataStore.data.first()[agentAutoRunKey] ?: false
+        return getStoredAutonomyMode(context) == "power"
     }
 
     suspend fun setStoredAutoRunEnabled(context: Context, enabled: Boolean) {
+        setStoredAutonomyMode(context, if (enabled) "power" else "approval")
+    }
+
+    suspend fun getStoredAutonomyMode(context: Context): String {
+        val prefs = context.agentDataStore.data.first()
+        return when (prefs[agentAutonomyModeKey]?.lowercase()) {
+            "power" -> "power"
+            "approval" -> "approval"
+            else -> if (prefs[agentAutoRunKey] == true) "power" else "approval"
+        }
+    }
+
+    suspend fun setStoredAutonomyMode(context: Context, mode: String) {
+        val safeMode = if (mode.equals("power", ignoreCase = true)) "power" else "approval"
         context.agentDataStore.edit { prefs ->
-            prefs[agentAutoRunKey] = enabled
+            prefs[agentAutoRunKey] = safeMode == "power"
+            prefs[agentAutonomyModeKey] = safeMode
         }
     }
 
@@ -136,20 +159,25 @@ object AgentApiService {
         context: Context,
         mode: String = "text",
         surface: String = "global",
-        allowAutonomousActions: Boolean = true
+        allowAutonomousActions: Boolean = false,
+        autonomyMode: String = if (allowAutonomousActions) "power" else "approval"
     ): Result<AgentSessionBootstrapResponse> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val storedSessionId = getStoredSessionId(context)
+            val storedSessionId = InputSecurity.optionalIdentifier(getStoredSessionId(context), "sessionId")
+            val safeMode = InputSecurity.enumValue(mode, setOf("TEXT", "VOICE"), "mode").lowercase()
+            val safeSurface = InputSecurity.identifier(surface, "surface")
+            val safeAutonomyMode = if (autonomyMode.equals("power", ignoreCase = true)) "power" else "approval"
             val response = client.post("$baseUrl/agent/sessions") {
                 header("Authorization", "Bearer $token")
                 contentType(ContentType.Application.Json)
                 setBody(
                     AgentSessionRequest(
                         sessionId = storedSessionId,
-                        mode = mode,
-                        surface = surface,
-                        allowAutonomousActions = allowAutonomousActions
+                        mode = safeMode,
+                        surface = safeSurface,
+                        allowAutonomousActions = safeAutonomyMode == "power",
+                        autonomyMode = safeAutonomyMode
                     )
                 )
             }
@@ -171,7 +199,8 @@ object AgentApiService {
         context: Context,
         mode: String,
         surface: String,
-        allowAutonomousActions: Boolean
+        allowAutonomousActions: Boolean,
+        autonomyMode: String
     ): Result<String> {
         val stored = getStoredSessionId(context)
         if (!stored.isNullOrBlank()) return Result.success(stored)
@@ -180,7 +209,8 @@ object AgentApiService {
             context = context,
             mode = mode,
             surface = surface,
-            allowAutonomousActions = allowAutonomousActions
+            allowAutonomousActions = allowAutonomousActions,
+            autonomyMode = autonomyMode
         ).map { it.sessionId }
     }
 
@@ -189,15 +219,27 @@ object AgentApiService {
         inputText: String,
         surface: String,
         surfaceContext: Map<String, String> = emptyMap(),
-        allowAutonomousActions: Boolean = true
+        allowAutonomousActions: Boolean = false,
+        autonomyMode: String = if (allowAutonomousActions) "power" else "approval"
     ): Result<AgentTurnResponse> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeInputText = InputSecurity.prompt(inputText, "inputText", 2_000)
+            val safeSurface = InputSecurity.identifier(surface, "surface")
+            val safeAutonomyMode = if (autonomyMode.equals("power", ignoreCase = true)) "power" else "approval"
+            val safeSurfaceContext = surfaceContext
+                .entries
+                .take(30)
+                .associate { (key, value) ->
+                    InputSecurity.identifier(key, "surfaceContext key") to
+                        InputSecurity.text(value, "surfaceContext value", 500, allowBlank = true)
+                }
             val sessionId = ensureSessionId(
                 context = context,
                 mode = "text",
-                surface = surface,
-                allowAutonomousActions = allowAutonomousActions
+                surface = safeSurface,
+                allowAutonomousActions = safeAutonomyMode == "power",
+                autonomyMode = safeAutonomyMode
             ).getOrElse { return Result.failure(it) }
 
             val response = client.post("$baseUrl/agent/sessions/$sessionId/turns") {
@@ -205,10 +247,11 @@ object AgentApiService {
                 contentType(ContentType.Application.Json)
                 setBody(
                     AgentTurnRequest(
-                        inputText = inputText,
-                        surface = surface,
-                        surfaceContext = surfaceContext,
-                        allowAutonomousActions = allowAutonomousActions
+                        inputText = safeInputText,
+                        surface = safeSurface,
+                        surfaceContext = safeSurfaceContext,
+                        allowAutonomousActions = safeAutonomyMode == "power",
+                        autonomyMode = safeAutonomyMode
                     )
                 )
             }
@@ -236,16 +279,30 @@ object AgentApiService {
         mimeType: String,
         surface: String,
         surfaceContext: Map<String, String> = emptyMap(),
-        allowAutonomousActions: Boolean = true,
+        allowAutonomousActions: Boolean = false,
+        autonomyMode: String = if (allowAutonomousActions) "power" else "approval",
         synthesizeAudio: Boolean = true
     ): Result<AgentVoiceTurnResponse> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeFileName = InputSecurity.fileName(fileName, "agent-voice.m4a")
+            val safeMimeType = InputSecurity.voiceMime(mimeType)
+            val safeAudioBytes = InputSecurity.uploadBytes(audioBytes, "audio", 20 * 1024 * 1024)
+            val safeSurface = InputSecurity.identifier(surface, "surface")
+            val safeAutonomyMode = if (autonomyMode.equals("power", ignoreCase = true)) "power" else "approval"
+            val safeSurfaceContext = surfaceContext
+                .entries
+                .take(30)
+                .associate { (key, value) ->
+                    InputSecurity.identifier(key, "surfaceContext key") to
+                        InputSecurity.text(value, "surfaceContext value", 500, allowBlank = true)
+                }
             val sessionId = ensureSessionId(
                 context = context,
                 mode = "voice",
-                surface = surface,
-                allowAutonomousActions = allowAutonomousActions
+                surface = safeSurface,
+                allowAutonomousActions = safeAutonomyMode == "power",
+                autonomyMode = safeAutonomyMode
             ).getOrElse { return Result.failure(it) }
 
             val response = client.post("$baseUrl/agent/sessions/$sessionId/voice") {
@@ -253,16 +310,17 @@ object AgentApiService {
                 setBody(MultiPartFormDataContent(formData {
                     append(
                         "audio",
-                        audioBytes,
+                        safeAudioBytes,
                         Headers.build {
-                            append(HttpHeaders.ContentType, mimeType)
-                            append(HttpHeaders.ContentDisposition, "filename=${fileName.ifBlank { "agent-voice.m4a" }}")
+                            append(HttpHeaders.ContentType, safeMimeType)
+                            append(HttpHeaders.ContentDisposition, "filename=$safeFileName")
                         }
                     )
-                    append("surface", surface)
-                    append("allowAutonomousActions", allowAutonomousActions.toString())
+                    append("surface", safeSurface)
+                    append("allowAutonomousActions", (safeAutonomyMode == "power").toString())
+                    append("autonomyMode", safeAutonomyMode)
                     append("synthesizeAudio", synthesizeAudio.toString())
-                    append("surfaceContext", json.encodeToString(surfaceContext))
+                    append("surfaceContext", json.encodeToString(safeSurfaceContext))
                 }))
             }
 
@@ -306,7 +364,8 @@ object AgentApiService {
     ): Result<AgentApproveActionResponse> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.post("$baseUrl/agent/approve/$actionId") {
+            val safeActionId = InputSecurity.identifier(actionId, "actionId")
+            val response = client.post("$baseUrl/agent/approve/$safeActionId") {
                 header("Authorization", "Bearer $token")
             }
             if (response.status.value in 200..299) {
@@ -325,7 +384,8 @@ object AgentApiService {
     ): Result<AgentRejectActionResponse> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.post("$baseUrl/agent/reject/$actionId") {
+            val safeActionId = InputSecurity.identifier(actionId, "actionId")
+            val response = client.post("$baseUrl/agent/reject/$safeActionId") {
                 header("Authorization", "Bearer $token")
             }
             if (response.status.value in 200..299) {
@@ -363,14 +423,17 @@ object AgentApiService {
     ): Result<AgentGoalUpsertResponse> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeGoal = InputSecurity.prompt(goal, "goal", 500)
+            val safeCategory = InputSecurity.optionalText(category, "category", 80)
+            val safePriority = priority?.let { InputSecurity.boundedInt(it, "priority", 0, 10) }
             val response = client.post("$baseUrl/agent/goals") {
                 header("Authorization", "Bearer $token")
                 contentType(ContentType.Application.Json)
                 setBody(
                     AgentGoalUpsertRequest(
-                        goal = goal,
-                        category = category,
-                        priority = priority
+                        goal = safeGoal,
+                        category = safeCategory,
+                        priority = safePriority
                     )
                 )
             }
@@ -390,7 +453,8 @@ object AgentApiService {
     ): Result<AgentGoalDeleteResponse> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.delete("$baseUrl/agent/goals/$goalId") {
+            val safeGoalId = InputSecurity.identifier(goalId, "goalId")
+            val response = client.delete("$baseUrl/agent/goals/$safeGoalId") {
                 header("Authorization", "Bearer $token")
             }
             if (response.status.value in 200..299) {
@@ -411,20 +475,56 @@ object AgentApiService {
     ): Result<List<String>> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeLastMessage = InputSecurity.prompt(lastMessage, "lastMessage", 1_000)
+            val safeConversationId = InputSecurity.optionalIdentifier(conversationId, "conversationId")
+            val safeContext = contextText?.let { InputSecurity.prompt(it, "context", 1_500) }
             val response = client.post("$baseUrl/ai/chat/smart-replies") {
                 header("Authorization", "Bearer $token")
                 contentType(ContentType.Application.Json)
                 setBody(
                     SmartRepliesRequest(
-                        lastMessage = lastMessage,
-                        conversationId = conversationId,
-                        context = contextText
+                        lastMessage = safeLastMessage,
+                        conversationId = safeConversationId,
+                        context = safeContext
                     )
                 )
             }
             if (response.status.value in 200..299) {
                 val body: SmartRepliesResponse = response.body()
                 Result.success(body.replies)
+            } else {
+                Result.failure(Exception(parseError(response)))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getConversationStarters(
+        context: Context,
+        otherUserId: String,
+        goal: String? = null,
+        contextText: String? = null
+    ): Result<List<String>> {
+        return try {
+            val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeOtherUserId = InputSecurity.identifier(otherUserId, "otherUserId")
+            val safeGoal = goal?.let { InputSecurity.prompt(it, "goal", 500) }
+            val safeContext = contextText?.let { InputSecurity.prompt(it, "context", 1_500) }
+            val response = client.post("$baseUrl/ai/chat/conversation-starters") {
+                header("Authorization", "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    ConversationStartersRequest(
+                        context = safeContext,
+                        goal = safeGoal,
+                        otherUserId = safeOtherUserId
+                    )
+                )
+            }
+            if (response.status.value in 200..299) {
+                val body: ConversationStartersResponse = response.body()
+                Result.success(body.starters)
             } else {
                 Result.failure(Exception(parseError(response)))
             }

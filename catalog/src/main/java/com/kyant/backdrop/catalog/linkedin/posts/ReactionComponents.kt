@@ -7,7 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,7 +24,10 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.catalog.linkedin.VormexSurfaceTone
+import com.kyant.backdrop.catalog.linkedin.VerificationBadge
+import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
+import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
 import com.kyant.backdrop.catalog.linkedin.vormexSurface
 import com.kyant.backdrop.catalog.network.models.LikeUser
 import com.kyant.backdrop.catalog.network.models.ReactionType
@@ -385,10 +388,21 @@ private fun LikeUserItem(
         
         // User info
         Column(modifier = Modifier.weight(1f)) {
-            BasicText(
-                text = user.name ?: "Unknown",
-                style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold)
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                BasicText(
+                    text = user.name ?: "Unknown",
+                    style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold),
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                VerificationBadge(
+                    verified = user.hasVerificationBadge(),
+                    size = VerificationBadgeSize.Small
+                )
+            }
             user.headline?.let { headline ->
                 BasicText(
                     text = headline,

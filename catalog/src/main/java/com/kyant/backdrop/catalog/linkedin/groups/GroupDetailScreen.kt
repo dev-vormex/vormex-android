@@ -19,7 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Chat
@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
@@ -51,6 +52,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.catalog.linkedin.VerificationBadge
+import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
+import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -75,6 +79,7 @@ fun GroupDetailScreen(
     
     LaunchedEffect(groupId) {
         viewModel.loadGroupDetail(groupId)
+        viewModel.loadGroupInviteLink(groupId)
     }
     
     val group = uiState.selectedGroup
@@ -103,14 +108,21 @@ fun GroupDetailScreen(
                 
                 // Group info card
                 item {
+                    val inviteLink = uiState.currentInviteLink
+                        ?.takeIf { it.group.id == group.id && it.canShare }
+                    val inviteUrl = inviteLink?.inviteUrl ?: inviteLink?.inviteCode?.let(::groupInviteUrl)
                     GroupInfoCard(
                         backdrop = backdrop,
                         contentColor = contentColor,
                         accentColor = accentColor,
                         group = group,
                         isJoining = group.id in uiState.joiningGroupIds,
+                        canShareInvite = !inviteUrl.isNullOrBlank(),
                         onJoinClick = { viewModel.joinGroup(group.id) },
-                        onChatClick = onNavigateToChat
+                        onChatClick = onNavigateToChat,
+                        onInviteClick = {
+                            inviteUrl?.let { launchGroupInviteShareSheet(context, group.name, it) }
+                        }
                     )
                 }
                 
@@ -225,7 +237,7 @@ private fun GroupDetailHeader(
     onSettingsClick: () -> Unit
 ) {
     val context = LocalContext.current
-    val isAdminOrOwner = group.memberRole in listOf("owner", "admin")
+    val isAdminOrOwner = canManageGroup(group.memberRole)
     
     Box(
         Modifier
@@ -356,8 +368,10 @@ private fun GroupInfoCard(
     accentColor: Color,
     group: Group,
     isJoining: Boolean,
+    canShareInvite: Boolean,
     onJoinClick: () -> Unit,
-    onChatClick: () -> Unit
+    onChatClick: () -> Unit,
+    onInviteClick: () -> Unit
 ) {
     Column(
         Modifier
@@ -490,7 +504,6 @@ private fun GroupInfoCard(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             if (group.isMember) {
-                // Chat button
                 Box(
                     Modifier
                         .weight(1f)
@@ -516,6 +529,36 @@ private fun GroupInfoCard(
                                 fontWeight = FontWeight.SemiBold
                             )
                         )
+                    }
+                }
+
+                if (canShareInvite) {
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .background(contentColor.copy(alpha = 0.1f), RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(onClick = onInviteClick)
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Share,
+                                contentDescription = null,
+                                tint = accentColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            BasicText(
+                                "Invite",
+                                style = TextStyle(
+                                    color = accentColor,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            )
+                        }
                     }
                 }
                 
@@ -660,14 +703,26 @@ private fun GroupPostCard(
             Spacer(Modifier.width(10.dp))
             
             Column {
-                BasicText(
-                    post.author.name ?: post.author.username ?: "Unknown",
-                    style = TextStyle(
-                        color = contentColor,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    BasicText(
+                        post.author.name ?: post.author.username ?: "Unknown",
+                        style = TextStyle(
+                            color = contentColor,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
-                )
+                    VerificationBadge(
+                        verified = post.author.hasVerificationBadge(),
+                        size = VerificationBadgeSize.Small
+                    )
+                }
                 BasicText(
                     post.createdAt.take(10), // Simple date format
                     style = TextStyle(
@@ -939,15 +994,23 @@ private fun GroupMemberCard(
                         color = contentColor,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium
-                    )
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                VerificationBadge(
+                    verified = member.user.hasVerificationBadge(),
+                    size = VerificationBadgeSize.Small
                 )
                 
-                if (member.role != "member") {
+                val normalizedRole = normalizeGroupRole(member.role)
+                if (normalizedRole != null && normalizedRole != "member") {
                     Spacer(Modifier.width(8.dp))
                     Box(
                         Modifier
                             .background(
-                                when (member.role) {
+                                when (normalizedRole) {
                                     "owner" -> Color(0xFFE91E63).copy(alpha = 0.15f)
                                     "admin" -> Color(0xFF9C27B0).copy(alpha = 0.15f)
                                     "moderator" -> Color(0xFF2196F3).copy(alpha = 0.15f)
@@ -958,9 +1021,9 @@ private fun GroupMemberCard(
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         BasicText(
-                            member.role.replaceFirstChar { it.uppercase() },
+                            groupRoleDisplayName(member.role),
                             style = TextStyle(
-                                color = when (member.role) {
+                                color = when (normalizedRole) {
                                     "owner" -> Color(0xFFE91E63)
                                     "admin" -> Color(0xFF9C27B0)
                                     "moderator" -> Color(0xFF2196F3)

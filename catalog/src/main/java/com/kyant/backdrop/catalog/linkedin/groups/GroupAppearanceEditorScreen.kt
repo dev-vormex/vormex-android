@@ -17,7 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material3.CircularProgressIndicator
@@ -109,7 +109,7 @@ fun GroupAppearanceEditorScreen(
     }
 
     val group = uiState.selectedGroup
-    val canEdit = group?.memberRole in listOf("owner", "admin")
+    val canEdit = canManageGroup(group?.memberRole)
 
     Column(Modifier.fillMaxSize()) {
         EditorHeader(

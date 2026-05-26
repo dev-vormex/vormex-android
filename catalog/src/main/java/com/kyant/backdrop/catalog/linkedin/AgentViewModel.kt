@@ -52,6 +52,9 @@ data class AgentUiState(
     val isSavingGoal: Boolean = false,
     val isResolvingApproval: Boolean = false,
     val autoRunEnabled: Boolean = false,
+    val autonomyMode: String = "approval",
+    val powerModeEligible: Boolean = false,
+    val isPremium: Boolean = false,
     val socketConnected: Boolean = false,
     val error: String? = null,
     val liveStatus: String? = null,
@@ -91,7 +94,13 @@ class AgentViewModel(
         observeSocket()
         viewModelScope.launch {
             val storedAutoRun = AgentApiService.getStoredAutoRunEnabled(applicationContext)
-            _uiState.update { it.copy(autoRunEnabled = storedAutoRun) }
+            val storedAutonomyMode = if (storedAutoRun) "power" else "approval"
+            _uiState.update {
+                it.copy(
+                    autoRunEnabled = storedAutoRun,
+                    autonomyMode = storedAutonomyMode
+                )
+            }
             connectSocketIfPossible(null)
             refreshPendingActions(silent = true)
             refreshGoals(silent = true)
@@ -101,12 +110,16 @@ class AgentViewModel(
     fun ensureSession(surface: String) {
         viewModelScope.launch {
             val normalizedSurface = normalizeAgentSurface(surface)
-            val autoRunEnabled = AgentApiService.getStoredAutoRunEnabled(applicationContext)
+            val autonomyMode = AgentApiService.getStoredAutonomyMode(applicationContext)
+            val autoRunEnabled = autonomyMode == "power"
             _uiState.update { state ->
                 state.copy(
                     autoRunEnabled = autoRunEnabled,
+                    autonomyMode = autonomyMode,
                     sessionState = state.sessionState?.copy(
                         allowAutonomousActions = autoRunEnabled,
+                        requestedAutonomyMode = autonomyMode,
+                        effectiveAutonomyMode = if (autoRunEnabled) "power" else "approval",
                         currentSurface = normalizedSurface
                     )
                 )
@@ -129,12 +142,17 @@ class AgentViewModel(
                 context = applicationContext,
                 mode = "text",
                 surface = surface,
-                allowAutonomousActions = autoRunEnabled
+                allowAutonomousActions = autoRunEnabled,
+                autonomyMode = autonomyMode
             ).onSuccess { response ->
                 _uiState.update {
                     it.copy(
                         isLoadingSession = false,
-                        sessionState = response.sessionState
+                        sessionState = response.sessionState,
+                        autoRunEnabled = response.sessionState.effectiveAutonomyMode == "power",
+                        autonomyMode = response.sessionState.effectiveAutonomyMode,
+                        powerModeEligible = response.sessionState.powerModeEligible,
+                        isPremium = response.sessionState.isPremium
                     )
                 }
                 connectSocketIfPossible(response.sessionState.sessionId)
@@ -158,7 +176,8 @@ class AgentViewModel(
         val normalizedSurface = normalizeAgentSurface(surface)
         val normalizedContext = surfaceContext.toSortedMap()
         val sessionId = _uiState.value.sessionState?.sessionId
-        val currentAutoRun = _uiState.value.autoRunEnabled
+        val currentAutonomyMode = _uiState.value.autonomyMode
+        val currentAutoRun = currentAutonomyMode == "power"
 
         _uiState.update { state ->
             val updatedStatus =
@@ -190,7 +209,8 @@ class AgentViewModel(
                 sessionId = sessionId,
                 surface = normalizedSurface,
                 surfaceContext = normalizedContext,
-                allowAutonomousActions = currentAutoRun
+                allowAutonomousActions = currentAutoRun,
+                autonomyMode = currentAutonomyMode
             )
         }
     }
@@ -211,6 +231,7 @@ class AgentViewModel(
 
         viewModelScope.launch {
             val autoRunEnabled = _uiState.value.autoRunEnabled
+            val autonomyMode = _uiState.value.autonomyMode
             pendingRealtimePrompt = openingGreeting?.trim()?.takeIf { it.isNotBlank() }
             shouldStartRealtimeCaptureAfterPrompt = pendingRealtimePrompt != null
             shouldStartRealtimeCapture = !shouldStartRealtimeCaptureAfterPrompt
@@ -231,7 +252,8 @@ class AgentViewModel(
             val sessionState = ensureSessionState(
                 surface = surface,
                 mode = "voice",
-                allowAutonomousActions = autoRunEnabled
+                allowAutonomousActions = autoRunEnabled,
+                autonomyMode = autonomyMode
             ).getOrElse { error ->
                 shouldStartRealtimeCapture = false
                 shouldStartRealtimeCaptureAfterPrompt = false
@@ -249,7 +271,8 @@ class AgentViewModel(
                 sessionId = sessionState.sessionId,
                 surface = surface,
                 surfaceContext = surfaceContext,
-                allowAutonomousActions = autoRunEnabled
+                allowAutonomousActions = autoRunEnabled,
+                autonomyMode = autonomyMode
             )
         }
     }
@@ -274,12 +297,15 @@ class AgentViewModel(
     private suspend fun ensureSessionState(
         surface: String,
         mode: String,
-        allowAutonomousActions: Boolean
+        allowAutonomousActions: Boolean,
+        autonomyMode: String
     ): Result<AgentSessionState> {
         val existingSession = _uiState.value.sessionState
         if (existingSession != null) {
             val updatedSession = existingSession.copy(
                 allowAutonomousActions = allowAutonomousActions,
+                requestedAutonomyMode = autonomyMode,
+                effectiveAutonomyMode = autonomyMode,
                 mode = mode.ifBlank { existingSession.mode }
             )
             _uiState.update { it.copy(sessionState = updatedSession) }
@@ -291,13 +317,18 @@ class AgentViewModel(
             context = applicationContext,
             mode = mode,
             surface = surface,
-            allowAutonomousActions = allowAutonomousActions
+            allowAutonomousActions = allowAutonomousActions,
+            autonomyMode = autonomyMode
         ).fold(
             onSuccess = { response ->
                 _uiState.update {
                     it.copy(
                         isLoadingSession = false,
-                        sessionState = response.sessionState
+                        sessionState = response.sessionState,
+                        autoRunEnabled = response.sessionState.effectiveAutonomyMode == "power",
+                        autonomyMode = response.sessionState.effectiveAutonomyMode,
+                        powerModeEligible = response.sessionState.powerModeEligible,
+                        isPremium = response.sessionState.isPremium
                     )
                 }
                 Result.success(response.sessionState)
@@ -363,12 +394,40 @@ class AgentViewModel(
     }
 
     fun setAutoRunEnabled(enabled: Boolean) {
+        setAutonomyMode(if (enabled) "power" else "approval")
+    }
+
+    fun setPowerModeEnabled(enabled: Boolean, powerModeEligible: Boolean = _uiState.value.powerModeEligible) {
+        if (enabled && !powerModeEligible) {
+            _uiState.update {
+                it.copy(
+                    autoRunEnabled = false,
+                    autonomyMode = "approval",
+                    error = "Power mode is available for Premium users. Approval mode is active."
+                )
+            }
+            viewModelScope.launch {
+                AgentApiService.setStoredAutonomyMode(applicationContext, "approval")
+            }
+            return
+        }
+        setAutonomyMode(if (enabled) "power" else "approval")
+    }
+
+    fun setAutonomyMode(mode: String) {
+        val normalizedMode = if (mode.equals("power", ignoreCase = true)) "power" else "approval"
         viewModelScope.launch {
-            AgentApiService.setStoredAutoRunEnabled(applicationContext, enabled)
+            AgentApiService.setStoredAutonomyMode(applicationContext, normalizedMode)
+            val enabled = normalizedMode == "power"
             _uiState.update { state ->
                 state.copy(
                     autoRunEnabled = enabled,
-                    sessionState = state.sessionState?.copy(allowAutonomousActions = enabled)
+                    autonomyMode = normalizedMode,
+                    sessionState = state.sessionState?.copy(
+                        allowAutonomousActions = enabled,
+                        requestedAutonomyMode = normalizedMode,
+                        effectiveAutonomyMode = normalizedMode
+                    )
                 )
             }
         }
@@ -552,7 +611,8 @@ class AgentViewModel(
         val trimmed = message.trim()
         if (trimmed.isEmpty() || _uiState.value.isSending) return
 
-        val autoRunEnabled = _uiState.value.autoRunEnabled
+        val autonomyMode = _uiState.value.autonomyMode
+        val autoRunEnabled = autonomyMode == "power"
 
         _uiState.update {
             it.copy(
@@ -569,7 +629,8 @@ class AgentViewModel(
                 inputText = trimmed,
                 surface = surface,
                 surfaceContext = surfaceContext,
-                allowAutonomousActions = autoRunEnabled
+                allowAutonomousActions = autoRunEnabled,
+                autonomyMode = autonomyMode
             ).onSuccess { response ->
                 applyTurnResponse(response)
             }.onFailure { error ->
@@ -626,7 +687,8 @@ class AgentViewModel(
     ) {
         if (!_uiState.value.isRecordingVoice) return
 
-        val autoRunEnabled = _uiState.value.autoRunEnabled
+        val autonomyMode = _uiState.value.autonomyMode
+        val autoRunEnabled = autonomyMode == "power"
 
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
@@ -656,6 +718,7 @@ class AgentViewModel(
                         surface = surface,
                         surfaceContext = surfaceContext,
                         allowAutonomousActions = autoRunEnabled,
+                        autonomyMode = autonomyMode,
                         synthesizeAudio = true
                     )
 
@@ -833,10 +896,16 @@ class AgentViewModel(
 
     private fun applyResolvedUiState(
         current: AgentUiState,
-        uiIntents: List<AgentUiIntent>
+        uiIntents: List<AgentUiIntent>,
+        clearInlineResultsWhenEmpty: Boolean = false
     ): Triple<List<AgentUiIntent>, AgentInlineResultsPanel?, Boolean> {
         val (navigationIntents, inlineResults) = resolveUiArtifacts(uiIntents)
-        val shouldClearInlineResults = inlineResults == null && navigationIntents.isNotEmpty()
+        val shouldClearInlineResults =
+            inlineResults == null &&
+                (
+                    navigationIntents.isNotEmpty() ||
+                        (clearInlineResultsWhenEmpty && current.activeInlineResults != null)
+                )
         val activeInlineResults = when {
             inlineResults != null -> inlineResults
             shouldClearInlineResults -> null
@@ -852,12 +921,17 @@ class AgentViewModel(
         _uiState.update { state ->
             val (navigationIntents, inlineResults, resetInlineUiState) = applyResolvedUiState(
                 current = state,
-                uiIntents = response.uiIntents
+                uiIntents = response.uiIntents,
+                clearInlineResultsWhenEmpty = true
             )
 
             state.copy(
                 isSending = false,
                 sessionState = response.sessionState,
+                autoRunEnabled = response.sessionState.effectiveAutonomyMode == "power",
+                autonomyMode = response.sessionState.effectiveAutonomyMode,
+                powerModeEligible = response.sessionState.powerModeEligible,
+                isPremium = response.sessionState.isPremium,
                 messages = state.messages + AgentMessage(
                     role = "assistant",
                     content = response.assistantMessage.ifBlank {
@@ -899,12 +973,17 @@ class AgentViewModel(
         _uiState.update { state ->
             val (navigationIntents, inlineResults, resetInlineUiState) = applyResolvedUiState(
                 current = state,
-                uiIntents = response.uiIntents
+                uiIntents = response.uiIntents,
+                clearInlineResultsWhenEmpty = true
             )
 
             state.copy(
                 isSending = false,
                 sessionState = response.sessionState,
+                autoRunEnabled = response.sessionState.effectiveAutonomyMode == "power",
+                autonomyMode = response.sessionState.effectiveAutonomyMode,
+                powerModeEligible = response.sessionState.powerModeEligible,
+                isPremium = response.sessionState.isPremium,
                 messages = state.messages + newMessages,
                 pendingUiIntents = navigationIntents,
                 activeInlineResults = inlineResults,
@@ -1205,6 +1284,7 @@ class AgentViewModel(
             "home" -> "feed"
             "find", "network" -> "find_people"
             "growth" -> "growth_hub"
+            "talk", "talk_with_ai", "talk_with_vormex" -> "talk_with_vormex"
             else -> surface.trim().lowercase()
         }
     }
@@ -1218,6 +1298,7 @@ class AgentViewModel(
             "profile" -> "Profile"
             "notifications" -> "Notifications"
             "growth_hub" -> "Growth Hub"
+            "talk_with_vormex" -> "vormex"
             else -> "Agent"
         }
     }

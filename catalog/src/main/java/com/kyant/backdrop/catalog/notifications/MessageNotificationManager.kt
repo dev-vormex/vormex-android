@@ -178,6 +178,7 @@ object MessageNotificationManager {
         }
 
         val intent = Intent(context, MainActivity::class.java).apply {
+            action = "com.kyant.backdrop.catalog.OPEN_MESSAGE.$intentAction.$conversationKey"
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             putExtra(VormexMessagingService.EXTRA_ACTION, intentAction)
             conversationId?.let { putExtra(VormexMessagingService.EXTRA_CONVERSATION_ID, it) }
@@ -243,6 +244,7 @@ object MessageNotificationManager {
         val totalMessages = conversationMessages.values.sumOf { it.size }
         val totalChats = conversationMessages.size
         val summaryIntent = Intent(context, MainActivity::class.java).apply {
+            action = "com.kyant.backdrop.catalog.OPEN_MESSAGES_SUMMARY"
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             putExtra(VormexMessagingService.EXTRA_ACTION, VormexMessagingService.ACTION_CHAT)
         }

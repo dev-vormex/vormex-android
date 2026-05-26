@@ -20,7 +20,9 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-private const val RECENT_MESSAGE_LIMIT = 50
+private const val DEFAULT_MESSAGE_PAGE_LIMIT = 50
+private const val PREFETCH_MESSAGE_PAGE_LIMIT = 80
+private const val MAX_CACHED_MESSAGES_PER_CONVERSATION = 1_000
 
 class ChatCacheRepository(
     context: Context,
@@ -36,14 +38,19 @@ class ChatCacheRepository(
     }
 
     suspend fun getCachedConversations(cacheOwnerId: String): List<Conversation> = withContext(Dispatchers.IO) {
-        dao.getConversations(cacheOwnerId).map(::entityToConversation)
+        dao.getConversations(cacheOwnerId)
+            .mapNotNull { entity ->
+                runCatching { entityToConversation(entity) }.getOrNull()
+            }
     }
 
     suspend fun getCachedConversation(
         cacheOwnerId: String,
         conversationId: String
     ): Conversation? = withContext(Dispatchers.IO) {
-        dao.getConversation(cacheOwnerId, conversationId)?.let(::entityToConversation)
+        dao.getConversation(cacheOwnerId, conversationId)?.let { entity ->
+            runCatching { entityToConversation(entity) }.getOrNull()
+        }
     }
 
     suspend fun getCachedMessagesSnapshot(
@@ -51,10 +58,14 @@ class ChatCacheRepository(
         conversationId: String
     ): CachedMessagesSnapshot? = withContext(Dispatchers.IO) {
         val conversation = dao.getConversation(cacheOwnerId, conversationId) ?: return@withContext null
-        val messages = dao.getMessages(cacheOwnerId, conversationId).map(::entityToMessage)
+        val messages = dao.getMessages(cacheOwnerId, conversationId)
+            .mapNotNull { entity ->
+                runCatching { entityToMessage(entity) }.getOrNull()
+            }
         if (messages.isEmpty() && conversation.messagesCachedAt <= 0L) {
             return@withContext null
         }
+
         CachedMessagesSnapshot(
             messages = messages,
             nextCursor = conversation.cachedNextCursor,
@@ -66,11 +77,8 @@ class ChatCacheRepository(
     suspend fun upsertConversation(
         cacheOwnerId: String,
         conversation: Conversation
-    ) {
-        withContext(Dispatchers.IO) {
-            val existing = dao.getConversation(cacheOwnerId, conversation.id)
-            dao.upsertConversations(listOf(conversationToEntity(cacheOwnerId, conversation, existing)))
-        }
+    ) = withContext(Dispatchers.IO) {
+        cacheConversations(cacheOwnerId, listOf(conversation), replaceAll = false)
     }
 
     suspend fun refreshConversations(
@@ -78,43 +86,49 @@ class ChatCacheRepository(
         limit: Int = 30,
         cursor: String? = null
     ): Result<ConversationsResponse> = withContext(Dispatchers.IO) {
-        ApiClient.getConversations(appContext, limit, cursor).onSuccess { response ->
-            cacheConversations(
-                cacheOwnerId = cacheOwnerId,
-                conversations = response.conversations,
-                replaceAll = cursor == null
-            )
-        }
+        ApiClient.getConversations(appContext, limit, cursor)
+            .onSuccess { response ->
+                cacheConversations(
+                    cacheOwnerId = cacheOwnerId,
+                    conversations = response.conversations,
+                    replaceAll = cursor == null
+                )
+            }
     }
 
     suspend fun refreshMessages(
         cacheOwnerId: String,
         conversationId: String,
-        limit: Int = RECENT_MESSAGE_LIMIT,
+        limit: Int = DEFAULT_MESSAGE_PAGE_LIMIT,
         cursor: String? = null
     ): Result<MessagesResponse> = withContext(Dispatchers.IO) {
-        ApiClient.getMessages(appContext, conversationId, limit, cursor).onSuccess { response ->
-            cacheMessagesResponse(cacheOwnerId, conversationId, response, cursor)
-        }
+        ApiClient.getMessages(appContext, conversationId, limit, cursor)
+            .onSuccess { response ->
+                cacheMessagesResponse(
+                    cacheOwnerId = cacheOwnerId,
+                    conversationId = conversationId,
+                    response = response,
+                    cursor = cursor
+                )
+            }
     }
 
     suspend fun prefetchRecentMessages(
         cacheOwnerId: String,
         conversations: List<Conversation>,
-        topCount: Int = 5,
-        limit: Int = RECENT_MESSAGE_LIMIT,
+        topCount: Int = 8,
+        limit: Int = PREFETCH_MESSAGE_PAGE_LIMIT,
         freshnessWindowMs: Long = 2 * 60_000L
-    ) {
-        withContext(Dispatchers.IO) {
-            val topConversations = conversations
-                .sortedByDescending(::conversationSortEpochMillis)
-                .take(topCount)
-
-            topConversations.forEach { conversation ->
+    ) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        conversations
+            .sortedByDescending(::conversationSortEpochMillis)
+            .take(topCount)
+            .forEach { conversation ->
                 val cachedConversation = dao.getConversation(cacheOwnerId, conversation.id)
-                val isFresh = cachedConversation != null &&
-                    cachedConversation.messagesCachedAt > 0L &&
-                    (System.currentTimeMillis() - cachedConversation.messagesCachedAt) < freshnessWindowMs
+                val isFresh = cachedConversation?.messagesCachedAt?.let { cachedAt ->
+                    cachedAt > 0L && now - cachedAt < freshnessWindowMs
+                } ?: false
                 if (!isFresh) {
                     refreshMessages(
                         cacheOwnerId = cacheOwnerId,
@@ -124,7 +138,6 @@ class ChatCacheRepository(
                     )
                 }
             }
-        }
     }
 
     suspend fun cacheConversationMessagesSnapshot(
@@ -133,29 +146,30 @@ class ChatCacheRepository(
         messages: List<Message>,
         nextCursor: String?,
         hasMore: Boolean
-    ) {
-        withContext(Dispatchers.IO) {
-            val conversationId = conversation?.id ?: return@withContext
+    ) = withContext(Dispatchers.IO) {
+        val conversationId = conversation?.id ?: messages.firstOrNull()?.conversationId ?: return@withContext
+        val mergedMessages = dedupeAndSort(messages).takeLast(MAX_CACHED_MESSAGES_PER_CONVERSATION)
+
+        database.withTransaction {
             val existingConversation = dao.getConversation(cacheOwnerId, conversationId)
-            val persistedMessages = dedupeAndSort(messages).takeLast(RECENT_MESSAGE_LIMIT)
-            val effectiveNextCursor = if (messages.size > RECENT_MESSAGE_LIMIT) {
+            val effectiveNextCursor = if (messages.size > MAX_CACHED_MESSAGES_PER_CONVERSATION) {
                 existingConversation?.cachedNextCursor
             } else {
                 nextCursor
             }
-            val effectiveHasMore = if (messages.size > RECENT_MESSAGE_LIMIT) {
+            val effectiveHasMore = if (messages.size > MAX_CACHED_MESSAGES_PER_CONVERSATION) {
                 existingConversation?.hasMoreMessages ?: hasMore
             } else {
                 hasMore
             }
-
-            database.withTransaction {
-                val conversationWithFreshSummary = conversation.copy(
-                    lastMessage = persistedMessages.lastOrNull()?.toConversationLastMessage() ?: conversation.lastMessage,
-                    lastMessageAt = persistedMessages.lastOrNull()?.createdAt ?: conversation.lastMessageAt,
-                    updatedAt = persistedMessages.lastOrNull()?.updatedAt ?: conversation.updatedAt
+            val conversationEntity = conversation?.let {
+                val latestMessage = mergedMessages.lastOrNull()
+                val conversationWithFreshSummary = it.copy(
+                    lastMessage = latestMessage?.toConversationLastMessage() ?: it.lastMessage,
+                    lastMessageAt = latestMessage?.createdAt ?: it.lastMessageAt,
+                    updatedAt = latestMessage?.updatedAt ?: it.updatedAt
                 )
-                val entity = conversationToEntity(
+                conversationToEntity(
                     cacheOwnerId = cacheOwnerId,
                     conversation = conversationWithFreshSummary,
                     existing = existingConversation,
@@ -163,17 +177,17 @@ class ChatCacheRepository(
                     cachedNextCursor = effectiveNextCursor,
                     hasMoreMessages = effectiveHasMore
                 )
-                dao.upsertConversations(listOf(entity))
+            } ?: existingConversation?.copy(
+                messagesCachedAt = System.currentTimeMillis(),
+                cachedNextCursor = effectiveNextCursor,
+                hasMoreMessages = effectiveHasMore
+            )
 
-                dao.deleteMessagesForConversation(cacheOwnerId, conversationId)
-                if (persistedMessages.isNotEmpty()) {
-                    dao.upsertMessages(
-                        persistedMessages.map { message ->
-                            messageToEntity(cacheOwnerId, message)
-                        }
-                    )
-                    dao.trimMessages(cacheOwnerId, conversationId, RECENT_MESSAGE_LIMIT)
-                }
+            conversationEntity?.let { dao.upsertConversations(listOf(it)) }
+            dao.deleteMessagesForConversation(cacheOwnerId, conversationId)
+            if (mergedMessages.isNotEmpty()) {
+                dao.upsertMessages(mergedMessages.map { message -> messageToEntity(cacheOwnerId, message) })
+                dao.trimMessages(cacheOwnerId, conversationId, MAX_CACHED_MESSAGES_PER_CONVERSATION)
             }
         }
     }
@@ -184,38 +198,39 @@ class ChatCacheRepository(
         message: Message,
         currentUserId: String?,
         incrementUnread: Boolean
-    ) {
-        withContext(Dispatchers.IO) {
-            database.withTransaction {
-                dao.upsertMessages(listOf(messageToEntity(cacheOwnerId, message)))
-                dao.trimMessages(cacheOwnerId, conversationId, RECENT_MESSAGE_LIMIT)
+    ) = withContext(Dispatchers.IO) {
+        database.withTransaction {
+            dao.upsertMessages(listOf(messageToEntity(cacheOwnerId, message)))
 
-                val existingConversation = dao.getConversation(cacheOwnerId, conversationId)
-                if (existingConversation != null) {
-                    val updatedConversation = existingConversation.copy(
+            val shouldIncrementUnread = incrementUnread && message.senderId != currentUserId
+            val cachedConversation = dao.getConversation(cacheOwnerId, conversationId)
+                ?: conversationEntityFromMessage(
+                    cacheOwnerId = cacheOwnerId,
+                    conversationId = conversationId,
+                    message = message,
+                    currentUserId = currentUserId
+                )
+            dao.upsertConversations(
+                listOf(
+                    cachedConversation.copy(
                         lastMessageJson = json.encodeToString(message.toConversationLastMessage()),
                         lastMessageAt = message.createdAt,
                         lastMessageAtEpochMillis = parseEpochMillis(message.createdAt),
+                        unreadCount = if (shouldIncrementUnread) cachedConversation.unreadCount + 1 else cachedConversation.unreadCount,
                         updatedAt = message.updatedAt,
-                        updatedAtEpochMillis = parseEpochMillis(message.updatedAt),
-                        unreadCount = if (incrementUnread && message.senderId != currentUserId) {
-                            existingConversation.unreadCount + 1
-                        } else {
-                            existingConversation.unreadCount
-                        }
+                        updatedAtEpochMillis = parseEpochMillis(message.updatedAt)
                     )
-                    dao.upsertConversations(listOf(updatedConversation))
-                }
-            }
+                )
+            )
+            dao.trimMessages(cacheOwnerId, conversationId, MAX_CACHED_MESSAGES_PER_CONVERSATION)
         }
     }
 
     suspend fun markConversationRead(
         cacheOwnerId: String,
         conversationId: String
-    ) {
-        withContext(Dispatchers.IO) {
-            val conversation = dao.getConversation(cacheOwnerId, conversationId) ?: return@withContext
+    ) = withContext(Dispatchers.IO) {
+        dao.getConversation(cacheOwnerId, conversationId)?.let { conversation ->
             dao.upsertConversations(listOf(conversation.copy(unreadCount = 0)))
         }
     }
@@ -224,19 +239,17 @@ class ChatCacheRepository(
         cacheOwnerId: String,
         conversationId: String,
         currentUserId: String
-    ) {
-        withContext(Dispatchers.IO) {
-            val messages = dao.getMessages(cacheOwnerId, conversationId)
-            val updatedMessages = messages.map { entity ->
-                if (entity.senderId == currentUserId && entity.status != "READ") {
-                    entity.copy(status = "READ")
-                } else {
-                    entity
-                }
+    ) = withContext(Dispatchers.IO) {
+        val messages = dao.getMessages(cacheOwnerId, conversationId)
+        val updatedMessages = messages.map { entity ->
+            if (entity.senderId == currentUserId && entity.status != "READ") {
+                entity.copy(status = "READ", updatedAtEpochMillis = System.currentTimeMillis())
+            } else {
+                entity
             }
-            if (updatedMessages != messages) {
-                dao.upsertMessages(updatedMessages)
-            }
+        }
+        if (updatedMessages.isNotEmpty()) {
+            dao.upsertMessages(updatedMessages)
         }
     }
 
@@ -245,39 +258,32 @@ class ChatCacheRepository(
         conversationId: String,
         messageId: String,
         content: String
-    ) {
-        withContext(Dispatchers.IO) {
-            val messages = dao.getMessages(cacheOwnerId, conversationId)
-            val updatedMessages = messages.map { entity ->
-                if (entity.messageId == messageId) {
-                    entity.copy(content = content, updatedAt = formatNowIso(), updatedAtEpochMillis = System.currentTimeMillis())
-                } else {
-                    entity
-                }
-            }
-            if (updatedMessages == messages) return@withContext
-            database.withTransaction {
-                dao.upsertMessages(updatedMessages)
-                val conversation = dao.getConversation(cacheOwnerId, conversationId)
-                val latest = updatedMessages.maxByOrNull { it.createdAtEpochMillis }
-                if (conversation != null && latest?.messageId == messageId) {
-                    dao.upsertConversations(
-                        listOf(
-                            conversation.copy(
-                                lastMessageJson = json.encodeToString(
-                                    ConversationLastMessage(
-                                        id = latest.messageId,
-                                        content = content,
-                                        contentType = latest.contentType,
-                                        senderId = latest.senderId,
-                                        status = latest.status,
-                                        createdAt = latest.createdAt
-                                    )
-                                )
-                            )
+    ) = withContext(Dispatchers.IO) {
+        val messages = dao.getMessages(cacheOwnerId, conversationId)
+        val target = messages.firstOrNull { it.messageId == messageId } ?: return@withContext
+        dao.upsertMessages(
+            listOf(
+                target.copy(
+                    content = content,
+                    updatedAt = formatNowIso(),
+                    updatedAtEpochMillis = System.currentTimeMillis()
+                )
+            )
+        )
+
+        dao.getConversation(cacheOwnerId, conversationId)?.let { conversation ->
+            val lastMessage = conversation.lastMessageJson
+                ?.let { runCatching { json.decodeFromString<ConversationLastMessage>(it) }.getOrNull() }
+            if (lastMessage?.id == messageId) {
+                dao.upsertConversations(
+                    listOf(
+                        conversation.copy(
+                            lastMessageJson = json.encodeToString(lastMessage.copy(content = content)),
+                            updatedAt = formatNowIso(),
+                            updatedAtEpochMillis = System.currentTimeMillis()
                         )
                     )
-                }
+                )
             }
         }
     }
@@ -287,58 +293,26 @@ class ChatCacheRepository(
         conversationId: String,
         messageId: String,
         reactions: List<MessageReaction>
-    ) {
-        withContext(Dispatchers.IO) {
-            val messages = dao.getMessages(cacheOwnerId, conversationId)
-            val updatedMessages = messages.map { entity ->
-                if (entity.messageId == messageId) {
-                    entity.copy(
-                        reactionsJson = json.encodeToString(reactions),
-                        updatedAt = formatNowIso(),
-                        updatedAtEpochMillis = System.currentTimeMillis()
-                    )
-                } else {
-                    entity
-                }
-            }
-            if (updatedMessages != messages) {
-                dao.upsertMessages(updatedMessages)
-            }
-        }
+    ) = withContext(Dispatchers.IO) {
+        val message = dao.getMessages(cacheOwnerId, conversationId)
+            .firstOrNull { it.messageId == messageId }
+            ?: return@withContext
+        dao.upsertMessages(
+            listOf(
+                message.copy(
+                    reactionsJson = if (reactions.isEmpty()) null else json.encodeToString(reactions),
+                    updatedAtEpochMillis = System.currentTimeMillis()
+                )
+            )
+        )
     }
 
     suspend fun deleteCachedMessage(
         cacheOwnerId: String,
         conversationId: String,
         messageId: String
-    ) {
-        withContext(Dispatchers.IO) {
-            database.withTransaction {
-                dao.deleteMessage(cacheOwnerId, conversationId, messageId)
-                val conversation = dao.getConversation(cacheOwnerId, conversationId) ?: return@withTransaction
-                val latestMessage = dao.getMessages(cacheOwnerId, conversationId).lastOrNull()
-                dao.upsertConversations(
-                    listOf(
-                        conversation.copy(
-                            lastMessageJson = latestMessage?.let {
-                                json.encodeToString(
-                                    ConversationLastMessage(
-                                        id = it.messageId,
-                                        content = it.content,
-                                        contentType = it.contentType,
-                                        senderId = it.senderId,
-                                        status = it.status,
-                                        createdAt = it.createdAt
-                                    )
-                                )
-                            },
-                            lastMessageAt = latestMessage?.createdAt,
-                            lastMessageAtEpochMillis = latestMessage?.createdAtEpochMillis ?: 0L
-                        )
-                    )
-                )
-            }
-        }
+    ) = withContext(Dispatchers.IO) {
+        dao.deleteMessage(cacheOwnerId, conversationId, messageId)
     }
 
     suspend fun deleteConversation(
@@ -381,8 +355,6 @@ class ChatCacheRepository(
                 if (conversations.isEmpty()) {
                     dao.deleteAllMessages(cacheOwnerId)
                     dao.deleteAllConversations(cacheOwnerId)
-                } else {
-                    dao.deleteConversationsNotIn(cacheOwnerId, conversations.map { it.id })
                 }
             }
         }
@@ -396,20 +368,21 @@ class ChatCacheRepository(
     ) {
         val existingConversation = dao.getConversation(cacheOwnerId, conversationId)
         val existingMessages = dao.getMessages(cacheOwnerId, conversationId).map(::entityToMessage)
-        val mergedMessages = if (cursor == null) {
-            dedupeAndSort(response.messages).takeLast(RECENT_MESSAGE_LIMIT)
+        val mergedMessages = dedupeAndSort(existingMessages + response.messages)
+            .takeLast(MAX_CACHED_MESSAGES_PER_CONVERSATION)
+        val hasCachedOlderHistory =
+            cursor == null &&
+                existingMessages.size > response.messages.size &&
+                !existingConversation?.cachedNextCursor.isNullOrBlank()
+        val effectiveNextCursor = if (hasCachedOlderHistory) {
+            existingConversation.cachedNextCursor
         } else {
-            dedupeAndSort(existingMessages + response.messages).takeLast(RECENT_MESSAGE_LIMIT)
-        }
-        val effectiveNextCursor = if (cursor == null) {
             response.nextCursor
-        } else {
-            existingConversation?.cachedNextCursor
         }
-        val effectiveHasMore = if (cursor == null) {
-            response.hasMore
+        val effectiveHasMore = if (hasCachedOlderHistory) {
+            existingConversation.hasMoreMessages
         } else {
-            existingConversation?.hasMoreMessages ?: response.hasMore
+            response.hasMore
         }
 
         database.withTransaction {
@@ -427,7 +400,7 @@ class ChatCacheRepository(
             dao.deleteMessagesForConversation(cacheOwnerId, conversationId)
             if (mergedMessages.isNotEmpty()) {
                 dao.upsertMessages(mergedMessages.map { message -> messageToEntity(cacheOwnerId, message) })
-                dao.trimMessages(cacheOwnerId, conversationId, RECENT_MESSAGE_LIMIT)
+                dao.trimMessages(cacheOwnerId, conversationId, MAX_CACHED_MESSAGES_PER_CONVERSATION)
             }
         }
     }
@@ -488,6 +461,32 @@ class ChatCacheRepository(
             reactionsJson = if (message.reactions.isEmpty()) null else json.encodeToString(message.reactions),
             createdAt = message.createdAt,
             createdAtEpochMillis = parseEpochMillis(message.createdAt),
+            updatedAt = message.updatedAt,
+            updatedAtEpochMillis = parseEpochMillis(message.updatedAt)
+        )
+    }
+
+    private fun conversationEntityFromMessage(
+        cacheOwnerId: String,
+        conversationId: String,
+        message: Message,
+        currentUserId: String?
+    ): CachedConversationEntity {
+        val ownerId = currentUserId?.takeIf { it.isNotBlank() } ?: cacheOwnerId
+        val otherId = if (message.senderId == ownerId) message.receiverId else message.senderId
+        val sender = message.sender ?: ChatUser(id = message.senderId)
+        val owner = if (sender.id == ownerId) sender else ChatUser(id = ownerId)
+        val other = if (sender.id == otherId) sender else ChatUser(id = otherId)
+
+        return CachedConversationEntity(
+            cacheOwnerId = cacheOwnerId,
+            conversationId = conversationId,
+            participant1Id = ownerId,
+            participant2Id = otherId,
+            participant1Json = json.encodeToString(owner),
+            participant2Json = json.encodeToString(other),
+            otherParticipantJson = json.encodeToString(other),
+            createdAt = message.createdAt,
             updatedAt = message.updatedAt,
             updatedAtEpochMillis = parseEpochMillis(message.updatedAt)
         )

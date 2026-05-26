@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import android.widget.Toast
@@ -23,7 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -409,7 +410,11 @@ suspend fun Context.downloadChatMediaToCache(
             throw IllegalStateException("Download failed ($responseCode)")
         }
 
-        val totalBytes = connection.contentLengthLong
+        val totalBytes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            connection.contentLengthLong
+        } else {
+            connection.contentLength.toLong()
+        }
         var downloadedBytes = 0L
         var lastReportedProgress = 0f
         var lastProgressDispatchNs = 0L

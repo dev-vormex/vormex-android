@@ -8,8 +8,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,7 +29,10 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.catalog.linkedin.VormexSurfaceTone
+import com.kyant.backdrop.catalog.linkedin.VerificationBadge
+import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
+import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
 import com.kyant.backdrop.catalog.linkedin.vormexSurface
 import com.kyant.backdrop.catalog.network.models.FullComment
 import com.kyant.backdrop.catalog.network.models.MentionUser
@@ -86,7 +89,8 @@ fun CommentsBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = Color.Transparent,
-        dragHandle = null
+        dragHandle = null,
+        contentWindowInsets = { WindowInsets(0.dp) }
     ) {
         Box(
             modifier = Modifier
@@ -557,7 +561,13 @@ private fun CommentCard(
                 ) {
                     BasicText(
                         text = comment.author.name ?: "Unknown",
-                        style = TextStyle(contentColor, if (indentLevel > 0) 11.sp else 12.sp, FontWeight.SemiBold)
+                        style = TextStyle(contentColor, if (indentLevel > 0) 11.sp else 12.sp, FontWeight.SemiBold),
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    VerificationBadge(
+                        verified = comment.author.hasVerificationBadge(),
+                        size = if (indentLevel > 0) VerificationBadgeSize.Micro else VerificationBadgeSize.Small
                     )
                     BasicText(
                         text = formatTimeAgo(comment.createdAt),
@@ -704,6 +714,7 @@ private fun CommentInput(
         modifier = Modifier
             .fillMaxWidth()
             .background(chromeSurface)
+            .navigationBarsPadding()
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)

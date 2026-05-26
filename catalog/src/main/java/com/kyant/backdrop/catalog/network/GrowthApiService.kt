@@ -37,14 +37,20 @@ object GrowthApiService {
         install(ContentNegotiation) {
             json(json)
         }
-        install(Logging) {
-            logger = Logger.ANDROID
-            level = LogLevel.BODY
+        if (BuildConfig.DEBUG) {
+            install(Logging) {
+                logger = Logger.ANDROID
+                level = LogLevel.BODY
+            }
         }
         install(HttpTimeout) {
             requestTimeoutMillis = 120000
             connectTimeoutMillis = 30000
             socketTimeoutMillis = 60000
+        }
+        installVormexAppCheckInterceptor()
+        defaultRequest {
+            applyVormexClientHeaders()
         }
     }
 
@@ -247,9 +253,10 @@ object GrowthApiService {
     suspend fun applyReferralCode(context: Context, code: String): Result<ApplyReferralResponse> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeCode = InputSecurity.identifier(code, "referral code")
             val response = client.post("$baseUrl/referrals/apply") {
                 header("Authorization", "Bearer $token")
-                setBody(ApplyReferralRequest(code = code))
+                setBody(ApplyReferralRequest(code = safeCode))
             }
             if (response.status.value in 200..299) Result.success(response.body())
             else Result.failure(Exception(parseError(response)))
@@ -306,7 +313,8 @@ object GrowthApiService {
     suspend fun checkIn(context: Context, pairId: String): Result<CheckInSummary> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.post("$baseUrl/accountability/partners/$pairId/check-in") {
+            val safePairId = InputSecurity.identifier(pairId, "pairId")
+            val response = client.post("$baseUrl/accountability/partners/$safePairId/check-in") {
                 header("Authorization", "Bearer $token")
             }
             if (response.status.value in 200..299) Result.success(response.body())
@@ -323,10 +331,19 @@ object GrowthApiService {
     ): Result<CareerChatResponse> {
         return try {
             val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeMessage = InputSecurity.prompt(message, "message", 2_000)
+            val safeHistory = history
+                .takeLast(12)
+                .map {
+                    it.copy(
+                        role = InputSecurity.enumValue(it.role, setOf("USER", "ASSISTANT"), "role").lowercase(),
+                        content = InputSecurity.prompt(it.content, "history content", 500)
+                    )
+                }
             val response = client.post("$baseUrl/ai/chat/career-chat") {
                 header("Authorization", "Bearer $token")
                 contentType(ContentType.Application.Json)
-                setBody(CareerChatRequest(message = message, conversationHistory = history))
+                setBody(CareerChatRequest(message = safeMessage, conversationHistory = safeHistory))
             }
             if (response.status.value in 200..299) Result.success(response.body())
             else Result.failure(Exception(parseError(response)))

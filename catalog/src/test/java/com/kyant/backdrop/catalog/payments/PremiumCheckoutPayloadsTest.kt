@@ -1,131 +1,92 @@
 package com.kyant.backdrop.catalog.payments
 
-import com.kyant.backdrop.catalog.network.models.PremiumCheckoutPrefill
-import com.kyant.backdrop.catalog.network.models.PremiumCheckoutResponse
-import com.kyant.backdrop.catalog.network.models.PremiumVerifyRequest
-import com.razorpay.Checkout
+import com.android.billingclient.api.BillingClient
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PremiumCheckoutPayloadsTest {
     @Test
-    fun `preparePremiumCheckoutSession trims and returns secure launch values`() {
-        val prepared = preparePremiumCheckoutSession(
-            PremiumCheckoutResponse(
-                keyId = "  rzp_test_123  ",
-                orderId = "  order_123  ",
-                amountMinor = 19900,
-                currency = "INR",
-                title = "Vormex Premium",
-                description = "Unlock premium",
-                prefill = PremiumCheckoutPrefill(name = "Alex", email = "alex@example.com")
-            )
-        )
-
-        assertEquals(
-            PreparedPremiumCheckoutSession(
-                keyId = "rzp_test_123",
-                orderId = "order_123"
-            ),
-            prepared
-        )
+    fun `premiumBillingCycleForBasePlan maps monthly and yearly prepaid base plans`() {
+        assertEquals("monthly", premiumBillingCycleForBasePlan("premium-monthly-prepaid"))
+        assertEquals("yearly", premiumBillingCycleForBasePlan("premium-yearly-prepaid"))
+        assertNull(premiumBillingCycleForBasePlan("premium-weekly-prepaid"))
     }
 
     @Test
-    fun `preparePremiumCheckoutSession rejects missing secure Razorpay setup`() {
-        val prepared = preparePremiumCheckoutSession(
-            PremiumCheckoutResponse(
-                keyId = " ",
-                orderId = "order_123"
-            )
+    fun `selectPremiumPlayOffer picks the requested billing cycle`() {
+        val offers = listOf(
+            premiumOffer("monthly", PREMIUM_PLAY_MONTHLY_BASE_PLAN_ID, "$1.99"),
+            premiumOffer("yearly", PREMIUM_PLAY_YEARLY_BASE_PLAN_ID, "$9.99")
         )
 
-        assertEquals(null, prepared)
+        assertEquals(PREMIUM_PLAY_MONTHLY_BASE_PLAN_ID, selectPremiumPlayOffer(offers, "monthly")?.basePlanId)
+        assertEquals(PREMIUM_PLAY_YEARLY_BASE_PLAN_ID, selectPremiumPlayOffer(offers, "yearly")?.basePlanId)
     }
 
     @Test
-    fun `preparePremiumVerificationRequest uses the trusted order id from the server session`() {
-        val prepared = preparePremiumVerificationRequest(
-            trustedOrderId = "order_server_123",
-            callbackOrderId = "order_server_123",
-            callbackPaymentId = "pay_123",
-            fallbackPaymentId = null,
-            callbackSignature = "sig_123"
+    fun `selectPremiumPlayOffer falls back to monthly when requested cycle is missing`() {
+        val offers = listOf(
+            premiumOffer("monthly", PREMIUM_PLAY_MONTHLY_BASE_PLAN_ID, "$1.99"),
+            premiumOffer("yearly", PREMIUM_PLAY_YEARLY_BASE_PLAN_ID, "$9.99")
         )
 
-        assertEquals(
-            PremiumVerificationPreparation.Ready(
-                PremiumVerifyRequest(
-                    razorpayOrderId = "order_server_123",
-                    razorpayPaymentId = "pay_123",
-                    razorpaySignature = "sig_123"
-                )
-            ),
-            prepared
-        )
+        assertEquals(PREMIUM_PLAY_MONTHLY_BASE_PLAN_ID, selectPremiumPlayOffer(offers, "weekly")?.basePlanId)
     }
 
     @Test
-    fun `preparePremiumVerificationRequest rejects a mismatched callback order id`() {
-        val prepared = preparePremiumVerificationRequest(
-            trustedOrderId = "order_server_123",
-            callbackOrderId = "order_other_123",
-            callbackPaymentId = "pay_123",
-            fallbackPaymentId = null,
-            callbackSignature = "sig_123"
-        )
+    fun `googlePlayObfuscatedAccountId is deterministic and non raw`() {
+        val first = googlePlayObfuscatedAccountId("user_123")
+        val second = googlePlayObfuscatedAccountId("user_123")
+        val other = googlePlayObfuscatedAccountId("user_456")
 
-        assertTrue(prepared is PremiumVerificationPreparation.Invalid)
-        assertEquals(
-            "Payment details did not match the secure checkout session.",
-            (prepared as PremiumVerificationPreparation.Invalid).message
-        )
+        assertEquals(first, second)
+        assertNotEquals(first, other)
+        assertEquals(64, first.length)
+        assertTrue(first.all { it in '0'..'9' || it in 'a'..'f' })
+        assertNotEquals("user_123", first)
     }
 
     @Test
-    fun `preparePremiumVerificationRequest refuses to trust callback order id without a server order`() {
-        val prepared = preparePremiumVerificationRequest(
-            trustedOrderId = null,
-            callbackOrderId = "order_callback_123",
-            callbackPaymentId = "pay_123",
-            fallbackPaymentId = null,
-            callbackSignature = "sig_123"
-        )
-
-        assertTrue(prepared is PremiumVerificationPreparation.Invalid)
-        assertEquals(
-            "Payment finished, but the secure checkout order could not be confirmed.",
-            (prepared as PremiumVerificationPreparation.Invalid).message
-        )
-    }
-
-    @Test
-    fun `resolvePremiumCheckoutErrorMessage stays quiet when the user cancels checkout`() {
-        assertEquals(
-            null,
-            resolvePremiumCheckoutErrorMessage(
-                code = Checkout.PAYMENT_CANCELED,
-                response = "Payment cancelled by user."
+    fun `resolvePremiumPlayBillingErrorMessage stays quiet when the user cancels`() {
+        assertNull(
+            resolvePremiumPlayBillingErrorMessage(
+                responseCode = BillingClient.BillingResponseCode.USER_CANCELED,
+                debugMessage = "User closed purchase sheet"
             )
         )
     }
 
     @Test
-    fun `resolvePremiumCheckoutErrorMessage converts technical errors into friendly copy`() {
+    fun `resolvePremiumPlayBillingErrorMessage explains pending setup and failures`() {
         assertEquals(
-            "Network issue while opening Razorpay. Please try again.",
-            resolvePremiumCheckoutErrorMessage(
-                code = Checkout.NETWORK_ERROR,
-                response = "{\"error\":\"socket timeout\"}"
-            )
+            "Google Play billing is temporarily unavailable. Please try again.",
+            resolvePremiumPlayBillingErrorMessage(BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE)
         )
         assertEquals(
-            "Payment could not be completed. Please try again.",
-            resolvePremiumCheckoutErrorMessage(
-                code = 999,
-                response = "{\"error\":\"unexpected_state\"}"
-            )
+            "Vormex Premium is not available in Google Play yet.",
+            resolvePremiumPlayBillingErrorMessage(BillingClient.BillingResponseCode.ITEM_UNAVAILABLE)
+        )
+        assertEquals(
+            "Premium purchase could not be completed. Please try again.",
+            resolvePremiumPlayBillingErrorMessage(responseCode = 999, debugMessage = " ")
+        )
+    }
+
+    private fun premiumOffer(
+        billingCycle: String,
+        basePlanId: String,
+        formattedPrice: String
+    ): PremiumPlayPlanOffer {
+        return PremiumPlayPlanOffer(
+            billingCycle = billingCycle,
+            basePlanId = basePlanId,
+            offerToken = "offer-token-$billingCycle",
+            formattedPrice = formattedPrice,
+            priceAmountMicros = 1_990_000,
+            priceCurrencyCode = "USD"
         )
     }
 }

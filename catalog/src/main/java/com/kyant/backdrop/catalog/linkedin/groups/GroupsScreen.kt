@@ -29,8 +29,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -243,7 +243,11 @@ fun GroupsScreen(
                             backdrop = backdrop,
                             contentColor = contentColor,
                             accentColor = accentColor,
-                            invites = uiState.pendingInvites
+                            invites = uiState.pendingInvites,
+                            respondingInviteIds = uiState.respondingInviteIds,
+                            onRespondInvite = { inviteId, action ->
+                                viewModel.respondToGroupInvite(inviteId, action)
+                            }
                         )
                     }
                 }
@@ -621,7 +625,9 @@ private fun InvitesContent(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
-    invites: List<GroupInvite>
+    invites: List<GroupInvite>,
+    respondingInviteIds: Set<String>,
+    onRespondInvite: (String, String) -> Unit
 ) {
     if (invites.isEmpty()) {
         EmptyContent(
@@ -640,7 +646,10 @@ private fun InvitesContent(
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
-                    invite = invite
+                    invite = invite,
+                    isResponding = invite.id in respondingInviteIds,
+                    onAccept = { onRespondInvite(invite.id, "accept") },
+                    onDecline = { onRespondInvite(invite.id, "decline") }
                 )
             }
         }
@@ -854,11 +863,12 @@ fun GroupCard(
                 }
                 
                 // Member role badge
-                if (group.memberRole != null) {
+                val normalizedRole = normalizeGroupRole(group.memberRole)
+                if (normalizedRole != null) {
                     Box(
                         Modifier
                             .background(
-                                when (group.memberRole) {
+                                when (normalizedRole) {
                                     "owner" -> Color(0xFFE91E63).copy(alpha = 0.15f)
                                     "admin" -> Color(0xFF9C27B0).copy(alpha = 0.15f)
                                     "moderator" -> Color(0xFF2196F3).copy(alpha = 0.15f)
@@ -869,9 +879,9 @@ fun GroupCard(
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         BasicText(
-                            group.memberRole.replaceFirstChar { it.uppercase() },
+                            groupRoleDisplayName(group.memberRole),
                             style = TextStyle(
-                                color = when (group.memberRole) {
+                                color = when (normalizedRole) {
                                     "owner" -> Color(0xFFE91E63)
                                     "admin" -> Color(0xFF9C27B0)
                                     "moderator" -> Color(0xFF2196F3)
@@ -963,7 +973,10 @@ private fun InviteCard(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
-    invite: GroupInvite
+    invite: GroupInvite,
+    isResponding: Boolean,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit
 ) {
     Column(
         Modifier
@@ -1029,18 +1042,26 @@ private fun InviteCard(
                     .weight(1f)
                     .background(accentColor, RoundedCornerShape(8.dp))
                     .clip(RoundedCornerShape(8.dp))
-                    .clickable { /* Accept */ }
+                    .clickable(enabled = !isResponding, onClick = onAccept)
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
-                BasicText(
-                    "Accept",
-                    style = TextStyle(
+                if (isResponding) {
+                    CircularProgressIndicator(
                         color = Color.White,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp
                     )
-                )
+                } else {
+                    BasicText(
+                        "Accept",
+                        style = TextStyle(
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
+                }
             }
             
             Box(
@@ -1048,7 +1069,7 @@ private fun InviteCard(
                     .weight(1f)
                     .background(contentColor.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
                     .clip(RoundedCornerShape(8.dp))
-                    .clickable { /* Decline */ }
+                    .clickable(enabled = !isResponding, onClick = onDecline)
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {

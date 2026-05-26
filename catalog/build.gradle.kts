@@ -12,8 +12,10 @@ val releaseStoreFilePath = secret("VORMEX_RELEASE_STORE_FILE")
 val releaseStorePassword = secret("VORMEX_RELEASE_STORE_PASSWORD")
 val releaseKeyAlias = secret("VORMEX_RELEASE_KEY_ALIAS")
 val releaseKeyPassword = secret("VORMEX_RELEASE_KEY_PASSWORD")
-val releaseApiBaseUrl = secret("VORMEX_RELEASE_API_BASE_URL") ?: "https://vormex-backend.onrender.com/api"
-val releaseSocketBaseUrl = secret("VORMEX_RELEASE_SOCKET_BASE_URL") ?: "https://vormex-backend.onrender.com"
+val releaseApiBaseUrl = secret("VORMEX_RELEASE_API_BASE_URL").orEmpty()
+val releaseSocketBaseUrl = secret("VORMEX_RELEASE_SOCKET_BASE_URL").orEmpty()
+val googleWebClientId = secret("VORMEX_GOOGLE_WEB_CLIENT_ID")
+    ?: "562328294412-3qt2hj14q8c43nhjimqevhdopecvp04b.apps.googleusercontent.com"
 // Physical devices and emulators can reach the host machine through adb reverse on 127.0.0.1.
 // If you prefer the emulator-only host bridge, override with VORMEX_DEBUG_* = http://10.0.2.2:5000.
 val localDebugApiBaseUrl = "http://127.0.0.1:5000/api"
@@ -49,11 +51,12 @@ android {
         applicationId = "com.vormex.android"
         minSdk = 23
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.0.3"
+        versionCode = 6
+        versionName = "1.0.4"
         androidResources.localeFilters += arrayOf("en")
         buildConfigField("String", "API_BASE_URL", "\"$releaseApiBaseUrl\"")
         buildConfigField("String", "SOCKET_BASE_URL", "\"$releaseSocketBaseUrl\"")
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
         // Release must not allow HTTP; debug needs cleartext for local dev (e.g. adb reverse to localhost).
         manifestPlaceholders["usesCleartextTraffic"] = "false"
     }
@@ -78,6 +81,9 @@ android {
         compose = true
         buildConfig = true
     }
+    compileOptions {
+        isCoreLibraryDesugaringEnabled = true
+    }
     packaging {
         resources {
             excludes += arrayOf(
@@ -100,7 +106,19 @@ android {
         includeInBundle = false
     }
     lint {
-        checkReleaseBuilds = false
+        checkReleaseBuilds = true
+        abortOnError = true
+    }
+}
+
+gradle.taskGraph.whenReady {
+    val isReleaseTask = allTasks.any { task ->
+        task.path.startsWith(":catalog:") && task.name.contains("Release")
+    }
+    if (isReleaseTask && (releaseApiBaseUrl.isBlank() || releaseSocketBaseUrl.isBlank())) {
+        throw GradleException(
+            "Release builds require VORMEX_RELEASE_API_BASE_URL and VORMEX_RELEASE_SOCKET_BASE_URL."
+        )
     }
 }
 
@@ -114,6 +132,8 @@ kotlin {
 }
 
 dependencies {
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.splashscreen)
@@ -157,6 +177,7 @@ dependencies {
     
     // Google Play Services Location
     implementation(libs.google.play.services.location)
+    implementation(libs.google.play.billing)
 
     // Free/open map rendering for Nearby
     implementation(libs.osmdroid.android)
@@ -167,17 +188,12 @@ dependencies {
 
     // Lottie (e.g. streak fire on profile)
     implementation(libs.lottie.compose)
+    implementation(libs.zxing.core)
 
-    // Razorpay's published AARs still reuse the com.razorpay namespace across modules,
-    // which AGP 9 rejects during manifest processing. These patched local copies only
-    // change the library manifest package and keep the shipped classes/resources intact.
-    implementation(files("libs/razorpay-standard-core-1.7.10-patched.aar"))
-    implementation(files("libs/razorpay-core-1.0.10-patched.aar"))
     implementation("androidx.startup:startup-runtime:1.1.1")
     implementation("com.google.android.gms:play-services-auth:21.1.0")
     implementation("com.google.android.gms:play-services-auth-api-phone:18.0.2")
     implementation("com.google.android.gms:play-services-tasks:17.2.1")
-    implementation("com.google.android.gms:play-services-wallet:18.1.3")
 
     // Room cache
     implementation(libs.androidx.room.runtime)

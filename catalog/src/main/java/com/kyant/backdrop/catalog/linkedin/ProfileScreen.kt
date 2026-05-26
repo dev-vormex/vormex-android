@@ -1,10 +1,18 @@
 package com.kyant.backdrop.catalog.linkedin
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.Geocoder
+import android.location.Location
 import android.net.Uri
+import android.os.Build
+import android.os.Looper
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,9 +49,9 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -54,15 +62,19 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
+import androidx.compose.material.icons.Icons
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
@@ -73,6 +85,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -95,6 +108,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.draw.shadow
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import android.graphics.BitmapFactory
 import android.graphics.Bitmap
@@ -118,6 +133,11 @@ import com.airbnb.lottie.compose.LottieCompositionSpec
 import com.airbnb.lottie.compose.LottieConstants
 import com.airbnb.lottie.compose.animateLottieCompositionAsState
 import com.airbnb.lottie.compose.rememberLottieComposition
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import java.io.ByteArrayOutputStream
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.ui.input.pointer.pointerInput
@@ -133,13 +153,13 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.ui.graphics.graphicsLayer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.time.Instant
-import java.time.OffsetDateTime
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.util.Locale
-import java.util.TimeZone
+import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 private const val ProfileGitHubSectionKey = "profile_github_section"
@@ -156,6 +176,9 @@ fun ProfileScreen(
     onNavigateBack: () -> Unit = {},
     onEditProfile: () -> Unit = {},
     onMessage: (String) -> Unit = {},
+    showStartConversation: Boolean = false,
+    isPreparingConversationStarter: Boolean = false,
+    onStartConversation: (String) -> Unit = {},
     onOpenFeedItem: (FeedItem) -> Unit = {},
     onOpenProfile: ((String) -> Unit)? = null
 ) {
@@ -172,7 +195,6 @@ fun ProfileScreen(
     val appearance = currentVormexAppearance(themeMode)
     val isGlassTheme = appearance.isGlassTheme
     val isDarkTheme = appearance.isDarkTheme
-    val isLightTheme = appearance.isLightTheme
     
     // Project screen state
     var showAddProject by remember { mutableStateOf(false) }
@@ -213,7 +235,8 @@ fun ProfileScreen(
     
     // Handle back button for profile overlays, or navigate back from profile
     BackHandler(
-        enabled = showAddProject || editingProject != null || projectDetailProject != null ||
+        enabled = uiState.isEditingProfile ||
+                showAddProject || editingProject != null || projectDetailProject != null ||
                 showAddExperience || editingExperience != null ||
                 showAddEducation || editingEducation != null ||
                 showAddCertificate || editingCertificate != null || viewingCertificate != null ||
@@ -223,6 +246,7 @@ fun ProfileScreen(
     ) {
         when {
             // Close any open dialogs/overlays first
+            uiState.isEditingProfile -> screenViewModel.cancelEditingProfile()
             showAddProject -> showAddProject = false
             editingProject != null -> editingProject = null
             projectDetailProject != null -> dismissProjectDetail()
@@ -258,7 +282,7 @@ fun ProfileScreen(
                     accentColor = accentColor,
                     isGlassTheme = isGlassTheme,
                     isDarkTheme = isDarkTheme,
-                    onEditProfile = onEditProfile,
+                    onEditProfile = { screenViewModel.startEditingProfile() },
                     onConnect = { screenViewModel.sendConnectionRequest() },
                     onCancelRequest = { screenViewModel.cancelConnectionRequest() },
                     onAcceptRequest = { screenViewModel.acceptConnectionRequest() },
@@ -276,11 +300,27 @@ fun ProfileScreen(
                     onOpenConnections = { screenViewModel.openConnectionsSheet() },
                     onOpenFollowers = { screenViewModel.openFollowersSheet() },
                     onMessage = onMessage,
+                    showStartConversation = showStartConversation,
+                    isPreparingConversationStarter = isPreparingConversationStarter,
+                    onStartConversation = onStartConversation,
                     onOpenProfile = onOpenProfile,
                     onOpenFeedItem = onOpenFeedItem,
                     onVotePoll = { postId, optionId -> screenViewModel.votePoll(postId, optionId) },
                     onUploadAvatar = { screenViewModel.uploadAvatar(it) },
                     onUploadBanner = { screenViewModel.uploadBanner(it) },
+                    onConnectGitHub = {
+                        screenViewModel.startGitHubOAuth { authUrl ->
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)))
+                            }.onFailure {
+                                screenViewModel.reportGitHubBrowserOpenFailure(
+                                    "Couldn't open GitHub authorization"
+                                )
+                            }
+                        }
+                    },
+                    onSyncGitHub = { screenViewModel.syncGitHubStats() },
+                    onDisconnectGitHub = { screenViewModel.disconnectGitHub() },
                     // Project callbacks
                     onAddProject = { showAddProject = true },
                     onEditProject = { editingProject = it },
@@ -363,6 +403,22 @@ fun ProfileScreen(
                 }
             )
         }
+
+        val profileEditDraft = uiState.profileEditDraft
+        if (uiState.isEditingProfile && profileEditDraft != null) {
+            EditProfileScreen(
+                draft = profileEditDraft,
+                isSaving = uiState.isSavingProfile,
+                error = uiState.profileEditError,
+                backdrop = backdrop,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                onDraftChange = { screenViewModel.updateProfileEditDraft { _ -> it } },
+                onDraftTransform = { transform -> screenViewModel.updateProfileEditDraft(transform) },
+                onDismiss = { screenViewModel.cancelEditingProfile() },
+                onSave = { screenViewModel.saveProfileEdits() }
+            )
+        }
         
         // Add Project Screen
         if (showAddProject) {
@@ -408,22 +464,43 @@ fun ProfileScreen(
             )
         ) {
             projectDetailProject?.let { project ->
-                ProjectDetailScreen(
-                    project = project,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onEdit = {
-                        dismissProjectDetail {
-                            editingProject = project
-                        }
-                    },
-                    onBack = { dismissProjectDetail() }
-                )
+                val orderedProjects = remember(uiState.profile?.projects) {
+                    uiState.profile?.projects.orEmpty().sortedWith(
+                        compareByDescending<Project> { it.featured }
+                            .thenByDescending { it.isCurrent }
+                            .thenByDescending { it.startDate }
+                    )
+                }.ifEmpty { listOf(project) }
+                val initialProjectPage = orderedProjects.indexOfFirst { it.id == project.id }.coerceAtLeast(0)
+
+                key(project.id, orderedProjects.size) {
+                    val projectPagerState = rememberPagerState(
+                        initialPage = initialProjectPage,
+                        pageCount = { orderedProjects.size }
+                    )
+
+                    HorizontalPager(
+                        state = projectPagerState,
+                        modifier = Modifier.fillMaxSize()
+                    ) { page ->
+                        val pageProject = orderedProjects[page]
+                        ProjectDetailScreen(
+                            project = pageProject,
+                            backdrop = backdrop,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            isOwner = uiState.isOwner,
+                            onEdit = {
+                                dismissProjectDetail {
+                                    editingProject = pageProject
+                                }
+                            },
+                            onBack = { dismissProjectDetail() }
+                        )
+                    }
+                }
             }
         }
-        
         // Add Experience Screen
         if (showAddExperience) {
             AddEditExperienceScreen(
@@ -559,6 +636,7 @@ fun ProfileScreen(
                 backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
+                certificates = uiState.profile?.certificates.orEmpty(),
                 onDismiss = { viewingCertificate = null }
             )
         }
@@ -608,6 +686,7 @@ fun ProfileScreen(
                 backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
+                achievements = uiState.profile?.achievements.orEmpty(),
                 onDismiss = { viewingAchievement = null }
             )
         }
@@ -745,6 +824,662 @@ private fun AddSkillDialog(
 }
 
 @Composable
+private fun EditProfileScreen(
+    draft: ProfileEditDraft,
+    isSaving: Boolean,
+    error: String?,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    onDraftChange: (ProfileEditDraft) -> Unit,
+    onDraftTransform: ((ProfileEditDraft) -> ProfileEditDraft) -> Unit,
+    onDismiss: () -> Unit,
+    onSave: () -> Unit
+) {
+    val appearance = currentVormexAppearance()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var isResolvingDeviceLocation by remember { mutableStateOf(false) }
+    var deviceLocationMessage by remember { mutableStateOf<String?>(null) }
+    var deviceLocationError by remember { mutableStateOf<String?>(null) }
+
+    fun applyDeviceLocation() {
+        if (isResolvingDeviceLocation) return
+        deviceLocationMessage = null
+        deviceLocationError = null
+        isResolvingDeviceLocation = true
+        scope.launch {
+            getProfileLocationLabelFromDevice(context)
+                .onSuccess { label ->
+                    onDraftTransform { current -> current.copy(location = label) }
+                    deviceLocationMessage = "Location updated from device"
+                }
+                .onFailure { failure ->
+                    deviceLocationError = failure.message ?: "Couldn't get device location"
+                }
+            isResolvingDeviceLocation = false
+        }
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val granted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true ||
+            hasProfileLocationPermission(context)
+        if (granted) {
+            applyDeviceLocation()
+        } else {
+            deviceLocationMessage = null
+            deviceLocationError = "Location permission denied"
+        }
+    }
+
+    fun requestDeviceLocation() {
+        if (hasProfileLocationPermission(context)) {
+            applyDeviceLocation()
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (appearance.isGlassTheme) {
+                    Modifier.drawBackdrop(
+                        backdrop = backdrop,
+                        shape = { RoundedRectangle(0f.dp) },
+                        effects = {
+                            vibrancy()
+                            blur(22f.dp.toPx())
+                        },
+                        onDrawSurface = {
+                            drawRect(Color.Black.copy(alpha = if (appearance.isDarkTheme) 0.42f else 0.24f))
+                        }
+                    )
+                } else {
+                    Modifier.background(appearance.backgroundColor)
+                }
+            )
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        if (appearance.isGlassTheme) {
+                            Color.Black.copy(alpha = 0.14f)
+                        } else {
+                            appearance.navigationColor
+                        }
+                    )
+                    .border(1.dp, appearance.navigationBorderColor)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                BasicText(
+                    "Cancel",
+                    style = TextStyle(
+                        contentColor.copy(alpha = if (isSaving) 0.35f else 0.76f),
+                        14.sp,
+                        FontWeight.Medium
+                    ),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(enabled = !isSaving, onClick = onDismiss)
+                        .padding(horizontal = 8.dp, vertical = 8.dp)
+                )
+
+                BasicText(
+                    "Edit Profile",
+                    style = TextStyle(contentColor, 18.sp, FontWeight.Bold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (isSaving) accentColor.copy(alpha = 0.62f) else accentColor)
+                        .clickable(enabled = !isSaving, onClick = onSave)
+                        .padding(horizontal = 14.dp, vertical = 9.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (isSaving) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                        }
+                        BasicText(
+                            if (isSaving) "Saving" else "Save",
+                            style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold)
+                        )
+                    }
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    top = 16.dp,
+                    end = 16.dp,
+                    bottom = 112.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                error?.let {
+                    item {
+                        BasicText(
+                            it,
+                            style = TextStyle(Color(0xFFEF4444), 12.sp, FontWeight.Medium)
+                        )
+                    }
+                }
+
+                item {
+                    ProfileEditTextField(
+                        label = "Name",
+                        value = draft.name,
+                        placeholder = "Your full name",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onValueChange = { onDraftChange(draft.copy(name = it)) }
+                    )
+                }
+                item {
+                    ProfileEditTextField(
+                        label = "Headline",
+                        value = draft.headline,
+                        placeholder = "Student, Android developer, founder...",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onValueChange = { onDraftChange(draft.copy(headline = it)) }
+                    )
+                }
+                item {
+                    ProfileEditOpenToWorkRow(
+                        checked = draft.isOpenToOpportunities,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onToggle = {
+                            onDraftChange(
+                                draft.copy(isOpenToOpportunities = !draft.isOpenToOpportunities)
+                            )
+                        }
+                    )
+                }
+                item {
+                    ProfileEditTextField(
+                        label = "About",
+                        value = draft.bio,
+                        placeholder = "Tell people what you are building, learning, or looking for",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        singleLine = false,
+                        minHeight = 116.dp,
+                        onValueChange = { onDraftChange(draft.copy(bio = it)) }
+                    )
+                }
+                item {
+                    ProfileEditLocationField(
+                        value = draft.location,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isResolvingDeviceLocation = isResolvingDeviceLocation,
+                        deviceLocationMessage = deviceLocationMessage,
+                        deviceLocationError = deviceLocationError,
+                        onUseDeviceLocation = ::requestDeviceLocation,
+                        onValueChange = {
+                            deviceLocationMessage = null
+                            deviceLocationError = null
+                            onDraftChange(draft.copy(location = it))
+                        }
+                    )
+                }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ProfileEditTextField(
+                            label = "College",
+                            value = draft.college,
+                            placeholder = "College name",
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            modifier = Modifier.weight(1f),
+                            onValueChange = { onDraftChange(draft.copy(college = it)) }
+                        )
+                        ProfileEditTextField(
+                            label = "Branch",
+                            value = draft.branch,
+                            placeholder = "CSE, ECE...",
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            modifier = Modifier.weight(1f),
+                            onValueChange = { onDraftChange(draft.copy(branch = it)) }
+                        )
+                    }
+                }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ProfileEditTextField(
+                            label = "Degree",
+                            value = draft.degree,
+                            placeholder = "B.Tech",
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            modifier = Modifier.weight(1f),
+                            onValueChange = { onDraftChange(draft.copy(degree = it)) }
+                        )
+                        ProfileEditTextField(
+                            label = "Current Year",
+                            value = draft.currentYear,
+                            placeholder = "1-5",
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            modifier = Modifier.weight(1f),
+                            onValueChange = { value ->
+                                onDraftChange(
+                                    draft.copy(currentYear = value.filter { it.isDigit() }.take(1))
+                                )
+                            }
+                        )
+                    }
+                }
+                item {
+                    ProfileEditTextField(
+                        label = "Graduation Year",
+                        value = draft.graduationYear,
+                        placeholder = "2027",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onValueChange = { value ->
+                            onDraftChange(
+                                draft.copy(graduationYear = value.filter { it.isDigit() }.take(4))
+                            )
+                        }
+                    )
+                }
+                item {
+                    ProfileEditTextField(
+                        label = "LinkedIn",
+                        value = draft.linkedinUrl,
+                        placeholder = "https://linkedin.com/in/username",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onValueChange = { onDraftChange(draft.copy(linkedinUrl = it)) }
+                    )
+                }
+                item {
+                    ProfileEditTextField(
+                        label = "GitHub",
+                        value = draft.githubProfileUrl,
+                        placeholder = "https://github.com/username",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onValueChange = { onDraftChange(draft.copy(githubProfileUrl = it)) }
+                    )
+                }
+                item {
+                    ProfileEditTextField(
+                        label = "Portfolio",
+                        value = draft.portfolioUrl,
+                        placeholder = "https://your-site.com",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onValueChange = { onDraftChange(draft.copy(portfolioUrl = it)) }
+                    )
+                }
+                item {
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileEditLocationField(
+    value: String,
+    contentColor: Color,
+    accentColor: Color,
+    isResolvingDeviceLocation: Boolean,
+    deviceLocationMessage: String?,
+    deviceLocationError: String?,
+    onUseDeviceLocation: () -> Unit,
+    onValueChange: (String) -> Unit
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText(
+                "Location",
+                style = TextStyle(contentColor.copy(alpha = 0.62f), 12.sp, FontWeight.SemiBold)
+            )
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(accentColor.copy(alpha = if (isResolvingDeviceLocation) 0.12f else 0.18f))
+                    .clickable(enabled = !isResolvingDeviceLocation, onClick = onUseDeviceLocation)
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (isResolvingDeviceLocation) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(13.dp),
+                        color = accentColor,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_location),
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                BasicText(
+                    if (isResolvingDeviceLocation) "Locating" else "Use device",
+                    style = TextStyle(accentColor, 12.sp, FontWeight.SemiBold)
+                )
+            }
+        }
+
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            textStyle = TextStyle(contentColor, 14.sp),
+            cursorBrush = SolidColor(accentColor),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            decorationBox = { inner ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(contentColor.copy(alpha = 0.06f))
+                        .border(1.dp, contentColor.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    if (value.isEmpty()) {
+                        BasicText(
+                            "City, State",
+                            style = TextStyle(contentColor.copy(alpha = 0.36f), 14.sp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    inner()
+                }
+            }
+        )
+
+        deviceLocationError?.let {
+            BasicText(
+                it,
+                style = TextStyle(Color(0xFFEF4444), 12.sp, FontWeight.Medium)
+            )
+        } ?: deviceLocationMessage?.let {
+            BasicText(
+                it,
+                style = TextStyle(contentColor.copy(alpha = 0.56f), 12.sp, FontWeight.Medium)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProfileEditTextField(
+    label: String,
+    value: String,
+    placeholder: String,
+    contentColor: Color,
+    accentColor: Color,
+    modifier: Modifier = Modifier,
+    singleLine: Boolean = true,
+    minHeight: androidx.compose.ui.unit.Dp = 48.dp,
+    onValueChange: (String) -> Unit
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        BasicText(
+            label,
+            style = TextStyle(contentColor.copy(alpha = 0.62f), 12.sp, FontWeight.SemiBold)
+        )
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            textStyle = TextStyle(contentColor, 14.sp),
+            cursorBrush = SolidColor(accentColor),
+            singleLine = singleLine,
+            modifier = Modifier.fillMaxWidth(),
+            decorationBox = { inner ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = minHeight)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(contentColor.copy(alpha = 0.06f))
+                        .border(1.dp, contentColor.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                    contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart
+                ) {
+                    if (value.isEmpty()) {
+                        BasicText(
+                            placeholder,
+                            style = TextStyle(contentColor.copy(alpha = 0.36f), 14.sp),
+                            maxLines = if (singleLine) 1 else 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    inner()
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ProfileEditOpenToWorkRow(
+    checked: Boolean,
+    contentColor: Color,
+    accentColor: Color,
+    onToggle: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(
+                if (checked) Color(0xFF22C55E).copy(alpha = 0.15f)
+                else contentColor.copy(alpha = 0.06f)
+            )
+            .clickable(onClick = onToggle)
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            BasicText(
+                "Open to work",
+                style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold)
+            )
+            BasicText(
+                if (checked) "Shown as #OpenToWork on your profile" else "Hidden from your profile header",
+                style = TextStyle(contentColor.copy(alpha = 0.54f), 12.sp)
+            )
+        }
+        Box(
+            modifier = Modifier
+                .width(44.dp)
+                .height(24.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(if (checked) Color(0xFF22C55E) else contentColor.copy(alpha = 0.16f))
+                .padding(3.dp),
+            contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .background(if (checked) Color.White else accentColor.copy(alpha = 0.72f))
+            )
+        }
+    }
+}
+
+private fun hasProfileLocationPermission(context: Context): Boolean {
+    return ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_FINE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+}
+
+private suspend fun getProfileLocationLabelFromDevice(context: Context): Result<String> {
+    if (!hasProfileLocationPermission(context)) {
+        return Result.failure(IllegalStateException("Location permission denied"))
+    }
+
+    val location = getProfileDeviceLocation(context)
+        ?: return Result.failure(IllegalStateException("Couldn't get device location"))
+    val label = reverseGeocodeProfileLocation(
+        context = context,
+        latitude = location.latitude,
+        longitude = location.longitude
+    )
+
+    return if (label.isNullOrBlank()) {
+        Result.failure(IllegalStateException("Couldn't resolve your city"))
+    } else {
+        Result.success(label)
+    }
+}
+
+@SuppressLint("MissingPermission")
+private suspend fun getProfileDeviceLocation(context: Context): Location? =
+    suspendCancellableCoroutine { continuation ->
+        val client = LocationServices.getFusedLocationProviderClient(context)
+        var callback: LocationCallback? = null
+
+        fun finish(location: Location?) {
+            if (continuation.isActive) {
+                continuation.resume(location)
+            }
+        }
+
+        fun requestFreshLocation() {
+            val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 4_000L)
+                .setMaxUpdates(1)
+                .build()
+            val freshCallback = object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    client.removeLocationUpdates(this)
+                    finish(result.lastLocation)
+                }
+            }
+            callback = freshCallback
+            runCatching {
+                client.requestLocationUpdates(
+                    request,
+                    freshCallback,
+                    Looper.getMainLooper()
+                ).addOnFailureListener {
+                    finish(null)
+                }
+            }.onFailure {
+                finish(null)
+            }
+        }
+
+        runCatching {
+            client.lastLocation
+                .addOnSuccessListener { lastLocation ->
+                    if (lastLocation != null) {
+                        finish(lastLocation)
+                    } else {
+                        requestFreshLocation()
+                    }
+                }
+                .addOnFailureListener {
+                    requestFreshLocation()
+                }
+        }.onFailure {
+            finish(null)
+        }
+
+        continuation.invokeOnCancellation {
+            callback?.let { client.removeLocationUpdates(it) }
+        }
+    }
+
+private suspend fun reverseGeocodeProfileLocation(
+    context: Context,
+    latitude: Double,
+    longitude: Double
+): String? = withContext(Dispatchers.IO) {
+    runCatching {
+        val geocoder = Geocoder(context, Locale.getDefault())
+        val addresses = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            suspendCancellableCoroutine<List<android.location.Address>?> { continuation ->
+                geocoder.getFromLocation(latitude, longitude, 1) { result ->
+                    if (continuation.isActive) {
+                        continuation.resume(result)
+                    }
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            geocoder.getFromLocation(latitude, longitude, 1)
+        }
+
+        addresses
+            ?.firstOrNull()
+            ?.let { address ->
+                listOfNotNull(
+                    address.locality ?: address.subAdminArea ?: address.subLocality,
+                    address.adminArea,
+                    address.countryName
+                )
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .joinToString(", ")
+                    .takeIf { it.isNotBlank() }
+            }
+    }.getOrNull()
+}
+
+@Composable
 private fun ProfileContent(
     uiState: ProfileUiState,
     backdrop: LayerBackdrop,
@@ -770,11 +1505,17 @@ private fun ProfileContent(
     onOpenConnections: () -> Unit,
     onOpenFollowers: () -> Unit,
     onMessage: (String) -> Unit,
+    showStartConversation: Boolean,
+    isPreparingConversationStarter: Boolean,
+    onStartConversation: (String) -> Unit,
     onOpenProfile: ((String) -> Unit)? = null,
     onOpenFeedItem: (FeedItem) -> Unit,
     onVotePoll: (String, String) -> Unit,
     onUploadAvatar: (ByteArray) -> Unit,
     onUploadBanner: (ByteArray) -> Unit,
+    onConnectGitHub: () -> Unit = {},
+    onSyncGitHub: () -> Unit = {},
+    onDisconnectGitHub: () -> Unit = {},
     // Project callbacks
     onAddProject: () -> Unit = {},
     onEditProject: (Project) -> Unit = {},
@@ -802,8 +1543,6 @@ private fun ProfileContent(
     onDeleteFeedPost: (String) -> Unit = {}
 ) {
     val profile = uiState.profile!!
-    // Derive isLightTheme for components that need it
-    val isLightTheme = !isDarkTheme
     val listState = rememberLazyListState()
     val isGitHubItemVisible by remember(listState, profile.github.connected, uiState.isOwner) {
         derivedStateOf {
@@ -871,6 +1610,9 @@ private fun ProfileContent(
                 onOpenConnections = onOpenConnections,
                 onOpenFollowers = onOpenFollowers,
                 onMessage = onMessage,
+                showStartConversation = showStartConversation,
+                isPreparingConversationStarter = isPreparingConversationStarter,
+                onStartConversation = onStartConversation,
                 onOpenMutualProfile = onOpenProfile,
                 onUploadAvatar = onUploadAvatar,
                 onUploadBanner = onUploadBanner
@@ -888,6 +1630,8 @@ private fun ProfileContent(
                 isOwner = uiState.isOwner,
                 isEditingBio = uiState.isEditingBio,
                 editedBio = uiState.editedBio,
+                isSavingBio = uiState.isSavingBio,
+                bioEditError = uiState.bioEditError,
                 onEditBio = onEditBio,
                 onSaveBio = onSaveBio,
                 onCancelEditBio = onCancelEditBio,
@@ -906,7 +1650,14 @@ private fun ProfileContent(
                     contentColor = contentColor,
                     accentColor = accentColor,
                     isOwner = uiState.isOwner,
-                    isVisible = shouldAnimateGitHubSection
+                    isVisible = shouldAnimateGitHubSection,
+                    isConnecting = uiState.isGitHubConnecting,
+                    isSyncing = uiState.isGitHubSyncing,
+                    isDisconnecting = uiState.isGitHubDisconnecting,
+                    actionError = uiState.githubActionError,
+                    onConnect = onConnectGitHub,
+                    onSync = onSyncGitHub,
+                    onDisconnect = onDisconnectGitHub
                 )
             }
         }
@@ -1029,24 +1780,55 @@ private fun ProfileContent(
         }
         
         // Activity Feed Section
-        item {
+        item(key = "profile_activity_header", contentType = "profile_activity_header") {
             Spacer(Modifier.height(12.dp))
-            ActivityFeedSection(
-                feedItems = uiState.feedItems,
+            ActivityFeedHeaderSection(
+                isEmpty = uiState.feedItems.isEmpty(),
                 currentFilter = uiState.feedFilter,
                 isLoading = uiState.isLoadingFeed,
-                hasMore = uiState.feedHasMore,
                 backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
-                isLightTheme = isLightTheme,
+                onFilterChange = onFilterChange
+            )
+        }
+
+        items(
+            items = uiState.feedItems,
+            key = { item -> "profile_activity_${item.entityType ?: item.contentType}_${item.id}" },
+            contentType = { "profile_activity_item" }
+        ) { item ->
+            Spacer(Modifier.height(12.dp))
+            ActivityFeedItemSection(
+                item = item,
+                contentColor = contentColor,
+                accentColor = accentColor,
                 isOwner = uiState.isOwner,
-                onFilterChange = onFilterChange,
-                onLoadMore = onLoadMore,
                 onOpenItem = onOpenFeedItem,
                 onVotePoll = onVotePoll,
                 onDeletePost = onDeleteFeedPost
             )
+        }
+
+        if (uiState.isLoadingFeed) {
+            item(key = "profile_activity_loading", contentType = "profile_activity_status") {
+                Spacer(Modifier.height(12.dp))
+                ActivityFeedLoadingSection(
+                    contentColor = contentColor,
+                    accentColor = accentColor
+                )
+            }
+        }
+
+        if (uiState.feedHasMore && !uiState.isLoadingFeed) {
+            item(key = "profile_activity_load_more", contentType = "profile_activity_status") {
+                Spacer(Modifier.height(12.dp))
+                ActivityFeedLoadMoreSection(
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onLoadMore = onLoadMore
+                )
+            }
         }
     }
 }
@@ -1083,37 +1865,52 @@ private fun ProfileHeader(
     onOpenConnections: () -> Unit,
     onOpenFollowers: () -> Unit,
     onMessage: (String) -> Unit,
+    showStartConversation: Boolean,
+    isPreparingConversationStarter: Boolean,
+    onStartConversation: (String) -> Unit,
     onOpenMutualProfile: ((String) -> Unit)? = null,
     onUploadAvatar: (ByteArray) -> Unit = {},
     onUploadBanner: (ByteArray) -> Unit = {}
 ) {
     val context = LocalContext.current
-    val profileFrameEnabled by SettingsPreferences.profileFrameEnabled(context).collectAsState(initial = false)
-    val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
     var showShareMenu by remember { mutableStateOf(false) }
     var shareMenuAnchorBounds by remember { mutableStateOf<Rect?>(null) }
+    val profileMenuAppearance = currentVormexAppearance(
+        fallbackThemeMode = when {
+            isGlassTheme -> VormexThemeMode.Glass.key
+            isDarkTheme -> VormexThemeMode.Dark.key
+            else -> VormexThemeMode.Light.key
+        }
+    )
+    val profileMenuContainerColor = profileMenuAppearance.overlayColor
+    val profileMenuContentColor = profileMenuAppearance.contentColor
+    val profileMenuMutedContentColor = profileMenuAppearance.mutedContentColor
+    val profileMenuDangerColor = if (profileMenuAppearance.isDarkTheme) Color(0xFFF87171) else Color(0xFFDC2626)
+    val profileBodySurfaceColor = if (isGlassTheme) Color.Transparent else profileMenuAppearance.cardColor
+    val profileBodyContentColor = profileMenuAppearance.contentColor
+    val profileBodyMutedContentColor = profileMenuAppearance.mutedContentColor
+    val profileBodySubtleColor = if (isGlassTheme) {
+        profileMenuAppearance.controlColor
+    } else {
+        profileMenuAppearance.subtleColor
+    }
+    val profileBodyBorderColor = profileMenuAppearance.cardBorderColor
+    val profileAvatarRingColor = if (isGlassTheme) {
+        Color.White.copy(alpha = 0.72f)
+    } else {
+        profileMenuAppearance.cardColor
+    }
     
     // Image editor state
     var showAvatarEditor by remember { mutableStateOf(false) }
     var showBannerEditor by remember { mutableStateOf(false) }
+    var showAvatarPreview by remember { mutableStateOf(false) }
     var selectedImageBytes by remember { mutableStateOf<ByteArray?>(null) }
     
     // Cache key to force image refresh
     var avatarCacheKey by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var bannerCacheKey by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    val hasAnimatedProfileFrame = isAnimatedProfileFrame(user.profileRing)
-    val hasProfileRing = !user.profileRing.isNullOrBlank()
-    val showProfileFrame = if (isOwner) profileFrameEnabled || hasAnimatedProfileFrame else hasAnimatedProfileFrame
-    val avatarContainerSize = if (hasProfileRing) 92.dp else 88.dp
-    val avatarOuterSize = if (showProfileFrame) 164.dp else avatarContainerSize
-    val avatarImageSize = when {
-        showProfileFrame -> 86.dp
-        hasProfileRing -> 84.dp
-        else -> 88.dp
-    }
-    val avatarOffsetX = if (showProfileFrame) 10.dp else 0.dp
-    val isCurrentlyOnline = isProfileCurrentlyOnline(user, stats)
-    val presenceLabel = buildProfilePresenceLabel(user, stats, isOwner)
+    val avatarContainerSize = 108.dp
     val bannerImageUrl = user.bannerImageUrl?.takeIf { it.isNotBlank() }
     
     // Image pickers
@@ -1182,6 +1979,14 @@ private fun ProfileHeader(
             }
         )
     }
+
+    if (showAvatarPreview) {
+        ProfileAvatarPreviewDialog(
+            user = user,
+            avatarCacheKey = avatarCacheKey,
+            onDismiss = { showAvatarPreview = false }
+        )
+    }
     
     Box(
         Modifier
@@ -1197,15 +2002,15 @@ private fun ProfileHeader(
                             lens(8f.dp.toPx(), 16f.dp.toPx())
                         },
                         onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = 0.12f))
+                            drawRect(profileMenuAppearance.cardColor)
                         }
                     )
                     isDarkTheme -> Modifier
                         .clip(ProfileCardShape)
-                        .background(Color(0xFF1E1E1E))
+                        .background(profileMenuAppearance.cardColor)
                     else -> Modifier
                         .clip(ProfileCardShape)
-                        .background(Color.White)
+                        .background(profileMenuAppearance.cardColor)
                 }
             )
     ) {
@@ -1238,7 +2043,7 @@ private fun ProfileHeader(
                         modifier = Modifier.fillMaxSize()
                     )
                 }
-                
+
                 // Edit cover button (owner only)
                 if (isOwner) {
                     Box(
@@ -1279,12 +2084,17 @@ private fun ProfileHeader(
                 }
             }
             
-            Column(Modifier.padding(horizontal = 16.dp)) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .background(profileBodySurfaceColor)
+                    .padding(horizontal = 16.dp)
+            ) {
                 // Avatar Row
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .offset(y = (-36).dp),
+                        .offset(y = (-54).dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.Bottom
                 ) {
@@ -1292,72 +2102,58 @@ private fun ProfileHeader(
                     Box(
                         modifier = Modifier
                             .size(avatarContainerSize)
-                            .offset(x = avatarOffsetX)
+                            .clickable { showAvatarPreview = true }
                             .graphicsLayer { clip = false },
                         contentAlignment = Alignment.Center
                     ) {
-                        // Profile ring
-                        if (!showProfileFrame && hasProfileRing) {
-                            Box(
-                                Modifier
-                                    .size(92.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        Brush.sweepGradient(
-                                            listOf(
-                                                Color(0xFFFF6B6B),
-                                                Color(0xFFFFE66D),
-                                                Color(0xFF4ECDC4),
-                                                Color(0xFF9B59B6),
-                                                Color(0xFFFF6B6B)
-                                            )
-                                        )
-                                    )
-                            )
-                        }
-                        
                         Box(
                             Modifier
-                                .size(avatarImageSize)
+                                .size(avatarContainerSize)
+                                .shadow(
+                                    elevation = 5.dp,
+                                    shape = CircleShape,
+                                    clip = false,
+                                    ambientColor = Color.Black.copy(alpha = 0.14f),
+                                    spotColor = Color.Black.copy(alpha = 0.18f)
+                                )
                                 .clip(CircleShape)
-                                .background(accentColor.copy(alpha = 0.8f)),
+                                .background(profileAvatarRingColor)
+                                .border(1.dp, profileBodyBorderColor, CircleShape)
+                                .padding(6.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (!user.avatar.isNullOrEmpty()) {
-                                AsyncImage(
-                                    model = ImageRequest.Builder(context)
-                                        .data(user.avatar)
-                                        .memoryCacheKey("avatar_${user.id}_$avatarCacheKey")
-                                        .diskCachePolicy(CachePolicy.DISABLED)
-                                        .crossfade(true)
-                                        .build(),
-                                    contentDescription = "Avatar",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            } else {
-                                val initials = user.name
-                                    .split(" ")
-                                    .mapNotNull { it.firstOrNull()?.uppercase() }
-                                    .take(2)
-                                    .joinToString("")
-                                BasicText(
-                                    initials,
-                                    style = TextStyle(Color.White, 28.sp, FontWeight.Bold)
-                                )
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .clip(CircleShape)
+                                    .background(accentColor.copy(alpha = 0.8f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (!user.avatar.isNullOrEmpty()) {
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(context)
+                                            .data(user.avatar)
+                                            .memoryCacheKey("avatar_${user.id}_$avatarCacheKey")
+                                            .diskCachePolicy(CachePolicy.DISABLED)
+                                            .crossfade(true)
+                                            .build(),
+                                        contentDescription = "Avatar",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    val initials = user.name
+                                        .split(" ")
+                                        .mapNotNull { it.firstOrNull()?.uppercase() }
+                                        .take(2)
+                                        .joinToString("")
+                                    BasicText(
+                                        initials,
+                                        style = TextStyle(Color.White, 28.sp, FontWeight.Bold)
+                                    )
+                                }
                             }
-                            
                         }
-
-                        if (showProfileFrame) {
-                            ProfileFrameLottie(
-                                modifier = Modifier
-                                    .requiredSize(avatarOuterSize)
-                                    .graphicsLayer { clip = false },
-                                isPlaying = !reduceAnimations
-                            )
-                        }
-                        
                     }
                     
                     // Action buttons
@@ -1411,14 +2207,14 @@ private fun ProfileHeader(
                                 Box(
                                     Modifier
                                         .clip(CircleShape)
-                                        .background(contentColor.copy(alpha = 0.1f))
+                                        .background(profileBodySubtleColor)
                                         .onGloballyPositioned { shareMenuAnchorBounds = it.boundsInWindow() }
                                         .clickable {
                                             showShareMenu = true
                                         }
                                         .padding(10.dp)
                                 ) {
-                                    BasicText("↗", style = TextStyle(contentColor, 16.sp))
+                                    BasicText("↗", style = TextStyle(profileBodyContentColor, 16.sp))
                                 }
 
                                 if (isGlassTheme) {
@@ -1426,7 +2222,7 @@ private fun ProfileHeader(
                                         expanded = showShareMenu,
                                         onDismissRequest = { showShareMenu = false },
                                         backdrop = backdrop,
-                                        contentColor = contentColor,
+                                        contentColor = profileMenuContentColor,
                                         anchorBounds = shareMenuAnchorBounds
                                     ) {
                                         GlassMenuItem(
@@ -1435,7 +2231,7 @@ private fun ProfileHeader(
                                                 clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
                                                 showShareMenu = false
                                             },
-                                            contentColor = contentColor,
+                                            contentColor = profileMenuContentColor,
                                             text = "Copy profile link"
                                         )
                                         GlassMenuItem(
@@ -1447,17 +2243,18 @@ private fun ProfileHeader(
                                                 context.startActivity(Intent.createChooser(intent, "Share profile"))
                                                 showShareMenu = false
                                             },
-                                            contentColor = contentColor,
+                                            contentColor = profileMenuContentColor,
                                             text = "Share profile"
                                         )
                                     }
                                 } else {
                                     DropdownMenu(
                                         expanded = showShareMenu,
-                                        onDismissRequest = { showShareMenu = false }
+                                        onDismissRequest = { showShareMenu = false },
+                                        containerColor = profileMenuContainerColor
                                     ) {
                                         DropdownMenuItem(
-                                            text = { BasicText("Copy profile link", style = TextStyle(contentColor)) },
+                                            text = { BasicText("Copy profile link", style = TextStyle(profileMenuContentColor)) },
                                             onClick = {
                                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                                 clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
@@ -1465,7 +2262,7 @@ private fun ProfileHeader(
                                             }
                                         )
                                         DropdownMenuItem(
-                                            text = { BasicText("Share profile", style = TextStyle(contentColor)) },
+                                            text = { BasicText("Share profile", style = TextStyle(profileMenuContentColor)) },
                                             onClick = {
                                                 val intent = Intent(Intent.ACTION_SEND).apply {
                                                     type = "text/plain"
@@ -1479,45 +2276,110 @@ private fun ProfileHeader(
                                 }
                             }
                         } else {
-                            // Message button
-                            Box(
+                            val primaryActionText = when {
+                                isPreparingConversationStarter -> "Writing..."
+                                showStartConversation -> "Start conversation"
+                                else -> "Message"
+                            }
+                            val primaryActionIcon = if (showStartConversation) R.drawable.vormex_logo else R.drawable.ic_message
+                            val startConversationOrange = Color(0xFFFF8A3D)
+                            val startConversationDeepOrange = if (isDarkTheme) Color(0xFFFFB071) else Color(0xFF9A3412)
+                            val startConversationShape = RoundedCornerShape(24.dp)
+                            val primaryActionBackground = if (showStartConversation) {
                                 Modifier
-                                    .clip(RoundedCornerShape(20.dp))
-                                    .then(
-                                        when {
-                                            isGlassTheme -> Modifier.drawBackdrop(
-                                                backdrop = backdrop,
-                                                shape = { RoundedRectangle(20f.dp) },
-                                                effects = {
-                                                    vibrancy()
-                                                    blur(12f.dp.toPx())
-                                                    lens(6f.dp.toPx(), 12f.dp.toPx())
-                                                },
-                                                onDrawSurface = {
-                                                    drawRect(Color.White.copy(alpha = 0.15f))
-                                                }
-                                            )
-                                            isDarkTheme -> Modifier.background(Color.White.copy(alpha = 0.1f))
-                                            else -> Modifier.background(Color.Black.copy(alpha = 0.05f))
+                                    .shadow(
+                                        elevation = if (isPreparingConversationStarter) 7.dp else 12.dp,
+                                        shape = startConversationShape,
+                                        ambientColor = Color(0xFF9A5725).copy(alpha = if (isDarkTheme) 0.38f else 0.22f)
+                                    )
+                                    .background(
+                                        brush = Brush.linearGradient(
+                                            colors = if (isDarkTheme) {
+                                                listOf(Color(0xFF301A10), Color(0xFF482312), Color(0xFF6B2E12))
+                                            } else {
+                                                listOf(Color(0xFFFFFBF6), Color(0xFFFFE4C7), Color(0xFFFFB071))
+                                            }
+                                        ),
+                                        shape = startConversationShape
+                                    )
+                                    .border(
+                                        width = 1.dp,
+                                        color = startConversationOrange.copy(alpha = if (isPreparingConversationStarter) 0.28f else 0.48f),
+                                        shape = startConversationShape
+                                    )
+                            } else {
+                                when {
+                                    isGlassTheme -> Modifier.drawBackdrop(
+                                        backdrop = backdrop,
+                                        shape = { RoundedRectangle(20f.dp) },
+                                        effects = {
+                                            vibrancy()
+                                            blur(12f.dp.toPx())
+                                            lens(6f.dp.toPx(), 12f.dp.toPx())
+                                        },
+                                        onDrawSurface = {
+                                            drawRect(Color.White.copy(alpha = 0.15f))
                                         }
                                     )
-                                    .clickable { onMessage(user.id) }
-                                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                                    isDarkTheme -> Modifier.background(profileBodySubtleColor)
+                                    else -> Modifier.background(profileBodySubtleColor)
+                                }
+                            }
+                            val primaryActionContentColor = if (showStartConversation) startConversationDeepOrange else profileBodyContentColor
+                            val primaryActionShape = if (showStartConversation) startConversationShape else RoundedCornerShape(20.dp)
+                            val primaryActionPreBackgroundClip =
+                                if (showStartConversation) Modifier else Modifier.clip(primaryActionShape)
+                            val primaryActionPostBackgroundClip =
+                                if (showStartConversation) Modifier.clip(primaryActionShape) else Modifier
+
+                            // Message / Vormex opener button
+                            Box(
+                                Modifier
+                                    .then(primaryActionPreBackgroundClip)
+                                    .then(primaryActionBackground)
+                                    .then(primaryActionPostBackgroundClip)
+                                    .clickable(enabled = !isPreparingConversationStarter) {
+                                        if (showStartConversation) {
+                                            onStartConversation(user.id)
+                                        } else {
+                                            onMessage(user.id)
+                                        }
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Image(
-                                        painter = painterResource(R.drawable.ic_message),
-                                        contentDescription = "Message",
-                                        modifier = Modifier.size(16.dp),
-                                        colorFilter = ColorFilter.tint(contentColor)
-                                    )
+                                    if (isPreparingConversationStarter) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            color = primaryActionContentColor,
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Image(
+                                            painter = painterResource(primaryActionIcon),
+                                            contentDescription = primaryActionText,
+                                            modifier = if (showStartConversation) {
+                                                Modifier
+                                                    .size(30.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color.White.copy(alpha = if (isDarkTheme) 0.14f else 0.82f))
+                                                    .border(1.dp, startConversationOrange.copy(alpha = 0.26f), CircleShape)
+                                                    .padding(3.dp)
+                                            } else {
+                                                Modifier.size(16.dp)
+                                            },
+                                            colorFilter = if (showStartConversation) null else ColorFilter.tint(primaryActionContentColor)
+                                        )
+                                    }
                                     BasicText(
-                                        "Message",
-                                        style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold)
+                                        primaryActionText,
+                                        style = TextStyle(primaryActionContentColor, 14.sp, FontWeight.SemiBold),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -1542,8 +2404,8 @@ private fun ProfileHeader(
                                                         drawRect(Color.White.copy(alpha = 0.15f))
                                                     }
                                                 )
-                                                isDarkTheme -> Modifier.background(Color.White.copy(alpha = 0.1f))
-                                                else -> Modifier.background(Color.Black.copy(alpha = 0.05f))
+                                                isDarkTheme -> Modifier.background(profileBodySubtleColor)
+                                                else -> Modifier.background(profileBodySubtleColor)
                                             }
                                         )
                                         .onGloballyPositioned { shareMenuAnchorBounds = it.boundsInWindow() }
@@ -1556,7 +2418,7 @@ private fun ProfileHeader(
                                         painter = painterResource(R.drawable.ic_more),
                                         contentDescription = "More options",
                                         modifier = Modifier.size(20.dp),
-                                        colorFilter = ColorFilter.tint(contentColor)
+                                        colorFilter = ColorFilter.tint(profileBodyContentColor)
                                     )
                                 }
                                 
@@ -1565,22 +2427,22 @@ private fun ProfileHeader(
                                         expanded = showShareMenu,
                                         onDismissRequest = { showShareMenu = false },
                                         backdrop = backdrop,
-                                        contentColor = contentColor,
+                                        contentColor = profileMenuContentColor,
                                         anchorBounds = shareMenuAnchorBounds
                                     ) {
                                         GlassMenuItem(
                                             onClick = {},
-                                            contentColor = contentColor,
+                                            contentColor = profileMenuContentColor,
                                             text = when (connectionStatus) {
                                                 "connected" -> "Connection: Connected"
                                                 "pending_sent" -> "Connection: Request sent"
                                                 "pending_received" -> "Connection: Request received"
                                                 else -> "Connection: Not connected"
                                             },
-                                            textColor = contentColor.copy(alpha = 0.7f),
+                                            textColor = profileMenuMutedContentColor,
                                             enabled = false
                                         )
-                                        GlassMenuDivider(contentColor = contentColor)
+                                        GlassMenuDivider(contentColor = profileMenuContentColor)
                                         when (connectionStatus) {
                                             "connected" -> {
                                                 GlassMenuItem(
@@ -1588,9 +2450,9 @@ private fun ProfileHeader(
                                                         onRemoveConnection()
                                                         showShareMenu = false
                                                     },
-                                                    contentColor = contentColor,
+                                                    contentColor = profileMenuContentColor,
                                                     text = "Remove Connection",
-                                                    textColor = Color.Red,
+                                                    textColor = profileMenuDangerColor,
                                                     enabled = !connectionActionInProgress
                                                 )
                                             }
@@ -1600,7 +2462,7 @@ private fun ProfileHeader(
                                                         onCancelRequest()
                                                         showShareMenu = false
                                                     },
-                                                    contentColor = contentColor,
+                                                    contentColor = profileMenuContentColor,
                                                     text = "Cancel Request",
                                                     enabled = !connectionActionInProgress
                                                 )
@@ -1611,7 +2473,7 @@ private fun ProfileHeader(
                                                         onAcceptRequest()
                                                         showShareMenu = false
                                                     },
-                                                    contentColor = contentColor,
+                                                    contentColor = profileMenuContentColor,
                                                     text = "Accept Request",
                                                     enabled = !connectionActionInProgress
                                                 )
@@ -1620,7 +2482,7 @@ private fun ProfileHeader(
                                                         onRejectRequest()
                                                         showShareMenu = false
                                                     },
-                                                    contentColor = contentColor,
+                                                    contentColor = profileMenuContentColor,
                                                     text = "Ignore Request",
                                                     enabled = !connectionActionInProgress
                                                 )
@@ -1631,7 +2493,7 @@ private fun ProfileHeader(
                                                         onConnect()
                                                         showShareMenu = false
                                                     },
-                                                    contentColor = contentColor,
+                                                    contentColor = profileMenuContentColor,
                                                     text = "Connect",
                                                     enabled = !connectionActionInProgress
                                                 )
@@ -1642,13 +2504,13 @@ private fun ProfileHeader(
                                                 onToggleFollow()
                                                 showShareMenu = false
                                             },
-                                            contentColor = contentColor,
+                                            contentColor = profileMenuContentColor,
                                             leadingIcon = {
                                                 Image(
                                                     painter = painterResource(R.drawable.ic_users),
                                                     contentDescription = null,
                                                     modifier = Modifier.size(18.dp),
-                                                    colorFilter = ColorFilter.tint(contentColor)
+                                                    colorFilter = ColorFilter.tint(profileMenuContentColor)
                                                 )
                                             },
                                             text = if (isFollowing) "Unfollow" else "Follow",
@@ -1660,13 +2522,13 @@ private fun ProfileHeader(
                                                 clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
                                                 showShareMenu = false
                                             },
-                                            contentColor = contentColor,
+                                            contentColor = profileMenuContentColor,
                                             leadingIcon = {
                                                 Image(
                                                     painter = painterResource(R.drawable.ic_link),
                                                     contentDescription = null,
                                                     modifier = Modifier.size(18.dp),
-                                                    colorFilter = ColorFilter.tint(contentColor)
+                                                    colorFilter = ColorFilter.tint(profileMenuContentColor)
                                                 )
                                             },
                                             text = "Copy profile link"
@@ -1680,13 +2542,13 @@ private fun ProfileHeader(
                                                 context.startActivity(Intent.createChooser(intent, "Share profile"))
                                                 showShareMenu = false
                                             },
-                                            contentColor = contentColor,
+                                            contentColor = profileMenuContentColor,
                                             leadingIcon = {
                                                 Image(
                                                     painter = painterResource(R.drawable.ic_share),
                                                     contentDescription = null,
                                                     modifier = Modifier.size(18.dp),
-                                                    colorFilter = ColorFilter.tint(contentColor)
+                                                    colorFilter = ColorFilter.tint(profileMenuContentColor)
                                                 )
                                             },
                                             text = "Share profile"
@@ -1695,7 +2557,8 @@ private fun ProfileHeader(
                                 } else {
                                     DropdownMenu(
                                         expanded = showShareMenu,
-                                        onDismissRequest = { showShareMenu = false }
+                                        onDismissRequest = { showShareMenu = false },
+                                        containerColor = profileMenuContainerColor
                                     ) {
                                         DropdownMenuItem(
                                             text = {
@@ -1706,7 +2569,7 @@ private fun ProfileHeader(
                                                         "pending_received" -> "Connection: Request received"
                                                         else -> "Connection: Not connected"
                                                     },
-                                                    style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp)
+                                                    style = TextStyle(profileMenuMutedContentColor, 13.sp)
                                                 )
                                             },
                                             enabled = false,
@@ -1718,7 +2581,7 @@ private fun ProfileHeader(
                                                     text = {
                                                         BasicText(
                                                             "Remove Connection",
-                                                            style = TextStyle(Color.Red, 14.sp)
+                                                            style = TextStyle(profileMenuDangerColor, 14.sp)
                                                         )
                                                     },
                                                     enabled = !connectionActionInProgress,
@@ -1733,7 +2596,7 @@ private fun ProfileHeader(
                                                     text = {
                                                         BasicText(
                                                             "Cancel Request",
-                                                            style = TextStyle(contentColor, 14.sp)
+                                                            style = TextStyle(profileMenuContentColor, 14.sp)
                                                         )
                                                     },
                                                     enabled = !connectionActionInProgress,
@@ -1748,7 +2611,7 @@ private fun ProfileHeader(
                                                     text = {
                                                         BasicText(
                                                             "Accept Request",
-                                                            style = TextStyle(contentColor, 14.sp)
+                                                            style = TextStyle(profileMenuContentColor, 14.sp)
                                                         )
                                                     },
                                                     enabled = !connectionActionInProgress,
@@ -1761,7 +2624,7 @@ private fun ProfileHeader(
                                                     text = {
                                                         BasicText(
                                                             "Ignore Request",
-                                                            style = TextStyle(contentColor, 14.sp)
+                                                            style = TextStyle(profileMenuContentColor, 14.sp)
                                                         )
                                                     },
                                                     enabled = !connectionActionInProgress,
@@ -1776,7 +2639,7 @@ private fun ProfileHeader(
                                                     text = {
                                                         BasicText(
                                                             "Connect",
-                                                            style = TextStyle(contentColor, 14.sp)
+                                                            style = TextStyle(profileMenuContentColor, 14.sp)
                                                         )
                                                     },
                                                     enabled = !connectionActionInProgress,
@@ -1797,11 +2660,11 @@ private fun ProfileHeader(
                                                         painter = painterResource(R.drawable.ic_users),
                                                         contentDescription = null,
                                                         modifier = Modifier.size(18.dp),
-                                                        colorFilter = ColorFilter.tint(contentColor)
+                                                        colorFilter = ColorFilter.tint(profileMenuContentColor)
                                                     )
                                                     BasicText(
                                                         if (isFollowing) "Unfollow" else "Follow",
-                                                        style = TextStyle(contentColor, 14.sp)
+                                                        style = TextStyle(profileMenuContentColor, 14.sp)
                                                     )
                                                 }
                                             },
@@ -1821,9 +2684,9 @@ private fun ProfileHeader(
                                                         painter = painterResource(R.drawable.ic_link),
                                                         contentDescription = null,
                                                         modifier = Modifier.size(18.dp),
-                                                        colorFilter = ColorFilter.tint(contentColor)
+                                                        colorFilter = ColorFilter.tint(profileMenuContentColor)
                                                     )
-                                                    BasicText("Copy profile link", style = TextStyle(contentColor, 14.sp))
+                                                    BasicText("Copy profile link", style = TextStyle(profileMenuContentColor, 14.sp))
                                                 }
                                             },
                                             onClick = {
@@ -1842,9 +2705,9 @@ private fun ProfileHeader(
                                                         painter = painterResource(R.drawable.ic_share),
                                                         contentDescription = null,
                                                         modifier = Modifier.size(18.dp),
-                                                        colorFilter = ColorFilter.tint(contentColor)
+                                                        colorFilter = ColorFilter.tint(profileMenuContentColor)
                                                     )
-                                                    BasicText("Share profile", style = TextStyle(contentColor, 14.sp))
+                                                    BasicText("Share profile", style = TextStyle(profileMenuContentColor, 14.sp))
                                                 }
                                             },
                                             onClick = {
@@ -1871,58 +2734,41 @@ private fun ProfileHeader(
                 ) {
                     BasicText(
                         user.name,
-                        style = TextStyle(contentColor, 22.sp, FontWeight.Bold)
+                        style = TextStyle(profileBodyContentColor, 22.sp, FontWeight.Bold)
                     )
-                    
-                    if (user.isOpenToOpportunities) {
-                        Box(
-                            Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(Color(0xFF22C55E).copy(alpha = 0.2f))
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            BasicText(
-                                "#OpenToWork",
-                                style = TextStyle(Color(0xFF22C55E), 12.sp, FontWeight.Medium)
-                            )
-                        }
+
+                    if (user.hasVerificationBadge()) {
+                        ProfileVerificationBadge()
+                    }
+                }
+
+                if (user.isOpenToOpportunities) {
+                    Box(
+                        Modifier
+                            .offset(y = (-20).dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color(0xFF22C55E).copy(alpha = 0.2f))
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        BasicText(
+                            "#OpenToWork",
+                            style = TextStyle(Color(0xFF22C55E), 12.sp, FontWeight.Medium)
+                        )
                     }
                 }
                 
                 // Username
                 BasicText(
                     "@${user.username}",
-                    style = TextStyle(contentColor.copy(alpha = 0.6f), 14.sp),
+                    style = TextStyle(profileBodyMutedContentColor, 14.sp),
                     modifier = Modifier.offset(y = (-20).dp)
                 )
-
-                Row(
-                    modifier = Modifier
-                        .offset(y = (-16).dp)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(
-                            if (isCurrentlyOnline) Color(0xFF22C55E).copy(alpha = 0.14f)
-                            else contentColor.copy(alpha = 0.08f)
-                        )
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    BasicText(
-                        presenceLabel,
-                        style = TextStyle(
-                            color = if (isCurrentlyOnline) Color(0xFF22C55E) else contentColor.copy(alpha = 0.7f),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    )
-                }
                 
                 // Headline
                 user.headline?.let { headline ->
                     BasicText(
                         headline,
-                        style = TextStyle(contentColor, 14.sp),
+                        style = TextStyle(profileBodyContentColor, 14.sp),
                         modifier = Modifier.offset(y = (-12).dp)
                     )
                 }
@@ -1938,12 +2784,12 @@ private fun ProfileHeader(
                                 painter = painterResource(R.drawable.ic_location),
                                 contentDescription = "Location",
                                 modifier = Modifier.size(14.dp),
-                                colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.7f))
+                                colorFilter = ColorFilter.tint(profileBodyMutedContentColor)
                             )
                             Spacer(Modifier.width(4.dp))
                             BasicText(
                                 location,
-                                style = TextStyle(contentColor.copy(alpha = 0.7f), 12.sp)
+                                style = TextStyle(profileBodyMutedContentColor, 12.sp)
                             )
                         }
                     }
@@ -1954,12 +2800,12 @@ private fun ProfileHeader(
                                 painter = painterResource(R.drawable.ic_education),
                                 contentDescription = "Education",
                                 modifier = Modifier.size(14.dp),
-                                colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.7f))
+                                colorFilter = ColorFilter.tint(profileBodyMutedContentColor)
                             )
                             Spacer(Modifier.width(4.dp))
                             BasicText(
                                 user.college,
-                                style = TextStyle(contentColor.copy(alpha = 0.7f), 12.sp)
+                                style = TextStyle(profileBodyMutedContentColor, 12.sp)
                             )
                         }
                     }
@@ -1983,7 +2829,7 @@ private fun ProfileHeader(
                             icon = "⌘",
                             label = "GitHub",
                             url = url,
-                            accentColor = contentColor
+                            accentColor = profileBodyContentColor
                         )
                     }
                     user.portfolioUrl?.let { url ->
@@ -2006,27 +2852,27 @@ private fun ProfileHeader(
                     StatItem(
                         value = formatNumber(stats.connectionsCount),
                         label = "connections",
-                        contentColor = contentColor,
+                        contentColor = profileBodyContentColor,
                         onClick = onOpenConnections,
                         modifier = Modifier.weight(1f)
                     )
                     StatItem(
                         value = formatNumber(stats.followersCount),
                         label = "followers",
-                        contentColor = contentColor,
+                        contentColor = profileBodyContentColor,
                         onClick = onOpenFollowers,
                         modifier = Modifier.weight(1f)
                     )
                     StatItem(
                         value = formatNumber(stats.totalPosts),
                         label = "posts",
-                        contentColor = contentColor,
+                        contentColor = profileBodyContentColor,
                         modifier = Modifier.weight(1f)
                     )
                     StatItem(
                         value = formatNumber(stats.totalLikesReceived),
                         label = "likes",
-                        contentColor = contentColor,
+                        contentColor = profileBodyContentColor,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -2034,7 +2880,7 @@ private fun ProfileHeader(
                 ProfileGamificationRow(
                     stats = stats,
                     backdrop = backdrop,
-                    contentColor = contentColor,
+                    contentColor = profileBodyContentColor,
                     accentColor = accentColor,
                     isGlassTheme = isGlassTheme,
                     isDarkTheme = isDarkTheme
@@ -2048,7 +2894,7 @@ private fun ProfileHeader(
                         if (mutualConnectionsCount > 0) {
                             BasicText(
                                 "$mutualConnectionsCount mutual connections",
-                                style = TextStyle(contentColor.copy(alpha = 0.6f), 12.sp)
+                                style = TextStyle(profileBodyMutedContentColor, 12.sp)
                             )
 
                             if (mutualConnections.isNotEmpty()) {
@@ -2059,7 +2905,7 @@ private fun ProfileHeader(
                                     mutualConnections.forEach { mutual ->
                                         MutualConnectionChip(
                                             mutual = mutual,
-                                            contentColor = contentColor,
+                                            contentColor = profileBodyContentColor,
                                             accentColor = accentColor,
                                             onClick = onOpenMutualProfile?.let { callback ->
                                                 { callback(mutual.id) }
@@ -2073,13 +2919,13 @@ private fun ProfileHeader(
                                         Box(
                                             Modifier
                                                 .clip(RoundedCornerShape(999.dp))
-                                                .background(contentColor.copy(alpha = 0.08f))
+                                                .background(profileBodySubtleColor)
                                                 .padding(horizontal = 12.dp, vertical = 8.dp)
                                         ) {
                                             BasicText(
                                                 "+$remainingMutuals more",
                                                 style = TextStyle(
-                                                    color = contentColor.copy(alpha = 0.7f),
+                                                    color = profileBodyMutedContentColor,
                                                     fontSize = 11.sp,
                                                     fontWeight = FontWeight.Medium
                                                 )
@@ -2094,12 +2940,12 @@ private fun ProfileHeader(
                             Box(
                                 Modifier
                                     .clip(RoundedCornerShape(4.dp))
-                                    .background(contentColor.copy(alpha = 0.1f))
+                                    .background(profileBodySubtleColor)
                                     .padding(horizontal = 8.dp, vertical = 2.dp)
                             ) {
                                 BasicText(
                                     "Follows you",
-                                    style = TextStyle(contentColor.copy(alpha = 0.6f), 11.sp)
+                                    style = TextStyle(profileBodyMutedContentColor, 11.sp)
                                 )
                             }
                         }
@@ -2110,6 +2956,219 @@ private fun ProfileHeader(
             }
         }
     }
+}
+
+@Composable
+private fun ProfileVerificationBadge(
+    modifier: Modifier = Modifier
+) {
+    VerificationBadge(
+        verified = true,
+        modifier = modifier,
+        size = VerificationBadgeSize.Large
+    )
+}
+
+@Composable
+private fun ProfileAvatarPreviewDialog(
+    user: ProfileUser,
+    avatarCacheKey: Long,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val profileUrl = remember(user.username) { "https://vormex.com/@${user.username}" }
+    val avatarUrl = user.avatar?.takeIf { it.isNotBlank() }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 28.dp, start = 18.dp, end = 18.dp)
+                    .align(Alignment.TopCenter)
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.vormex_logo),
+                    contentDescription = "Vormex",
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .align(Alignment.Center)
+                )
+
+                ProfileAvatarPreviewIconButton(
+                    iconRes = R.drawable.ic_close,
+                    contentDescription = "Close",
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.CenterEnd)
+                )
+            }
+
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 24.dp, vertical = 96.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Box(
+                    Modifier
+                        .size(286.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.08f))
+                        .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (avatarUrl != null) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(avatarUrl)
+                                .memoryCacheKey("avatar_preview_${user.id}_$avatarCacheKey")
+                                .diskCachePolicy(CachePolicy.DISABLED)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = "${user.name} profile picture",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        BasicText(
+                            profileInitials(user.name),
+                            style = TextStyle(Color.White, 72.sp, FontWeight.Bold)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(22.dp))
+
+                BasicText(
+                    user.name,
+                    style = TextStyle(Color.White, 22.sp, FontWeight.Bold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                BasicText(
+                    "@${user.username}",
+                    style = TextStyle(Color.White.copy(alpha = 0.58f), 14.sp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 20.dp, vertical = 30.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ProfileAvatarPreviewActionButton(
+                    iconRes = R.drawable.ic_share,
+                    label = "Share",
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(
+                                Intent.EXTRA_TEXT,
+                                "Check out ${user.name}'s profile on Vormex: $profileUrl"
+                            )
+                        }
+                        context.startActivity(Intent.createChooser(intent, "Share profile"))
+                    }
+                )
+                ProfileAvatarPreviewActionButton(
+                    iconRes = R.drawable.ic_copy,
+                    label = "Copy",
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", profileUrl))
+                        Toast.makeText(context, "Profile link copied", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileAvatarPreviewIconButton(
+    iconRes: Int,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier
+            .size(42.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.12f))
+            .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(iconRes),
+            contentDescription = contentDescription,
+            modifier = Modifier.size(18.dp),
+            colorFilter = ColorFilter.tint(Color.White)
+        )
+    }
+}
+
+@Composable
+private fun ProfileAvatarPreviewActionButton(
+    iconRes: Int,
+    label: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.White.copy(alpha = 0.13f))
+            .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Image(
+            painter = painterResource(iconRes),
+            contentDescription = label,
+            modifier = Modifier.size(18.dp),
+            colorFilter = ColorFilter.tint(Color.White)
+        )
+        Spacer(Modifier.width(8.dp))
+        BasicText(
+            label,
+            style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold),
+            maxLines = 1
+        )
+    }
+}
+
+private fun profileInitials(name: String): String {
+    return name
+        .split(" ")
+        .mapNotNull { it.firstOrNull()?.uppercase() }
+        .take(2)
+        .joinToString("")
+        .ifBlank { "V" }
 }
 
 @Composable
@@ -2161,7 +3220,7 @@ private fun MutualConnectionChip(
 
         BasicText(
             label,
-            modifier = Modifier.widthIn(max = 140.dp),
+            modifier = Modifier.widthIn(max = 132.dp),
             style = TextStyle(
                 color = contentColor.copy(alpha = 0.84f),
                 fontSize = 12.sp,
@@ -2169,6 +3228,10 @@ private fun MutualConnectionChip(
             ),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
+        )
+        VerificationBadge(
+            verified = mutual.hasVerificationBadge(),
+            size = VerificationBadgeSize.Micro
         )
     }
 }
@@ -2564,7 +3627,13 @@ private fun ProfilePeopleRow(
                     text = person.name ?: person.username ?: "Unknown member",
                     style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold),
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+
+                VerificationBadge(
+                    verified = person.verified || person.isVerified,
+                    size = VerificationBadgeSize.Small
                 )
 
                 if (person.isOnline) {
@@ -3070,61 +4139,6 @@ private fun formatNumber(num: Int): String {
         num >= 1_000 -> "${num / 1_000}K"
         else -> num.toString()
     }
-}
-
-private const val PROFILE_PRESENCE_ONLINE_WINDOW_MS = 5 * 60 * 1000L
-
-private val profilePresenceTimestampPatterns = listOf(
-    "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-    "yyyy-MM-dd'T'HH:mm:ss'Z'",
-    "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
-    "yyyy-MM-dd'T'HH:mm:ssXXX",
-    "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'",
-    "yyyy-MM-dd HH:mm:ss"
-)
-
-private fun parseProfilePresenceMillis(raw: String?): Long? {
-    if (raw.isNullOrBlank()) return null
-    runCatching { Instant.parse(raw) }.getOrNull()?.toEpochMilli()?.let { return it }
-    runCatching { OffsetDateTime.parse(raw) }.getOrNull()?.toInstant()?.toEpochMilli()?.let { return it }
-    for (pattern in profilePresenceTimestampPatterns) {
-        runCatching {
-            SimpleDateFormat(pattern, Locale.US).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-                isLenient = true
-            }.parse(raw)?.time
-        }.getOrNull()?.let { return it }
-    }
-    runCatching { SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).parse(raw)?.time }
-        .getOrNull()?.let { return it }
-    return null
-}
-
-private fun isProfileCurrentlyOnline(user: ProfileUser, stats: ProfileStats): Boolean {
-    if (user.isOnline) return true
-    val lastSeenMillis = parseProfilePresenceMillis(user.lastActiveAt ?: stats.lastActiveDate)
-    return lastSeenMillis != null && (System.currentTimeMillis() - lastSeenMillis) < PROFILE_PRESENCE_ONLINE_WINDOW_MS
-}
-
-private fun buildProfilePresenceLabel(user: ProfileUser, stats: ProfileStats, isOwner: Boolean): String {
-    if (isProfileCurrentlyOnline(user, stats)) {
-        return if (isOwner) "Online now" else "Active now"
-    }
-
-    val lastSeenMillis = parseProfilePresenceMillis(user.lastActiveAt ?: stats.lastActiveDate)
-        ?: return if (isOwner) "Offline" else "Recently active"
-    val diffMs = (System.currentTimeMillis() - lastSeenMillis).coerceAtLeast(0L)
-    val minutes = diffMs / 60_000L
-
-    val elapsed = when {
-        minutes < 1L -> "just now"
-        minutes < 60L -> "${minutes}m ago"
-        minutes < 1_440L -> "${minutes / 60L}h ago"
-        minutes < 10_080L -> "${minutes / 1_440L}d ago"
-        else -> "recently"
-    }
-
-    return "Last active $elapsed"
 }
 
 // ==================== Loading (lightweight; avoids heavy shimmer + blur skeleton) ====================

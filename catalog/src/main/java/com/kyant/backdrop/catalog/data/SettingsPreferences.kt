@@ -13,6 +13,15 @@ private val Context.settingsDataStore by preferencesDataStore(name = "app_settin
  * App Settings Preferences - Stores user preferences for notifications, privacy, and appearance
  */
 object SettingsPreferences {
+    const val PROFILE_BADGE_STYLE_STUDENT = "student"
+    const val PROFILE_BADGE_STYLE_PROFESSIONAL = "professional"
+    const val PROFILE_BADGE_STYLE_PREMIUM = "premium"
+    const val FONT_FAMILY_SYSTEM = "system"
+    const val FONT_FAMILY_SANS = "sans"
+    const val FONT_FAMILY_SERIF = "serif"
+    const val FONT_FAMILY_MONO = "mono"
+    const val FONT_FAMILY_CURSIVE = "cursive"
+    const val FONT_FAMILY_KAUSHAN = "kaushan"
     
     // ==================== NOTIFICATION SETTINGS ====================
     private val PUSH_NOTIFICATIONS_ENABLED = booleanPreferencesKey("push_notifications_enabled")
@@ -36,17 +45,21 @@ object SettingsPreferences {
     private val DISCOVERABLE_BY_PHONE = booleanPreferencesKey("discoverable_by_phone")
     
     // ==================== APPEARANCE SETTINGS ====================
-    private val THEME_MODE = stringPreferencesKey("theme_mode") // "glass", "light", "dark"
+    private val THEME_MODE = stringPreferencesKey("theme_mode") // "glass", "warm_paper", "black_green", "light", "dark", "midnight_neon", "soft_graphite", "emerald_focus"
     private val GLASS_BACKGROUND_PRESET = stringPreferencesKey("glass_background_preset")
     private val ACCENT_PALETTE = stringPreferencesKey("accent_palette")
     private val GLASS_MOTION_STYLE = stringPreferencesKey("glass_motion_style")
     private val DYNAMIC_COLORS = booleanPreferencesKey("dynamic_colors")
     private val FONT_SIZE = stringPreferencesKey("font_size") // "small", "medium", "large"
+    private val FONT_FAMILY = stringPreferencesKey("font_family")
     private val REDUCE_ANIMATIONS = booleanPreferencesKey("reduce_animations")
+    private val SHOW_REELS_ON_HOME = booleanPreferencesKey("show_reels_on_home")
     private val PROFILE_FRAME_ENABLED = booleanPreferencesKey("profile_frame_enabled")
+    private val PROFILE_BADGE_STYLE = stringPreferencesKey("profile_badge_style")
     private val STAY_ACTIVE_BANNER_DISMISSED_AT = longPreferencesKey("stay_active_banner_dismissed_at")
     /** Equipped profile visit loader gift id (e.g. `big_bad_wolfie`). */
     private val EQUIPPED_PROFILE_LOADER_GIFT = stringPreferencesKey("equipped_profile_loader_gift")
+    private val TALK_WITH_VORMEX_THEME_MODE = stringPreferencesKey("talk_with_vormex_theme_mode")
     
     // ==================== NOTIFICATION GETTERS ====================
     
@@ -133,18 +146,30 @@ object SettingsPreferences {
     
     fun fontSize(context: Context): Flow<String> =
         context.settingsDataStore.data.map { it[FONT_SIZE] ?: "medium" }
+
+    fun fontFamily(context: Context): Flow<String> =
+        context.settingsDataStore.data.map { normalizeFontFamily(it[FONT_FAMILY]) }
     
     fun reduceAnimations(context: Context): Flow<Boolean> =
         context.settingsDataStore.data.map { it[REDUCE_ANIMATIONS] ?: false }
 
+    fun showReelsOnHome(context: Context): Flow<Boolean> =
+        context.settingsDataStore.data.map { it[SHOW_REELS_ON_HOME] ?: false }
+
     fun profileFrameEnabled(context: Context): Flow<Boolean> =
         context.settingsDataStore.data.map { it[PROFILE_FRAME_ENABLED] ?: false }
+
+    fun profileBadgeStyle(context: Context): Flow<String> =
+        context.settingsDataStore.data.map { it[PROFILE_BADGE_STYLE] ?: PROFILE_BADGE_STYLE_STUDENT }
 
     fun stayActiveBannerDismissedAt(context: Context): Flow<Long> =
         context.settingsDataStore.data.map { it[STAY_ACTIVE_BANNER_DISMISSED_AT] ?: 0L }
 
     fun equippedProfileLoaderGiftId(context: Context): Flow<String?> =
         context.settingsDataStore.data.map { it[EQUIPPED_PROFILE_LOADER_GIFT] }
+
+    fun talkWithVormexThemeMode(context: Context): Flow<String> =
+        context.settingsDataStore.data.map { it[TALK_WITH_VORMEX_THEME_MODE] ?: "light" }
     
     // ==================== NOTIFICATION SETTERS ====================
     
@@ -243,13 +268,32 @@ object SettingsPreferences {
     suspend fun setFontSize(context: Context, value: String) {
         context.settingsDataStore.edit { it[FONT_SIZE] = value }
     }
+
+    suspend fun setFontFamily(context: Context, value: String) {
+        val normalized = normalizeFontFamily(value)
+        context.settingsDataStore.edit { it[FONT_FAMILY] = normalized }
+    }
     
     suspend fun setReduceAnimations(context: Context, value: Boolean) {
         context.settingsDataStore.edit { it[REDUCE_ANIMATIONS] = value }
     }
 
+    suspend fun setShowReelsOnHome(context: Context, value: Boolean) {
+        context.settingsDataStore.edit { it[SHOW_REELS_ON_HOME] = value }
+    }
+
     suspend fun setProfileFrameEnabled(context: Context, value: Boolean) {
         context.settingsDataStore.edit { it[PROFILE_FRAME_ENABLED] = value }
+    }
+
+    suspend fun setProfileBadgeStyle(context: Context, value: String) {
+        val normalized = when (value) {
+            PROFILE_BADGE_STYLE_STUDENT,
+            PROFILE_BADGE_STYLE_PROFESSIONAL,
+            PROFILE_BADGE_STYLE_PREMIUM -> value
+            else -> PROFILE_BADGE_STYLE_STUDENT
+        }
+        context.settingsDataStore.edit { it[PROFILE_BADGE_STYLE] = normalized }
     }
 
     suspend fun setStayActiveBannerDismissedAt(context: Context, value: Long) {
@@ -262,10 +306,25 @@ object SettingsPreferences {
             else it[EQUIPPED_PROFILE_LOADER_GIFT] = giftId
         }
     }
+
+    suspend fun setTalkWithVormexThemeMode(context: Context, value: String) {
+        context.settingsDataStore.edit { it[TALK_WITH_VORMEX_THEME_MODE] = value }
+    }
     
     // ==================== CLEAR ALL ====================
     
     suspend fun clearAll(context: Context) {
         context.settingsDataStore.edit { it.clear() }
     }
+
+    private fun normalizeFontFamily(value: String?): String =
+        when (value) {
+            FONT_FAMILY_SYSTEM,
+            FONT_FAMILY_SANS,
+            FONT_FAMILY_SERIF,
+            FONT_FAMILY_MONO,
+            FONT_FAMILY_CURSIVE,
+            FONT_FAMILY_KAUSHAN -> value
+            else -> FONT_FAMILY_SYSTEM
+        }
 }

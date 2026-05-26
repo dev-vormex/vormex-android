@@ -8,22 +8,31 @@ import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,6 +45,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.drawBackdrop
@@ -43,7 +53,15 @@ import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.shapes.RoundedRectangle
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private val OnboardingPaper = Color(0xFFF5F2EC)
+private val OnboardingInk = Color(0xFF171715)
+private val OnboardingMuted = Color(0xFF69665F)
+private val OnboardingLine = Color(0xFFE2DED5)
+private val OnboardingGreen = Color(0xFF0F6B48)
+private val OnboardingBrandFontFamily = FontFamily(Font(R.font.kaushan_script))
 
 // ==================== Onboarding Experience Entry ====================
 
@@ -108,6 +126,12 @@ data class ProfileSetupUiState(
     val isCompleted: Boolean = false
 )
 
+private fun normalizeProfileSetupStep(step: Int): Int = when {
+    step <= 0 -> 0
+    step in 1..3 -> 1
+    else -> 2
+}
+
 class ProfileSetupViewModel(private val context: android.content.Context) : ViewModel() {
     
     private val _uiState = mutableStateOf(ProfileSetupUiState())
@@ -122,9 +146,10 @@ class ProfileSetupViewModel(private val context: android.content.Context) : View
             _uiState.value = _uiState.value.copy(isLoading = true)
             ApiClient.getOnboarding(context)
                 .onSuccess { response ->
+                    val normalizedStep = normalizeProfileSetupStep(response.onboarding.currentStep)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        currentStep = response.onboarding.currentStep,
+                        currentStep = normalizedStep,
                         primaryGoal = response.onboarding.primaryGoal ?: "",
                         lookingFor = response.onboarding.lookingFor,
                         selectedInterests = response.onboarding.wantToLearn,
@@ -133,6 +158,9 @@ class ProfileSetupViewModel(private val context: android.content.Context) : View
                     )
                     // Load college from user profile if needed
                     loadUserCollege()
+                    if (normalizedStep == 2) {
+                        loadMatches()
+                    }
                 }
                 .onFailure { e ->
                     _uiState.value = _uiState.value.copy(
@@ -446,7 +474,7 @@ class ProfileSetupViewModel(private val context: android.content.Context) : View
                         .onSuccess {
                             _uiState.value = _uiState.value.copy(
                                 isSaving = false,
-                                currentStep = 4 // Go to Matches step
+                                currentStep = 2 // Go to matches step
                             )
                             loadMatches()
                             onSuccess()
@@ -517,46 +545,52 @@ fun ProfileSetupWizard(
         factory = ProfileSetupViewModel.Factory(context)
     )
     val state by viewModel.uiState
-    
-    // Glass theme setup
     val backdrop = rememberLayerBackdrop()
-    val contentColor = Color.White
-    val accentColor = Color(0xFF3B82F6)
+    val contentColor = OnboardingInk
+    val accentColor = OnboardingGreen
+    var showLogoReveal by rememberSaveable { mutableStateOf(false) }
     
-    // Wrap callbacks to set onboarding preference
     val handleComplete: () -> Unit = {
         coroutineScope.launch {
             com.kyant.backdrop.catalog.data.OnboardingPreferences.setHasSeenOnboarding(context, true)
             onComplete()
         }
     }
-    val handleSkip: () -> Unit = {
-        coroutineScope.launch {
-            com.kyant.backdrop.catalog.data.OnboardingPreferences.setHasSeenOnboarding(context, true)
-            onSkip()
+
+    if (showLogoReveal) {
+        VormexLogoRevealScreen(onFinished = handleComplete)
+        return
+    }
+
+    val currentStep = state.currentStep.coerceIn(0, 2)
+    val totalDisplaySteps = 4
+    val canContinue = when (currentStep) {
+        0 -> state.college.trim().length >= 2 && state.primaryGoal.isNotEmpty()
+        1 -> state.selectedInterests.size >= 2 && !state.isSaving
+        else -> !state.isLoadingMatches
+    }
+    val primaryLabel = when (currentStep) {
+        1 -> if (state.selectedInterests.isEmpty()) {
+            "Continue"
+        } else {
+            "Continue with ${state.selectedInterests.size} selected"
+        }
+        2 -> if (state.matches.isEmpty()) "Explore Vormex" else "Start connecting"
+        else -> "Continue"
+    }
+    val onPrimary: () -> Unit = {
+        when (currentStep) {
+            0 -> viewModel.submitStep0 { }
+            1 -> viewModel.submitStep1 { }
+            2 -> showLogoReveal = true
         }
     }
-    
-    val steps = listOf(
-        "About You" to "Help us find your people",
-        "Your Experience" to "Add your background",
-        "Your Education" to "Where you study (or studied)",
-        "Your Interests" to "What are you into?",
-        "Your Circle" to "People matched for you"
-    )
-    
-    val progress = ((state.currentStep + 1).toFloat() / steps.size) * 100f
-    val animatedProgress by animateFloatAsState(
-        targetValue = progress,
-        animationSpec = tween(400),
-        label = "progress"
-    )
     
     if (state.isLoading) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(0xFF0A0A0A)),
+                .background(OnboardingPaper),
             contentAlignment = Alignment.Center
         ) {
             CircularProgressIndicator(color = accentColor)
@@ -564,194 +598,51 @@ fun ProfileSetupWizard(
         return
     }
     
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF0D1117),
-                        Color(0xFF161B22),
-                        Color(0xFF0D1117)
-                    )
-                )
-            )
-            .statusBarsPadding()
+            .background(OnboardingPaper)
+            .navigationBarsPadding()
     ) {
-        // Header with glass effect
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .drawBackdrop(
-                    backdrop = backdrop,
-                    shape = { RoundedRectangle(0.dp) },
-                    effects = {
-                        vibrancy()
-                        blur(8f.dp.toPx())
-                    },
-                    onDrawSurface = {
-                        drawRect(Color.White.copy(alpha = 0.03f))
-                    }
-                )
-                .padding(horizontal = 20.dp, vertical = 12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Vormex logo
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(
-                                Brush.linearGradient(
-                                    colors = listOf(accentColor, Color(0xFF8B5CF6))
-                                )
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        BasicText(
-                            "V",
-                            style = TextStyle(
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
-                            )
-                        )
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    BasicText(
-                        "Step ${state.currentStep + 1} of ${steps.size}",
-                        style = TextStyle(
-                            color = contentColor.copy(alpha = 0.6f),
-                            fontSize = 13.sp
-                        )
-                    )
-                }
-                
-                if (state.currentStep > 0 && state.currentStep < steps.size - 1) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { viewModel.goBack() }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = null,
-                                tint = contentColor.copy(alpha = 0.7f),
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            BasicText(
-                                "Back",
-                                style = TextStyle(
-                                    color = contentColor.copy(alpha = 0.7f),
-                                    fontSize = 14.sp
-                                )
-                            )
-                        }
-                    }
-                } else if (state.currentStep == 0) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { handleSkip() }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        BasicText(
-                            "Skip",
-                            style = TextStyle(
-                                color = contentColor.copy(alpha = 0.5f),
-                                fontSize = 14.sp
-                            )
-                        )
-                    }
-                }
-            }
-        }
-        
-        // Progress bar with glass effect
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-                .height(4.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(Color.White.copy(alpha = 0.1f))
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth(animatedProgress / 100f)
-                    .background(
-                        Brush.horizontalGradient(
-                            colors = listOf(accentColor, Color(0xFF8B5CF6))
-                        )
-                    )
-            )
-        }
-        
-        // Content
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .padding(horizontal = 26.dp)
         ) {
-            // Step header
-            BasicText(
-                steps[state.currentStep].first,
-                style = TextStyle(
-                    color = contentColor,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold
-                )
+            OnboardingTopBar(
+                eyebrow = if (currentStep == 0) "STEP" else "WELCOME",
+                currentStep = currentStep + 1,
+                totalSteps = totalDisplaySteps
             )
-            BasicText(
-                steps[state.currentStep].second,
-                style = TextStyle(
-                    color = contentColor.copy(alpha = 0.5f),
-                    fontSize = 14.sp
-                ),
-                modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
-            )
-            
-            // Error message with glass effect
+
+            OnboardingEditorialHeader(step = currentStep)
+
             state.error?.let { error ->
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .drawBackdrop(
-                            backdrop = backdrop,
-                            shape = { RoundedRectangle(12.dp) },
-                            effects = {
-                                vibrancy()
-                                blur(10f.dp.toPx())
-                            },
-                            onDrawSurface = {
-                                drawRect(Color.Red.copy(alpha = 0.15f))
-                            }
-                        )
+                        .padding(top = 14.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFFFFF1F2))
+                        .border(1.dp, Color(0xFFFCA5A5), RoundedCornerShape(12.dp))
                         .padding(12.dp)
                 ) {
                     BasicText(
                         error,
                         style = TextStyle(
-                            color = Color(0xFFFF6B6B),
-                            fontSize = 13.sp
+                            color = Color(0xFFB91C1C),
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp
                         )
                     )
                 }
-                Spacer(Modifier.height(16.dp))
             }
-            
-            // Step content
+
             AnimatedContent(
-                targetState = state.currentStep,
+                targetState = currentStep,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
                 transitionSpec = {
                     if (targetState > initialState) {
                         slideInHorizontally { it } + fadeIn() togetherWith
@@ -772,25 +663,7 @@ fun ProfileSetupWizard(
                         accentColor = accentColor,
                         onContinue = { viewModel.submitStep0 { } }
                     )
-                    1 -> StepExperience(
-                        state = state,
-                        viewModel = viewModel,
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        onContinue = { viewModel.submitExperienceStep { } },
-                        onSkip = { viewModel.skipExperienceStep() }
-                    )
-                    2 -> StepEducation(
-                        state = state,
-                        viewModel = viewModel,
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        onContinue = { viewModel.submitEducationStep { } },
-                        onSkip = { viewModel.skipEducationStep() }
-                    )
-                    3 -> StepInterests(
+                    1 -> StepInterests(
                         state = state,
                         viewModel = viewModel,
                         backdrop = backdrop,
@@ -798,21 +671,369 @@ fun ProfileSetupWizard(
                         accentColor = accentColor,
                         onContinue = { viewModel.submitStep1 { } }
                     )
-                    4 -> StepMatches(
+                    2 -> StepMatches(
                         state = state,
                         backdrop = backdrop,
                         contentColor = contentColor,
                         accentColor = accentColor,
-                        onFinish = handleComplete
+                        onFinish = { showLogoReveal = true }
                     )
+                }
+            }
+
+            OnboardingFooter(
+                currentStep = currentStep,
+                totalSteps = totalDisplaySteps,
+                primaryLabel = primaryLabel,
+                canContinue = canContinue,
+                isLoading = state.isSaving || state.isLoadingMatches,
+                onBack = { viewModel.goBack() },
+                onContinue = onPrimary
+            )
+        }
+    }
+}
+
+@Composable
+private fun OnboardingTopBar(
+    eyebrow: String,
+    currentStep: Int,
+    totalSteps: Int
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 34.dp, bottom = 22.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        BasicText(
+            eyebrow.uppercase(),
+            style = TextStyle(
+                color = OnboardingMuted.copy(alpha = 0.58f),
+                fontSize = 11.sp,
+                letterSpacing = 1.8.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+        BasicText(
+            "%02d / %02d".format(currentStep, totalSteps),
+            style = TextStyle(
+                color = OnboardingInk.copy(alpha = 0.72f),
+                fontSize = 12.sp,
+                letterSpacing = 1.4.sp,
+                fontWeight = FontWeight.Bold
+            )
+        )
+    }
+}
+
+@Composable
+private fun OnboardingEditorialHeader(step: Int) {
+    val headline = when (step) {
+        0 -> buildAnnotatedString {
+            append("Build a profile\n")
+            pushStyle(SpanStyle(fontStyle = FontStyle.Italic, fontWeight = FontWeight.Normal))
+            append("worth visiting.")
+            pop()
+        }
+        1 -> buildAnnotatedString {
+            append("Choose what your\nfeed ")
+            pushStyle(SpanStyle(color = OnboardingGreen))
+            append("becomes.")
+            pop()
+        }
+        else -> buildAnnotatedString {
+            append("Meet the people\n")
+            pushStyle(SpanStyle(fontStyle = FontStyle.Italic, fontWeight = FontWeight.Normal))
+            append("worth hearing.")
+            pop()
+        }
+    }
+    val body = when (step) {
+        0 -> "Vormex isn't a resume. It's a record of how you think, what you're building, and who should find you."
+        1 -> "Pick a few areas. We tune your home feed, people suggestions, and recommendations around them."
+        else -> "We found a quieter starting circle from your campus and interests. You can adjust this anytime."
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        BasicText(
+            headline,
+            style = TextStyle(
+                color = OnboardingInk,
+                fontSize = 30.sp,
+                lineHeight = 32.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Serif
+            )
+        )
+        BasicText(
+            body,
+            style = TextStyle(
+                color = OnboardingMuted,
+                fontSize = 14.sp,
+                lineHeight = 21.sp,
+                fontWeight = FontWeight.Medium
+            )
+        )
+    }
+}
+
+@Composable
+private fun OnboardingFooter(
+    currentStep: Int,
+    totalSteps: Int,
+    primaryLabel: String,
+    canContinue: Boolean,
+    isLoading: Boolean,
+    onBack: () -> Unit,
+    onContinue: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp, bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            repeat(totalSteps) { index ->
+                Box(
+                    modifier = Modifier
+                        .width(if (index == currentStep) 28.dp else 22.dp)
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(
+                            if (index == currentStep) OnboardingInk else OnboardingLine
+                        )
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (currentStep > 0) {
+                Box(
+                    modifier = Modifier
+                        .height(46.dp)
+                        .weight(0.34f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color.White.copy(alpha = 0.42f))
+                        .border(1.dp, OnboardingLine, RoundedCornerShape(10.dp))
+                        .clickable(onClick = onBack),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        "Back",
+                        style = TextStyle(
+                            color = OnboardingInk,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .height(46.dp)
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (canContinue) OnboardingGreen else OnboardingLine,
+                        RoundedCornerShape(10.dp)
+                    )
+                    .clickable(enabled = canContinue && !isLoading, onClick = onContinue),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BasicText(
+                            primaryLabel,
+                            style = TextStyle(
+                                color = if (canContinue) Color.White else OnboardingMuted,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                        if (currentStep < 2) {
+                            Icon(
+                                Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = if (canContinue) Color.White else OnboardingMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+@Composable
+private fun OnboardingNumberCard(
+    number: String,
+    title: String,
+    subtitle: String
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White.copy(alpha = 0.45f))
+            .border(1.dp, OnboardingLine, RoundedCornerShape(14.dp))
+            .padding(horizontal = 14.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        BasicText(
+            number,
+            style = TextStyle(
+                color = Color(0xFFE75F47),
+                fontSize = 20.sp,
+                lineHeight = 24.sp,
+                fontFamily = FontFamily.Serif,
+                fontStyle = FontStyle.Italic
+            )
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            BasicText(
+                title,
+                style = TextStyle(
+                    color = OnboardingInk,
+                    fontSize = 14.sp,
+                    lineHeight = 18.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontFamily = FontFamily.Serif
+                )
+            )
+            BasicText(
+                subtitle,
+                style = TextStyle(
+                    color = OnboardingMuted,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun OnboardingTextInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    leadingIcon: ImageVector
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = 0.52f))
+            .border(1.dp, OnboardingLine, RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp, vertical = 13.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                leadingIcon,
+                contentDescription = null,
+                tint = OnboardingMuted,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                textStyle = TextStyle(
+                    color = OnboardingInk,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium
+                ),
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                decorationBox = { innerTextField ->
+                    Box {
+                        if (value.isEmpty()) {
+                            BasicText(
+                                placeholder,
+                                style = TextStyle(
+                                    color = OnboardingMuted.copy(alpha = 0.58f),
+                                    fontSize = 14.sp
+                                )
+                            )
+                        }
+                        innerTextField()
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun OnboardingChoiceChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) OnboardingInk else Color.White.copy(alpha = 0.40f))
+            .border(
+                1.dp,
+                if (selected) OnboardingInk else OnboardingLine,
+                RoundedCornerShape(8.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 13.dp, vertical = 9.dp)
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (selected) {
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+            BasicText(
+                label,
+                style = TextStyle(
+                    color = if (selected) Color.White else OnboardingInk.copy(alpha = 0.78f),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+        }
+    }
+}
+
 // ==================== Step 0: Profile ====================
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StepProfile(
     state: ProfileSetupUiState,
@@ -822,288 +1043,75 @@ private fun StepProfile(
     accentColor: Color,
     onContinue: () -> Unit
 ) {
-    val canContinue = state.college.trim().length >= 2 && state.primaryGoal.isNotEmpty()
-    
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 24.dp)
+    ) {
         LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            // College input with glass effect
             item {
-                Column {
-                    BasicText(
-                        "Your College / University *",
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium
-                        )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OnboardingNumberCard(
+                        number = "01",
+                        title = "A campus people can place you in",
+                        subtitle = "We'll use this to quiet the first matches around you."
                     )
-                    Spacer(Modifier.height(8.dp))
-                    
-                    // Glass text field
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .drawBackdrop(
-                                backdrop = backdrop,
-                                shape = { RoundedRectangle(12.dp) },
-                                effects = {
-                                    vibrancy()
-                                    blur(10f.dp.toPx())
-                                    lens(4f.dp.toPx(), 8f.dp.toPx())
-                                },
-                                onDrawSurface = {
-                                    drawRect(Color.White.copy(alpha = 0.08f))
-                                }
-                            )
-                            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                    OnboardingTextInput(
+                        value = state.college,
+                        onValueChange = { viewModel.updateCollege(it) },
+                        placeholder = "College / university",
+                        leadingIcon = Icons.Default.School
+                    )
+                }
+            }
+
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OnboardingNumberCard(
+                        number = "02",
+                        title = "One thing you're working on",
+                        subtitle = "Pinned to the top of what Vormex learns about you."
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.School,
-                                contentDescription = null,
-                                tint = contentColor.copy(alpha = 0.5f),
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            BasicTextField(
-                                value = state.college,
-                                onValueChange = { viewModel.updateCollege(it) },
-                                textStyle = TextStyle(
-                                    color = contentColor,
-                                    fontSize = 15.sp
-                                ),
-                                singleLine = true,
-                                modifier = Modifier.weight(1f),
-                                decorationBox = { innerTextField ->
-                                    Box {
-                                        if (state.college.isEmpty()) {
-                                            BasicText(
-                                                "e.g. NIAT, VIT, IIT Bombay, JNTU...",
-                                                style = TextStyle(
-                                                    color = contentColor.copy(alpha = 0.3f),
-                                                    fontSize = 15.sp
-                                                )
-                                            )
-                                        }
-                                        innerTextField()
-                                    }
-                                }
-                            )
-                        }
-                    }
-                    
-                    BasicText(
-                        "We'll match you with students from your campus first",
-                        style = TextStyle(
-                            color = contentColor.copy(alpha = 0.4f),
-                            fontSize = 12.sp
-                        ),
-                        modifier = Modifier.padding(top = 6.dp, start = 4.dp)
-                    )
-                }
-            }
-            
-            // Primary goal selection
-            item {
-                Column {
-                    BasicText(
-                        "What's your main focus right now? *",
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    )
-                    Spacer(Modifier.height(8.dp))
-                }
-            }
-            
-            item {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.height(320.dp)
-                ) {
-                    items(GOALS_WITH_ICONS) { goal ->
+                        GOALS_WITH_ICONS.take(9).forEach { goal ->
                         val isSelected = state.primaryGoal == goal.id
-                        Box(
-                            modifier = Modifier
-                                .height(80.dp)
-                                .drawBackdrop(
-                                    backdrop = backdrop,
-                                    shape = { RoundedRectangle(12.dp) },
-                                    effects = {
-                                        vibrancy()
-                                        blur(10f.dp.toPx())
-                                        lens(4f.dp.toPx(), 8f.dp.toPx())
-                                    },
-                                    onDrawSurface = {
-                                        if (isSelected) {
-                                            drawRect(accentColor.copy(alpha = 0.3f))
-                                        } else {
-                                            drawRect(Color.White.copy(alpha = 0.06f))
-                                        }
-                                    }
-                                )
-                                .then(
-                                    if (isSelected) {
-                                        Modifier.border(
-                                            1.5.dp,
-                                            accentColor.copy(alpha = 0.6f),
-                                            RoundedCornerShape(12.dp)
-                                        )
-                                    } else {
-                                        Modifier.border(
-                                            1.dp,
-                                            Color.White.copy(alpha = 0.08f),
-                                            RoundedCornerShape(12.dp)
-                                        )
-                                    }
-                                )
-                                .clickable { viewModel.selectPrimaryGoal(goal.id) }
-                                .padding(8.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Icon(
-                                    goal.icon,
-                                    contentDescription = null,
-                                    tint = if (isSelected) accentColor else contentColor.copy(alpha = 0.7f),
-                                    modifier = Modifier.size(22.dp)
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                BasicText(
-                                    goal.label,
-                                    style = TextStyle(
-                                        color = if (isSelected) contentColor else contentColor.copy(alpha = 0.6f),
-                                        fontSize = 10.sp,
-                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                        textAlign = TextAlign.Center
-                                    ),
-                                    maxLines = 2
-                                )
-                            }
+                            OnboardingChoiceChip(
+                                label = goal.label,
+                                selected = isSelected,
+                                onClick = { viewModel.selectPrimaryGoal(goal.id) }
+                            )
                         }
                     }
                 }
             }
-            
-            // Looking for (optional)
+
             item {
-                Column {
-                    BasicText(
-                        "I'm looking for (optional)",
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium
-                        )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OnboardingNumberCard(
+                        number = "03",
+                        title = "A few people you trust",
+                        subtitle = "We'll keep your feed quiet, on purpose."
                     )
-                    Spacer(Modifier.height(8.dp))
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         LOOKING_FOR.forEach { option ->
                             val isSelected = state.lookingFor.contains(option.id)
-                            Box(
-                                modifier = Modifier
-                                    .drawBackdrop(
-                                        backdrop = backdrop,
-                                        shape = { RoundedRectangle(20.dp) },
-                                        effects = {
-                                            vibrancy()
-                                            blur(8f.dp.toPx())
-                                        },
-                                        onDrawSurface = {
-                                            if (isSelected) {
-                                                drawRect(accentColor.copy(alpha = 0.25f))
-                                            } else {
-                                                drawRect(Color.White.copy(alpha = 0.06f))
-                                            }
-                                        }
-                                    )
-                                    .then(
-                                        if (isSelected) {
-                                            Modifier.border(1.dp, accentColor.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
-                                        } else {
-                                            Modifier.border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(20.dp))
-                                        }
-                                    )
-                                    .clickable { viewModel.toggleLookingFor(option.id) }
-                                    .padding(horizontal = 14.dp, vertical = 8.dp)
-                            ) {
-                                BasicText(
-                                    option.label,
-                                    style = TextStyle(
-                                        color = if (isSelected) contentColor else contentColor.copy(alpha = 0.6f),
-                                        fontSize = 13.sp,
-                                        fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
-                                    )
-                                )
-                            }
+                            OnboardingChoiceChip(
+                                label = option.label,
+                                selected = isSelected,
+                                onClick = { viewModel.toggleLookingFor(option.id) }
+                            )
                         }
                     }
                 }
-            }
-        }
-        
-        // Continue button with glass effect
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 16.dp)
-                .height(52.dp)
-                .then(
-                    if (canContinue && !state.isSaving) {
-                        Modifier
-                            .background(
-                                Brush.horizontalGradient(
-                                    colors = listOf(accentColor, Color(0xFF8B5CF6))
-                                ),
-                                RoundedCornerShape(12.dp)
-                            )
-                            .clickable { onContinue() }
-                    } else {
-                        Modifier
-                            .drawBackdrop(
-                                backdrop = backdrop,
-                                shape = { RoundedRectangle(12.dp) },
-                                effects = {
-                                    vibrancy()
-                                    blur(8f.dp.toPx())
-                                },
-                                onDrawSurface = {
-                                    drawRect(Color.White.copy(alpha = 0.1f))
-                                }
-                            )
-                    }
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            if (state.isSaving) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    color = Color.White,
-                    strokeWidth = 2.dp
-                )
-            } else {
-                BasicText(
-                    "Continue",
-                    style = TextStyle(
-                        color = if (canContinue) Color.White else contentColor.copy(alpha = 0.4f),
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                )
             }
         }
     }
@@ -3110,346 +3118,96 @@ private fun StepInterests(
     accentColor: Color,
     onContinue: () -> Unit
 ) {
-    val canContinue = state.selectedInterests.size >= 2
-    
-    val allItems = INTEREST_GROUPS.flatMap { it.items }
-    val filteredItems = if (state.interestSearch.isNotBlank()) {
-        allItems.filter { it.contains(state.interestSearch, ignoreCase = true) }
-    } else null
-    
-    Column(modifier = Modifier.fillMaxSize()) {
-        BasicText(
-            "Pick at least 2 interests. Tap ★ to mark what you can teach.",
-            style = TextStyle(
-                color = contentColor.copy(alpha = 0.5f),
-                fontSize = 12.sp
-            )
+    var showCustom by rememberSaveable { mutableStateOf(false) }
+    val feedChoices = remember {
+        listOf(
+            "Product design",
+            "Engineering leadership",
+            "Startups · early-stage",
+            "Hiring & teams",
+            "AI / research",
+            "Brand & writing",
+            "Operations",
+            "Finance",
+            "Public policy",
+            "Climate",
+            "Healthcare"
         )
-        
-        Spacer(Modifier.height(10.dp))
-        
-        // Compact search and add row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 26.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Search field - compact
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { RoundedRectangle(10.dp) },
-                        effects = {
-                            vibrancy()
-                            blur(8f.dp.toPx())
-                        },
-                        onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = 0.06f))
-                        }
-                    )
-                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.Search,
-                        contentDescription = null,
-                        tint = contentColor.copy(alpha = 0.4f),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    BasicTextField(
-                        value = state.interestSearch,
-                        onValueChange = { viewModel.updateInterestSearch(it) },
-                        textStyle = TextStyle(
-                            color = contentColor,
-                            fontSize = 13.sp
-                        ),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                        decorationBox = { innerTextField ->
-                            Box {
-                                if (state.interestSearch.isEmpty()) {
-                                    BasicText(
-                                        "Search...",
-                                        style = TextStyle(
-                                            color = contentColor.copy(alpha = 0.3f),
-                                            fontSize = 13.sp
-                                        )
-                                    )
-                                }
-                                innerTextField()
-                            }
-                        }
-                    )
-                }
+            feedChoices.forEach { item ->
+                OnboardingChoiceChip(
+                    label = item,
+                    selected = state.selectedInterests.contains(item),
+                    onClick = { viewModel.toggleInterest(item) }
+                )
             }
+            OnboardingChoiceChip(
+                label = "+ Add custom",
+                selected = showCustom,
+                onClick = { showCustom = !showCustom }
+            )
         }
-        
-        Spacer(Modifier.height(8.dp))
-        
-        // Add custom interest - compact single row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { RoundedRectangle(10.dp) },
-                        effects = {
-                            vibrancy()
-                            blur(8f.dp.toPx())
-                        },
-                        onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = 0.06f))
-                        }
-                    )
-                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
+
+        AnimatedVisibility(visible = showCustom) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = null,
-                        tint = contentColor.copy(alpha = 0.4f),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    BasicTextField(
+                Box(modifier = Modifier.weight(1f)) {
+                    OnboardingTextInput(
                         value = state.customInterest,
                         onValueChange = { viewModel.updateCustomInterest(it) },
-                        textStyle = TextStyle(
-                            color = contentColor,
-                            fontSize = 13.sp
-                        ),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                        decorationBox = { innerTextField ->
-                            Box {
-                                if (state.customInterest.isEmpty()) {
-                                    BasicText(
-                                        "Add custom...",
-                                        style = TextStyle(
-                                            color = contentColor.copy(alpha = 0.3f),
-                                            fontSize = 13.sp
-                                        )
-                                    )
-                                }
-                                innerTextField()
-                            }
-                        }
+                        placeholder = "Add your own area",
+                        leadingIcon = Icons.Default.Add
                     )
                 }
-            }
-            
-            // Add button - compact
-            Box(
-                modifier = Modifier
-                    .then(
-                        if (state.customInterest.isNotBlank()) {
-                            Modifier
-                                .background(accentColor, RoundedCornerShape(10.dp))
-                                .clickable { viewModel.addCustomInterest() }
-                        } else {
-                            Modifier
-                                .drawBackdrop(
-                                    backdrop = backdrop,
-                                    shape = { RoundedRectangle(10.dp) },
-                                    effects = {
-                                        vibrancy()
-                                        blur(8f.dp.toPx())
-                                    },
-                                    onDrawSurface = {
-                                        drawRect(Color.White.copy(alpha = 0.05f))
-                                    }
-                                )
-                        }
-                    )
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-            ) {
-                BasicText(
-                    "Add",
-                    style = TextStyle(
-                        color = if (state.customInterest.isNotBlank()) Color.White else contentColor.copy(alpha = 0.3f),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                )
-            }
-        }
-        
-        Spacer(Modifier.height(10.dp))
-        
-        // Selected interests - compact chips
-        if (state.selectedInterests.isNotEmpty()) {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.padding(bottom = 10.dp)
-            ) {
-                state.selectedInterests.forEach { interest ->
-                    val isTeach = state.canTeach.contains(interest)
-                    Box(
-                        modifier = Modifier
-                            .drawBackdrop(
-                                backdrop = backdrop,
-                                shape = { RoundedRectangle(16.dp) },
-                                effects = {
-                                    vibrancy()
-                                    blur(8f.dp.toPx())
-                                },
-                                onDrawSurface = {
-                                    drawRect(accentColor.copy(alpha = 0.2f))
-                                }
-                            )
-                            .border(1.dp, accentColor.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
-                            .clickable { viewModel.toggleInterest(interest) }
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (isTeach) {
-                                Icon(
-                                    Icons.Default.Star,
-                                    contentDescription = null,
-                                    tint = Color(0xFFFFD700),
-                                    modifier = Modifier.size(12.dp)
-                                )
-                                Spacer(Modifier.width(4.dp))
-                            }
-                            BasicText(
-                                interest,
-                                style = TextStyle(
-                                    color = contentColor,
-                                    fontSize = 12.sp
-                                )
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = "Remove",
-                                tint = contentColor.copy(alpha = 0.5f),
-                                modifier = Modifier.size(12.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Interest groups
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            if (filteredItems != null) {
-                item {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        filteredItems.forEach { item ->
-                            GlassInterestChip(
-                                label = item,
-                                isSelected = state.selectedInterests.contains(item),
-                                canTeach = state.canTeach.contains(item),
-                                backdrop = backdrop,
-                                contentColor = contentColor,
-                                accentColor = accentColor,
-                                onToggle = { viewModel.toggleInterest(item) },
-                                onToggleTeach = { viewModel.toggleCanTeach(item) }
-                            )
-                        }
-                    }
-                }
-            } else {
-                items(INTEREST_GROUPS) { group ->
-                    Column {
-                        BasicText(
-                            group.label,
-                            style = TextStyle(
-                                color = contentColor.copy(alpha = 0.4f),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            modifier = Modifier.padding(bottom = 6.dp)
+                Box(
+                    modifier = Modifier
+                        .height(46.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (state.customInterest.isNotBlank()) OnboardingGreen else OnboardingLine
                         )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            group.items.forEach { item ->
-                                GlassInterestChip(
-                                    label = item,
-                                    isSelected = state.selectedInterests.contains(item),
-                                    canTeach = state.canTeach.contains(item),
-                                    backdrop = backdrop,
-                                    contentColor = contentColor,
-                                    accentColor = accentColor,
-                                    onToggle = { viewModel.toggleInterest(item) },
-                                    onToggleTeach = { viewModel.toggleCanTeach(item) }
-                                )
-                            }
+                        .clickable(enabled = state.customInterest.isNotBlank()) {
+                            viewModel.addCustomInterest()
+                            showCustom = false
                         }
-                    }
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        "Add",
+                        style = TextStyle(
+                            color = if (state.customInterest.isNotBlank()) Color.White else OnboardingMuted,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
                 }
             }
         }
-        
-        // Continue button with glass effect
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 12.dp)
-                .height(48.dp)
-                .then(
-                    if (canContinue && !state.isSaving) {
-                        Modifier
-                            .background(
-                                Brush.horizontalGradient(
-                                    colors = listOf(accentColor, Color(0xFF8B5CF6))
-                                ),
-                                RoundedCornerShape(12.dp)
-                            )
-                            .clickable { onContinue() }
-                    } else {
-                        Modifier
-                            .drawBackdrop(
-                                backdrop = backdrop,
-                                shape = { RoundedRectangle(12.dp) },
-                                effects = {
-                                    vibrancy()
-                                    blur(8f.dp.toPx())
-                                },
-                                onDrawSurface = {
-                                    drawRect(Color.White.copy(alpha = 0.1f))
-                                }
-                            )
-                    }
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            if (state.isSaving) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    color = Color.White,
-                    strokeWidth = 2.dp
+
+        if (state.selectedInterests.isNotEmpty()) {
+            BasicText(
+                "${state.selectedInterests.size} selected",
+                style = TextStyle(
+                    color = OnboardingGreen,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
                 )
-            } else {
-                BasicText(
-                    "Continue",
-                    style = TextStyle(
-                        color = if (canContinue) Color.White else contentColor.copy(alpha = 0.4f),
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                )
-            }
+            )
         }
     }
 }
@@ -3577,12 +3335,17 @@ private fun StepMatches(
     accentColor: Color,
     onFinish: () -> Unit
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         if (state.isLoadingMatches) {
             Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .height(220.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -3600,87 +3363,180 @@ private fun StepMatches(
         } else if (state.matches.isEmpty()) {
             Box(
                 modifier = Modifier
-                    .weight(1f)
                     .fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(32.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Groups,
-                        contentDescription = null,
-                        tint = accentColor,
-                        modifier = Modifier.size(56.dp)
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    BasicText(
-                        "You're one of the first from your campus!",
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            textAlign = TextAlign.Center
-                        )
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    BasicText(
-                        "As more students join, we'll match you with the right people. Meanwhile, explore and start connecting.",
-                        style = TextStyle(
-                            color = contentColor.copy(alpha = 0.5f),
-                            fontSize = 14.sp,
-                            textAlign = TextAlign.Center
-                        )
-                    )
-                }
+                OnboardingNumberCard(
+                    number = "01",
+                    title = "You're early here",
+                    subtitle = "As more students join, Vormex will keep improving your circle."
+                )
             }
         } else {
             BasicText(
                 "Found ${state.matches.size} matches based on your interests and campus.",
                 style = TextStyle(
-                    color = contentColor.copy(alpha = 0.5f),
-                    fontSize = 13.sp
+                    color = OnboardingMuted,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
                 )
             )
-            Spacer(Modifier.height(12.dp))
             
             LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(state.matches) { match ->
-                    GlassMatchCard(
-                        match = match,
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        accentColor = accentColor
-                    )
+                    OnboardingMatchCard(match = match)
                 }
             }
         }
-        
-        // Finish button with glass effect
+    }
+}
+
+@Composable
+private fun OnboardingMatchCard(match: OnboardingMatch) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White.copy(alpha = 0.45f))
+            .border(1.dp, OnboardingLine, RoundedCornerShape(14.dp))
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 16.dp)
-                .height(52.dp)
-                .background(
-                    Brush.horizontalGradient(
-                        colors = listOf(accentColor, Color(0xFF8B5CF6))
-                    ),
-                    RoundedCornerShape(12.dp)
-                )
-                .clickable { onFinish() },
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(OnboardingGreen.copy(alpha = 0.12f)),
             contentAlignment = Alignment.Center
         ) {
+            if (!match.user.profileImage.isNullOrBlank()) {
+                AsyncImage(
+                    model = match.user.profileImage,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                BasicText(
+                    match.user.name.take(1).uppercase(),
+                    style = TextStyle(
+                        color = OnboardingGreen,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) {
             BasicText(
-                if (state.matches.isEmpty()) "Explore Vormex" else "Start Connecting",
+                match.user.name,
                 style = TextStyle(
-                    color = Color.White,
-                    fontSize = 15.sp,
+                    color = OnboardingInk,
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            BasicText(
+                match.user.headline ?: match.user.college ?: "Vormex member",
+                style = TextStyle(
+                    color = OnboardingMuted,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        BasicText(
+            "${match.matchPercentage}%",
+            style = TextStyle(
+                color = OnboardingGreen,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+        )
+    }
+}
+
+@Composable
+private fun VormexLogoRevealScreen(onFinished: () -> Unit) {
+    val sliceCount = 7
+    val sliceAlphas = remember { List(sliceCount) { Animatable(0f) } }
+    val wordAlpha = remember { Animatable(0f) }
+
+    LaunchedEffect(Unit) {
+        sliceAlphas.forEachIndexed { index, alpha ->
+            launch {
+                delay(index * 115L)
+                alpha.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(durationMillis = 520, easing = FastOutSlowInEasing)
+                )
+            }
+        }
+        delay(780)
+        wordAlpha.animateTo(1f, tween(durationMillis = 480))
+        delay(950)
+        onFinished()
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(OnboardingPaper)
+            .navigationBarsPadding(),
+        contentAlignment = Alignment.Center
+    ) {
+        val logoSize = (maxWidth - 100.dp).coerceIn(150.dp, 220.dp)
+        val sliceWidth = logoSize / sliceCount.toFloat()
+
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(22.dp)
+        ) {
+            Row(
+                modifier = Modifier.size(logoSize),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                repeat(sliceCount) { index ->
+                    Box(
+                        modifier = Modifier
+                            .width(sliceWidth)
+                            .height(logoSize)
+                            .clipToBounds()
+                            .graphicsLayer {
+                                alpha = sliceAlphas[index].value
+                                translationY = (1f - sliceAlphas[index].value) * if (index % 2 == 0) 16f else -16f
+                            }
+                    ) {
+                        Image(
+                            painter = painterResource(R.drawable.vormex_logo),
+                            contentDescription = "Vormex logo",
+                            modifier = Modifier
+                                .size(logoSize)
+                                .offset(x = -(sliceWidth * index)),
+                            contentScale = ContentScale.Fit
+                        )
+                    }
+                }
+            }
+
+            BasicText(
+                "vormex",
+                modifier = Modifier.graphicsLayer { alpha = wordAlpha.value },
+                style = TextStyle(
+                    color = OnboardingInk,
+                    fontSize = 34.sp,
+                    lineHeight = 38.sp,
+                    fontFamily = OnboardingBrandFontFamily
                 )
             )
         }

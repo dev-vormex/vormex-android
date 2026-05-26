@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 data class PremiumSubscriptionResponse(
     val plan: String = "free",
     val status: String = "inactive",
+    val provider: String = "manual",
     val isPremium: Boolean = false,
     val title: String = "Vormex Premium",
     val description: String = "",
@@ -27,7 +28,25 @@ data class PremiumSubscriptionResponse(
     val renewalModeLabel: String = "Manual renewal",
     val supportLabel: String = "24/7 fast support",
     val creditsUsed: Int = 0,
-    val canCancel: Boolean = false
+    val canCancel: Boolean = false,
+    val canManageInGooglePlay: Boolean = false,
+    val googlePlayProductId: String? = null,
+    val googlePlayBasePlanId: String? = null,
+    val googlePlaySubscriptionState: String? = null,
+    val developerPremiumOverrideAvailable: Boolean = false,
+    val developerPremiumOverrideActive: Boolean = false,
+    val planOptions: List<PremiumPlanOption> = emptyList()
+)
+
+@Serializable
+data class PremiumPlanOption(
+    val billingCycle: String = "monthly",
+    val amountMinor: Int = 0,
+    val currency: String = "INR",
+    val displayAmount: String = "",
+    val durationDays: Int = 31,
+    val label: String = "",
+    val savingsLabel: String? = null
 )
 
 @Serializable
@@ -61,4 +80,10 @@ data class PremiumVerifyRequest(
 data class PremiumVerifyResponse(
     val message: String = "",
     val subscription: PremiumSubscriptionResponse? = null
+)
+
+@Serializable
+data class GooglePlayPremiumVerifyRequest(
+    val productId: String,
+    val purchaseToken: String
 )

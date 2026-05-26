@@ -1,3 +1,5 @@
+@file:androidx.media3.common.util.UnstableApi
+
 package com.kyant.backdrop.catalog.linkedin.reels.player
 
 import android.content.Context
@@ -7,7 +9,7 @@ import com.kyant.backdrop.catalog.network.models.Reel
 import kotlin.math.abs
 
 object PlayerPool {
-    private const val POOL_SIZE = 4
+    private const val POOL_SIZE = 3
 
     @Volatile
     private var engine: Engine? = null
@@ -16,6 +18,12 @@ object PlayerPool {
     fun syncWindow(context: Context, reels: List<Reel>, currentIndex: Int) {
         if (reels.isEmpty()) return
         getEngine(context).syncWindow(reels, currentIndex)
+    }
+
+    @MainThread
+    fun warmWindow(context: Context, reels: List<Reel>, currentIndex: Int) {
+        if (reels.isEmpty()) return
+        getEngine(context).warmWindow(reels, currentIndex)
     }
 
     @MainThread
@@ -87,6 +95,13 @@ object PlayerPool {
             resume(currentIndex)
         }
 
+        fun warmWindow(reels: List<Reel>, currentIndex: Int) {
+            this.currentFeed = reels
+            this.currentIndex = currentIndex
+
+            preloadController.updateWindow(reels, currentIndex)
+        }
+
         fun playerForIndex(index: Int): ExoPlayer? = boundSlots[index]?.player
 
         fun handlePlaybackError(index: Int): Boolean {
@@ -115,7 +130,8 @@ object PlayerPool {
             this.currentIndex = currentIndex
             boundSlots.forEach { (index, slot) ->
                 if (index == currentIndex) {
-                    slot.player.volume = 1f
+                    val shouldMute = currentFeed.getOrNull(index)?.muteOriginalAudio == true
+                    slot.player.volume = if (shouldMute) 0f else 1f
                     slot.player.playWhenReady = true
                     slot.player.play()
                 } else {
@@ -200,9 +216,8 @@ object PlayerPool {
             return listOf(
                 currentIndex,
                 currentIndex + 1,
-                currentIndex + 2,
                 currentIndex - 1
-            ).distinct().filter { it in 0..lastIndex }
+            ).filter { it in 0..lastIndex }
         }
     }
 

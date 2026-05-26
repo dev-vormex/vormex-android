@@ -19,7 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -92,6 +92,9 @@ private data class NotificationFeedItem(
 private data class NotificationDestination(
     val kind: NotificationDestinationKind,
     val targetId: String? = null,
+    val commentId: String? = null,
+    val parentCommentId: String? = null,
+    val openComments: Boolean = false,
     val label: String,
     val hint: String,
     val badge: String
@@ -107,8 +110,8 @@ fun NotificationsInboxScreen(
     onUnreadCountChanged: (Int) -> Unit = {},
     onOpenProfileViews: () -> Unit = {},
     onOpenProfile: (String) -> Unit = {},
-    onOpenPost: (String) -> Unit = {},
-    onOpenReel: (String) -> Unit = {},
+    onOpenPost: (String, Boolean) -> Unit = { _, _ -> },
+    onOpenReel: (String, String?, String?) -> Unit = { _, _, _ -> },
     onOpenConversation: (String) -> Unit = {},
     onOpenNetwork: () -> Unit = {},
     onOpenGrowthHub: () -> Unit = {}
@@ -202,6 +205,17 @@ fun NotificationsInboxScreen(
                                         feedItem = item,
                                         contentColor = contentColor,
                                         accentColor = accentColor,
+                                        isRespondingCollabInvite = item.notification.id in uiState.respondingCollabInviteIds,
+                                        onAcceptCollabInvite = {
+                                            item.notification.collabInvitePostId()?.let { postId ->
+                                                viewModel.respondToCollabInvite(item.notification.id, postId, true)
+                                            }
+                                        },
+                                        onDeclineCollabInvite = {
+                                            item.notification.collabInvitePostId()?.let { postId ->
+                                                viewModel.respondToCollabInvite(item.notification.id, postId, false)
+                                            }
+                                        },
                                         onClick = {
                                             viewModel.markAsRead(item.notificationIds)
                                             routeNotification(
@@ -313,10 +327,15 @@ private fun NotificationInboxCard(
     feedItem: NotificationFeedItem,
     contentColor: Color,
     accentColor: Color,
+    isRespondingCollabInvite: Boolean,
+    onAcceptCollabInvite: () -> Unit,
+    onDeclineCollabInvite: () -> Unit,
     onClick: () -> Unit
 ) {
     val notification = feedItem.notification
     val tone = notificationTone(notification.type, accentColor)
+    val showCollabInviteActions = notification.isPendingPostCollabInvite()
+    val collabStatus = notification.collabStatus()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -353,6 +372,10 @@ private fun NotificationInboxCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    VerificationBadge(
+                        verified = notification.actor?.hasVerificationBadge() == true,
+                        size = VerificationBadgeSize.Micro
+                    )
                 }
 
                 BasicText(
@@ -365,6 +388,37 @@ private fun NotificationInboxCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
+
+                when {
+                    showCollabInviteActions -> {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            InboxActionPill(
+                                label = if (isRespondingCollabInvite) "Accepting" else "Accept",
+                                active = true,
+                                accentColor = Color(0xFF22C55E),
+                                contentColor = contentColor,
+                                enabled = !isRespondingCollabInvite,
+                                onClick = onAcceptCollabInvite
+                            )
+                            InboxActionPill(
+                                label = "Decline",
+                                active = false,
+                                accentColor = accentColor,
+                                contentColor = contentColor,
+                                enabled = !isRespondingCollabInvite,
+                                onClick = onDeclineCollabInvite
+                            )
+                        }
+                    }
+                    notification.isPostCollabInvite() && !collabStatus.isNullOrBlank() -> {
+                        NotificationMetaPill(
+                            text = collabStatus.replaceFirstChar { it.uppercase() },
+                            background = tone.copy(alpha = 0.12f),
+                            borderColor = tone.copy(alpha = 0.2f),
+                            textColor = tone
+                        )
+                    }
+                }
             }
 
             Spacer(Modifier.width(12.dp))
@@ -403,34 +457,40 @@ private fun NotificationAvatar(
         notification.actor?.profileImage
     }
 
-    if (!profileImage.isNullOrBlank()) {
-        AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-                .data(profileImage)
-                .crossfade(true)
-                .build(),
-            contentDescription = null,
-            modifier = Modifier
-                .size(38.dp)
-                .clip(CircleShape)
-        )
-    } else {
-        Box(
-            modifier = Modifier
-                .size(38.dp)
-                .clip(CircleShape)
-                .background(tone.copy(alpha = 0.18f)),
-            contentAlignment = Alignment.Center
-        ) {
-            BasicText(
-                text = avatarInitials(displayName),
-                style = TextStyle(
-                    color = tone,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+    Box(contentAlignment = Alignment.BottomEnd) {
+        if (!profileImage.isNullOrBlank()) {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(profileImage)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
             )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(tone.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center
+            ) {
+                BasicText(
+                    text = avatarInitials(displayName),
+                    style = TextStyle(
+                        color = tone,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+            }
         }
+        VerificationBadge(
+            verified = notification.actor?.hasVerificationBadge() == true,
+            size = VerificationBadgeSize.Micro
+        )
     }
 }
 
@@ -704,6 +764,10 @@ private fun notificationGroupKey(notification: Notification): String {
         return "single:${notification.id}"
     }
 
+    if (notification.isPostCollabInvite()) {
+        return "actor:$actorKey:post_collab_invite:${notification.collabInvitePostId() ?: notification.id}"
+    }
+
     val action = notificationActionKey(notification.type)
     val target = notificationTargetKey(notification)
 
@@ -762,6 +826,17 @@ private fun notificationDisplayName(notification: Notification): String {
 private fun notificationActionSummary(notifications: List<Notification>): String {
     val notification = notifications.first()
     val count = notifications.size
+
+    if (notification.isPostCollabInvite()) {
+        return when (notification.collabStatus()) {
+            "accepted" -> "Collaboration invite accepted"
+            "rejected" -> "Collaboration invite declined"
+            else -> "Invited you to collaborate on a post"
+        }
+    }
+    if (notification.dataValue("context") == "post_collab_accepted") {
+        return "Accepted your collaboration invite"
+    }
 
     return when (notificationActionKey(notification.type)) {
         "connect_request" -> "wants to connect"
@@ -989,6 +1064,8 @@ private fun resolveNotificationDestination(notification: Notification): Notifica
     val conversationId = notification.dataValue("conversationId")
     val postId = notification.post?.id ?: notification.dataValue("postId")
     val reelId = notification.reel?.id ?: notification.dataValue("reelId")
+    val commentId = notification.dataValue("commentId")
+    val parentCommentId = notification.dataValue("parentCommentId")
     val actorId = notification.actor?.id
         ?: notification.dataValue("viewerId")
         ?: notification.dataValue("userId")
@@ -1020,6 +1097,7 @@ private fun resolveNotificationDestination(notification: Notification): Notifica
         !postId.isNullOrBlank() && "mention" in normalizedType -> NotificationDestination(
             kind = NotificationDestinationKind.Post,
             targetId = postId,
+            openComments = !commentId.isNullOrBlank(),
             label = "See mention",
             hint = "Open the post where you were mentioned",
             badge = "Post"
@@ -1028,6 +1106,7 @@ private fun resolveNotificationDestination(notification: Notification): Notifica
         !postId.isNullOrBlank() && "comment" in normalizedType -> NotificationDestination(
             kind = NotificationDestinationKind.Post,
             targetId = postId,
+            openComments = true,
             label = "View comments",
             hint = "Open the post and its discussion",
             badge = "Post"
@@ -1044,6 +1123,8 @@ private fun resolveNotificationDestination(notification: Notification): Notifica
         !reelId.isNullOrBlank() && ("comment" in normalizedType || "mention" in normalizedType) -> NotificationDestination(
             kind = NotificationDestinationKind.Reel,
             targetId = reelId,
+            commentId = commentId,
+            parentCommentId = parentCommentId,
             label = "View reel thread",
             hint = "Open the reel and its reactions",
             badge = "Reel"
@@ -1139,8 +1220,8 @@ private fun routeNotification(
     notification: Notification,
     onOpenProfileViews: () -> Unit,
     onOpenProfile: (String) -> Unit,
-    onOpenPost: (String) -> Unit,
-    onOpenReel: (String) -> Unit,
+    onOpenPost: (String, Boolean) -> Unit,
+    onOpenReel: (String, String?, String?) -> Unit,
     onOpenConversation: (String) -> Unit,
     onOpenNetwork: () -> Unit,
     onOpenGrowthHub: () -> Unit
@@ -1152,10 +1233,12 @@ private fun routeNotification(
             destination.targetId?.let(onOpenConversation) ?: onOpenNetwork()
         }
         NotificationDestinationKind.Post -> {
-            destination.targetId?.let(onOpenPost) ?: onOpenNetwork()
+            destination.targetId?.let { onOpenPost(it, destination.openComments) } ?: onOpenNetwork()
         }
         NotificationDestinationKind.Reel -> {
-            destination.targetId?.let(onOpenReel) ?: onOpenNetwork()
+            destination.targetId?.let {
+                onOpenReel(it, destination.commentId, destination.parentCommentId)
+            } ?: onOpenNetwork()
         }
         NotificationDestinationKind.ProfileViews -> onOpenProfileViews()
         NotificationDestinationKind.Profile -> {
@@ -1168,4 +1251,20 @@ private fun routeNotification(
 
 private fun Notification.dataValue(key: String): String? {
     return data?.get(key)?.jsonPrimitive?.contentOrNull
+}
+
+private fun Notification.isPostCollabInvite(): Boolean {
+    return dataValue("context") == "post_collab_invite"
+}
+
+private fun Notification.collabStatus(): String? {
+    return dataValue("collabStatus")?.lowercase(Locale.getDefault())
+}
+
+private fun Notification.isPendingPostCollabInvite(): Boolean {
+    return isPostCollabInvite() && (collabStatus() == null || collabStatus() == "pending")
+}
+
+private fun Notification.collabInvitePostId(): String? {
+    return post?.id ?: dataValue("postId")
 }

@@ -1,3 +1,5 @@
+@file:androidx.media3.common.util.UnstableApi
+
 package com.kyant.backdrop.catalog.linkedin.reels.player
 
 import android.content.Context
@@ -57,10 +59,10 @@ class BunnyDataSourceFactory private constructor(context: Context) {
     }
 }
 
-private class ReelsLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy(6) {
+private class ReelsLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy(3) {
     override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
         val retryCount = loadErrorInfo.errorCount.coerceAtLeast(1)
-        val exponentialDelay = 500L * (1L shl (retryCount - 1).coerceAtMost(4))
-        return min(10_000L, exponentialDelay)
+        val exponentialDelay = 250L * (1L shl (retryCount - 1).coerceAtMost(3))
+        return min(2_000L, exponentialDelay)
     }
 }

@@ -23,11 +23,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -57,6 +59,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -945,216 +948,192 @@ fun AchievementDetailModal(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
+    achievements: List<Achievement> = listOf(achievement),
+    onDismiss: () -> Unit
+) {
+    val items = achievements.ifEmpty { listOf(achievement) }
+    val initialPage = items.indexOfFirst { it.id == achievement.id }.coerceAtLeast(0)
+    val pagerState = rememberPagerState(
+        initialPage = initialPage,
+        pageCount = { items.size }
+    )
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.72f))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center
+    ) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize()
+        ) { page ->
+            AchievementDetailPage(
+                achievement = items[page],
+                contentColor = contentColor,
+                accentColor = accentColor,
+                pageLabel = if (items.size > 1) "${page + 1}/${items.size}" else null,
+                onDismiss = onDismiss
+            )
+        }
+    }
+}
+
+@Composable
+private fun AchievementDetailPage(
+    achievement: Achievement,
+    contentColor: Color,
+    accentColor: Color,
+    pageLabel: String?,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val isImage = isImageUrl(achievement.certificateUrl)
-    val cardColor = getAchievementColor(achievement.color)
-    val typeIcon = getAchievementTypeIcon(achievement.type)
-    
+
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.85f))
-            .clickable(onClick = onDismiss),
-        contentAlignment = Alignment.Center
+            .padding(18.dp)
+            .clickable(enabled = false) {}
     ) {
-        // Single card containing everything
-        Box(
+        Column(
             Modifier
-                .fillMaxWidth(0.92f)
-                .clickable(enabled = false) {} // Prevent click propagation
-                .drawBackdrop(
-                    backdrop = backdrop,
-                    shape = { RoundedRectangle(20f.dp) },
-                    effects = {
-                        vibrancy()
-                        blur(20f.dp.toPx())
-                    },
-                    onDrawSurface = {
-                        drawRect(Color.White.copy(alpha = 0.12f))
-                    }
-                )
-                .clip(RoundedCornerShape(20.dp))
+                .fillMaxWidth()
+                .align(Alignment.Center)
+                .clip(RoundedCornerShape(18.dp))
+                .background(contentColor.copy(alpha = 0.08f))
+                .clickable(onClick = {})
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                // Header with close button
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    BasicText(
-                        "Achievement Details",
-                        style = TextStyle(Color.White, 16.sp, FontWeight.SemiBold)
-                    )
-                    Box(
-                        Modifier
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.15f))
-                            .clickable(onClick = onDismiss)
-                            .padding(8.dp)
-                    ) {
-                        BasicText("✕", style = TextStyle(Color.White, 14.sp, FontWeight.Bold))
-                    }
-                }
-                
-                // Certificate/Proof image thumbnail (if image URL) - smaller size
-                if (isImage && achievement.certificateUrl != null) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(180.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.White.copy(alpha = 0.05f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(achievement.certificateUrl)
-                                .crossfade(true)
-                                .build(),
-                            contentDescription = achievement.title,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                }
-                
-                // Achievement info with type icon and color accent
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    // Type icon with color
-                    Box(
-                        Modifier
-                            .size(48.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(cardColor.copy(alpha = 0.2f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            painter = painterResource(typeIcon),
-                            contentDescription = achievement.type,
-                            modifier = Modifier.size(24.dp),
-                            colorFilter = ColorFilter.tint(cardColor)
-                        )
-                    }
-                    Column {
-                        BasicText(
-                            achievement.title,
-                            style = TextStyle(Color.White, 18.sp, FontWeight.Bold)
-                        )
-                        BasicText(
-                            achievement.organization,
-                            style = TextStyle(Color.White.copy(alpha = 0.7f), 14.sp)
-                        )
-                    }
-                }
-                
-                // Info rows in a subtle box
-                Box(
-                    Modifier
+                BasicText(
+                    pageLabel ?: "Achievement",
+                    style = TextStyle(Color.White.copy(alpha = 0.58f), 12.sp, FontWeight.Medium)
+                )
+                BasicText(
+                    "Close",
+                    style = TextStyle(Color.White.copy(alpha = 0.84f), 12.sp, FontWeight.SemiBold),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onDismiss)
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+
+            if (isImage && achievement.certificateUrl != null) {
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(achievement.certificateUrl)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = achievement.title,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
+                        .height(180.dp)
+                        .clip(RoundedCornerShape(14.dp))
                         .background(Color.White.copy(alpha = 0.05f))
-                        .padding(16.dp)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        // Type
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            BasicText(
-                                "Type",
-                                style = TextStyle(Color.White.copy(alpha = 0.5f), 13.sp)
-                            )
-                            Box(
-                                Modifier
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(cardColor.copy(alpha = 0.2f))
-                                    .padding(horizontal = 8.dp, vertical = 3.dp)
-                            ) {
-                                BasicText(
-                                    achievement.type,
-                                    style = TextStyle(cardColor, 12.sp, FontWeight.Medium)
-                                )
-                            }
-                        }
-                        
-                        // Date
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            BasicText(
-                                "Date",
-                                style = TextStyle(Color.White.copy(alpha = 0.5f), 13.sp)
-                            )
-                            BasicText(
-                                formatFullDate(achievement.date),
-                                style = TextStyle(Color.White.copy(alpha = 0.9f), 13.sp, FontWeight.Medium)
-                            )
-                        }
-                        
-                        // Description (if present)
-                        achievement.description?.takeIf { it.isNotBlank() }?.let { desc ->
-                            Column {
-                                BasicText(
-                                    "Description",
-                                    style = TextStyle(Color.White.copy(alpha = 0.5f), 13.sp)
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                BasicText(
-                                    desc,
-                                    style = TextStyle(Color.White.copy(alpha = 0.8f), 13.sp)
-                                )
-                            }
-                        }
-                    }
-                }
-                
-                // Action button (Open link for non-image URL)
-                if (!isImage && achievement.certificateUrl != null) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(accentColor)
-                            .clickable {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse(achievement.certificateUrl))
-                                )
-                            }
-                            .padding(14.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Image(
-                                painter = painterResource(R.drawable.ic_open_in_browser),
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                colorFilter = ColorFilter.tint(Color.White)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            BasicText(
-                                "Open Proof Link",
-                                style = TextStyle(Color.White, 14.sp, FontWeight.Medium)
-                            )
-                        }
-                    }
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                BasicText(
+                    achievement.title,
+                    style = TextStyle(Color.White, 24.sp, FontWeight.Bold, lineHeight = 29.sp),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                BasicText(
+                    achievement.organization,
+                    style = TextStyle(Color.White.copy(alpha = 0.66f), 14.sp, FontWeight.Medium),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Column {
+                PlainAchievementRow("Type", achievement.type)
+                PlainAchievementDivider()
+                PlainAchievementRow("Date", formatFullDate(achievement.date))
+            }
+
+            achievement.description?.takeIf { it.isNotBlank() }?.let { desc ->
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    BasicText("Description", style = TextStyle(Color.White.copy(alpha = 0.5f), 12.sp))
+                    BasicText(
+                        desc,
+                        style = TextStyle(Color.White.copy(alpha = 0.82f), 13.sp, lineHeight = 20.sp)
+                    )
                 }
             }
+
+            achievement.certificateUrl?.takeIf { !isImage }?.let { url ->
+                PlainAchievementAction(
+                    label = "Open proof",
+                    accentColor = accentColor,
+                    onClick = {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun PlainAchievementRow(
+    label: String,
+    value: String
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 11.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        BasicText(label, style = TextStyle(Color.White.copy(alpha = 0.5f), 12.sp))
+        BasicText(
+            value,
+            style = TextStyle(Color.White.copy(alpha = 0.9f), 13.sp, FontWeight.SemiBold),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun PlainAchievementDivider() {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(Color.White.copy(alpha = 0.08f))
+    )
+}
+
+@Composable
+private fun PlainAchievementAction(
+    label: String,
+    accentColor: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.dp))
+            .background(accentColor.copy(alpha = 0.9f))
+            .clickable(onClick = onClick)
+            .padding(13.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(label, style = TextStyle(Color.White, 13.sp, FontWeight.SemiBold))
     }
 }
 

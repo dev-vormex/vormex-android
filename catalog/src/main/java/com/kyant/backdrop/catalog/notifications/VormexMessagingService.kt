@@ -17,8 +17,21 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.kyant.backdrop.catalog.MainActivity
 import com.kyant.backdrop.catalog.R
+import com.kyant.backdrop.catalog.chat.cache.ChatCacheRepository
 import com.kyant.backdrop.catalog.data.ChatMutePreferences
+import com.kyant.backdrop.catalog.network.ApiClient
+import com.kyant.backdrop.catalog.network.ChatSocketManager
 import com.kyant.backdrop.catalog.network.GroupSocketManager
+import com.kyant.backdrop.catalog.network.models.ChatUser
+import com.kyant.backdrop.catalog.network.models.Message
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 /**
  * Firebase Cloud Messaging Service for Vormex
@@ -35,6 +48,11 @@ import com.kyant.backdrop.catalog.network.GroupSocketManager
  */
 class VormexMessagingService : FirebaseMessagingService() {
 
+    private val json = Json {
+        encodeDefaults = true
+        ignoreUnknownKeys = true
+    }
+
     companion object {
         private const val TAG = "VormexMessaging"
         
@@ -48,6 +66,7 @@ class VormexMessagingService : FirebaseMessagingService() {
         // Deep link actions
         const val ACTION_CHAT = "chat"
         const val ACTION_POST = "post"
+        const val ACTION_POST_COMMENTS = "post_comments"
         const val ACTION_REEL = "reel"
         const val ACTION_PROFILE = "profile"
         const val ACTION_PROFILE_VIEWS = "profile_views"
@@ -67,6 +86,8 @@ class VormexMessagingService : FirebaseMessagingService() {
         const val EXTRA_USER_ID = "user_id"
         const val EXTRA_POST_ID = "post_id"
         const val EXTRA_REEL_ID = "reel_id"
+        const val EXTRA_COMMENT_ID = "comment_id"
+        const val EXTRA_PARENT_COMMENT_ID = "parent_comment_id"
         const val EXTRA_CONVERSATION_ID = "conversation_id"
         const val EXTRA_GROUP_ID = "group_id"
         const val EXTRA_CONNECTION_ID = "connection_id"
@@ -267,14 +288,22 @@ class VormexMessagingService : FirebaseMessagingService() {
                     type.contains("like", ignoreCase = true) || 
                     type.contains("comment", ignoreCase = true) ||
                     type.contains("mention", ignoreCase = true) -> {
+                        val shouldOpenPostComments =
+                            type.contains("comment", ignoreCase = true) ||
+                                !data["commentId"].isNullOrBlank()
                         data["postId"]?.let {
-                            putExtra(EXTRA_ACTION, ACTION_POST)
+                            putExtra(
+                                EXTRA_ACTION,
+                                if (shouldOpenPostComments) ACTION_POST_COMMENTS else ACTION_POST
+                            )
                             putExtra(EXTRA_POST_ID, it)
                         }
                         data["reelId"]?.let {
                             putExtra(EXTRA_ACTION, ACTION_REEL)
                             putExtra(EXTRA_REEL_ID, it)
                         }
+                        data["commentId"]?.let { putExtra(EXTRA_COMMENT_ID, it) }
+                        data["parentCommentId"]?.let { putExtra(EXTRA_PARENT_COMMENT_ID, it) }
                     }
                     type.equals("connection_accepted", ignoreCase = true) ||
                     type.equals("new_connection", ignoreCase = true) ||
@@ -481,11 +510,6 @@ class VormexMessagingService : FirebaseMessagingService() {
         body: String,
         data: Map<String, String>
     ) {
-        if (MainActivity.isInForeground) {
-            Log.d(TAG, "Skipping FCM chat notification because app is in foreground")
-            return
-        }
-
         val conversationId = data["conversationId"].orEmpty()
         if (conversationId.isBlank()) {
             showNotification(title, body, CHANNEL_ID_MESSAGES, data)
@@ -502,6 +526,28 @@ class VormexMessagingService : FirebaseMessagingService() {
         val senderId = data["user_id"] ?: data["senderId"].orEmpty()
         val senderImage = data["senderImage"]?.takeIf { it.isNotBlank() }
 
+        val cachedMessage = cacheDirectPushMessage(
+            data = data,
+            notificationBody = body,
+            conversationId = conversationId,
+            senderName = senderName,
+            senderId = senderId,
+            senderImage = senderImage,
+            incrementUnread = ChatSocketManager.activeConversationId != conversationId
+        )
+
+        if (MainActivity.isInForeground) {
+            cachedMessage?.let { message ->
+                ChatSocketManager.emitExternalIncomingMessage(
+                    conversationId = conversationId,
+                    messageJson = json.encodeToString(Message.serializer(), message),
+                    source = "foreground-push"
+                )
+            }
+            Log.d(TAG, "Skipping FCM chat notification because app is in foreground")
+            return
+        }
+
         MessageNotificationManager.showMessageNotification(
             context = this,
             senderName = senderName,
@@ -510,6 +556,101 @@ class VormexMessagingService : FirebaseMessagingService() {
             conversationId = conversationId,
             senderId = senderId
         )
+
+        warmDirectChatCache(conversationId)
+    }
+
+    private fun cacheDirectPushMessage(
+        data: Map<String, String>,
+        notificationBody: String,
+        conversationId: String,
+        senderName: String,
+        senderId: String,
+        senderImage: String?,
+        incrementUnread: Boolean
+    ): Message? {
+        val messageId = data["messageId"]?.takeIf { it.isNotBlank() } ?: return null
+        if (senderId.isBlank()) return null
+
+        return runCatching {
+            runBlocking(Dispatchers.IO) {
+                withTimeoutOrNull(1_000L) {
+                    val currentUserId = ApiClient.getCurrentUserId(applicationContext)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: return@withTimeoutOrNull null
+                    val nowIso = formatNotificationNowIso()
+                    val createdAt = data["messageCreatedAt"]?.takeIf { it.isNotBlank() } ?: nowIso
+                    val updatedAt = data["messageUpdatedAt"]?.takeIf { it.isNotBlank() } ?: createdAt
+                    val content = data["messageContent"]?.takeIf { it.isNotBlank() } ?: notificationBody
+                    val sender = ChatUser(
+                        id = senderId,
+                        name = senderName.takeIf { it.isNotBlank() },
+                        profileImage = senderImage
+                    )
+                    val message = Message(
+                        id = messageId,
+                        clientMessageId = data["clientMessageId"]?.takeIf { it.isNotBlank() },
+                        conversationId = conversationId,
+                        senderId = senderId,
+                        receiverId = currentUserId,
+                        content = content,
+                        contentType = data["contentType"]?.takeIf { it.isNotBlank() } ?: "text",
+                        mediaUrl = data["mediaUrl"]?.takeIf { it.isNotBlank() },
+                        mediaType = data["mediaType"]?.takeIf { it.isNotBlank() },
+                        fileName = data["fileName"]?.takeIf { it.isNotBlank() },
+                        fileSize = data["fileSize"]?.toIntOrNull(),
+                        status = "SENT",
+                        sender = sender,
+                        createdAt = createdAt,
+                        updatedAt = updatedAt
+                    )
+
+                    ChatCacheRepository(applicationContext).upsertIncomingMessage(
+                        cacheOwnerId = currentUserId,
+                        conversationId = conversationId,
+                        message = message,
+                        currentUserId = currentUserId,
+                        incrementUnread = incrementUnread
+                    )
+                    message
+                }
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "Could not cache push message $messageId for $conversationId", error)
+        }.getOrNull()
+    }
+
+    private fun formatNotificationNowIso(): String {
+        return SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(Date())
+    }
+
+    private fun warmDirectChatCache(conversationId: String) {
+        if (conversationId.isBlank()) return
+
+        runCatching {
+            runBlocking(Dispatchers.IO) {
+                withTimeoutOrNull(3_500L) {
+                    val cacheOwnerId = ApiClient.getCurrentUserId(applicationContext)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: return@withTimeoutOrNull
+                    val repository = ChatCacheRepository(applicationContext)
+
+                    ApiClient.getConversation(applicationContext, conversationId)
+                        .onSuccess { conversation ->
+                            repository.upsertConversation(cacheOwnerId, conversation)
+                            repository.refreshMessages(
+                                cacheOwnerId = cacheOwnerId,
+                                conversationId = conversationId,
+                                limit = 80
+                            )
+                        }
+                }
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "Could not warm chat cache for notification tap: $conversationId", error)
+        }
     }
 
     private fun showGroupMessageNotification(

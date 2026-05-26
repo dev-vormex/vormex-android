@@ -1,14 +1,16 @@
 package com.kyant.backdrop.catalog.linkedin
 
 import android.widget.Toast
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,19 +24,22 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,32 +49,34 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.catalog.R
-import com.kyant.backdrop.catalog.components.LiquidButton
-import com.kyant.backdrop.catalog.utils.rememberUISensor
-import com.kyant.backdrop.drawBackdrop
-import com.kyant.backdrop.effects.blur as backdropBlur
-import com.kyant.backdrop.effects.lens
-import com.kyant.backdrop.effects.vibrancy
-import com.kyant.shapes.RoundedRectangle
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private val AuthInk = Color(0xFF101828)
+private val AuthSurface = Color(0xFFFFFFFF)
+private val AuthField = Color(0xFFF4F7FB)
+private val AuthLine = Color(0xFFE4EAF2)
+private val AuthBrandFontFamily = FontFamily(Font(R.font.kaushan_script))
 
 @Composable
 internal fun LiquidGlassLoginScreen(
@@ -88,101 +95,160 @@ internal fun LiquidGlassLoginScreen(
     val context = LocalContext.current
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
+    var showEmailLogin by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(error) {
+        if (!error.isNullOrBlank()) {
+            showEmailLogin = true
+        }
+    }
 
     LiquidGlassAuthFrame(
-        backdrop = backdrop,
-        contentColor = contentColor,
         accentColor = accentColor,
-        title = "Vormex",
-        subtitle = "Sign in to continue",
-        modeLabel = "RETURNING MEMBER",
-        scrollable = false
+        contentColor = contentColor,
+        isForm = showEmailLogin
     ) {
-        AuthInputField(
-            value = email,
-            onValueChange = {
-                email = it
-                onClearError()
-            },
-            placeholder = "Email",
-            iconRes = R.drawable.ic_email,
-            accentColor = accentColor
-        )
+        if (!showEmailLogin) {
+            error?.let { AuthInlineError(message = it) }
 
-        AuthInputField(
-            value = password,
-            onValueChange = {
-                password = it
-                onClearError()
-            },
-            placeholder = "Password",
-            iconRes = R.drawable.ic_lock,
-            accentColor = accentColor,
-            visualTransformation = PasswordVisualTransformation()
-        )
+            AuthPrimaryButton(
+                label = "Create an account",
+                isLoading = false,
+                enabled = !isLoading && !isGoogleLoading,
+                accentColor = accentColor,
+                onClick = onSignUpClick
+            )
 
-        error?.let { AuthInlineError(message = it) }
-
-        LiquidButton(
-            onClick = {
-                if (email.isNotBlank() && password.isNotBlank() && !isLoading) {
-                    onLogin(email, password)
-                }
-            },
-            backdrop = backdrop,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            tint = accentColor,
-            isInteractive = !isLoading
-        ) {
-            if (isLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    color = Color.White,
-                    strokeWidth = 2.dp
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                AuthSocialButton(
+                    label = "Email",
+                    contentColor = contentColor,
+                    enabled = !isLoading && !isGoogleLoading,
+                    modifier = Modifier.weight(1f),
+                    leadingContent = {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_email),
+                            contentDescription = "Email",
+                            tint = currentAuthTextColor(contentColor),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    },
+                    onClick = { showEmailLogin = true }
                 )
-            } else {
-                BasicText(
-                    "Sign In",
-                    style = TextStyle(Color.White, 16.sp, FontWeight.SemiBold)
+
+                AuthSocialButton(
+                    label = "Google",
+                    contentColor = contentColor,
+                    enabled = !isLoading && !isGoogleLoading,
+                    isLoading = isGoogleLoading,
+                    modifier = Modifier.weight(1f),
+                    leadingContent = {
+                        Image(
+                            painter = painterResource(R.drawable.ic_google),
+                            contentDescription = "Google",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    },
+                    onClick = onGoogleSignIn
                 )
             }
-        }
 
-        AuthDivider(contentColor = contentColor)
+            AuthTextActionRow(
+                prompt = "Already have an account?",
+                action = "Sign in",
+                accentColor = accentColor,
+                contentColor = contentColor,
+                onClick = { showEmailLogin = true }
+            )
+        } else {
+            AuthSectionLabel(
+                title = "Sign in",
+                subtitle = "Use your Vormex account to continue.",
+                contentColor = contentColor
+            )
 
-        AuthGoogleButton(
-            backdrop = backdrop,
-            contentColor = contentColor,
-            isLoading = isGoogleLoading,
-            isEnabled = !isGoogleLoading && !isLoading,
-            onClick = onGoogleSignIn
-        )
+            AuthInputField(
+                value = email,
+                onValueChange = {
+                    email = it
+                    onClearError()
+                },
+                label = "Email",
+                hint = "you@example.com",
+                iconRes = R.drawable.ic_email,
+                accentColor = accentColor,
+                keyboardType = KeyboardType.Email
+            )
 
-        BasicText(
-            "Forgot password?",
-            modifier = Modifier
-                .clip(RoundedCornerShape(999.dp))
-                .clickable {
-                    val trimmedEmail = email.trim()
-                    if (trimmedEmail.isBlank()) {
-                        Toast.makeText(context, "Enter your email first", Toast.LENGTH_SHORT).show()
-                    } else {
-                        onForgotPassword(trimmedEmail)
+            AuthInputField(
+                value = password,
+                onValueChange = {
+                    password = it
+                    onClearError()
+                },
+                label = "Password",
+                hint = "Enter your password",
+                iconRes = R.drawable.ic_lock,
+                accentColor = accentColor,
+                isPassword = true,
+                keyboardType = KeyboardType.Password
+            )
+
+            error?.let { AuthInlineError(message = it) }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                BasicText(
+                    "Forgot password?",
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .clickable {
+                            val trimmedEmail = email.trim()
+                            if (trimmedEmail.isBlank()) {
+                                Toast.makeText(context, "Enter your email first", Toast.LENGTH_SHORT).show()
+                            } else {
+                                onForgotPassword(trimmedEmail)
+                            }
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    style = TextStyle(accentColor, 14.sp, FontWeight.Medium)
+                )
+            }
+
+            AuthPrimaryButton(
+                label = "Sign in",
+                isLoading = isLoading,
+                enabled = !isLoading,
+                accentColor = accentColor,
+                onClick = {
+                    if (email.isNotBlank() && password.isNotBlank()) {
+                        onLogin(email, password)
                     }
                 }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            style = TextStyle(accentColor, 14.sp, FontWeight.Medium)
-        )
+            )
 
-        AuthFooterRow(
-            prompt = "New to Vormex?",
-            action = "Create account",
-            accentColor = accentColor,
-            contentColor = contentColor,
-            onClick = onSignUpClick
-        )
+            AuthDivider(contentColor = contentColor)
+
+            AuthGoogleButton(
+                contentColor = contentColor,
+                isLoading = isGoogleLoading,
+                isEnabled = !isGoogleLoading && !isLoading,
+                onClick = onGoogleSignIn
+            )
+
+            AuthTextActionRow(
+                prompt = "New to Vormex?",
+                action = "Create account",
+                accentColor = accentColor,
+                contentColor = contentColor,
+                onClick = onSignUpClick
+            )
+        }
     }
 }
 
@@ -207,21 +273,24 @@ internal fun LiquidGlassSignUpScreen(
     var passwordError by rememberSaveable { mutableStateOf<String?>(null) }
 
     LiquidGlassAuthFrame(
-        backdrop = backdrop,
-        contentColor = contentColor,
         accentColor = accentColor,
-        title = "Create Account",
-        subtitle = "Drop into the Vormex network",
-        modeLabel = "NEW MEMBER",
-        scrollable = true
+        contentColor = contentColor,
+        isForm = true
     ) {
+        AuthSectionLabel(
+            title = "Create an account",
+            subtitle = "Start with your name, handle, and email.",
+            contentColor = contentColor
+        )
+
         AuthInputField(
             value = name,
             onValueChange = {
                 name = it
                 onClearError()
             },
-            placeholder = "Full name",
+            label = "Full name",
+            hint = "Your name",
             iconRes = R.drawable.ic_profile,
             accentColor = accentColor
         )
@@ -232,9 +301,11 @@ internal fun LiquidGlassSignUpScreen(
                 username = it.lowercase().filter { char -> char.isLetterOrDigit() || char == '_' }
                 onClearError()
             },
-            placeholder = "Username",
+            label = "Username",
+            hint = "vormex_handle",
             iconRes = R.drawable.ic_mention,
-            accentColor = accentColor
+            accentColor = accentColor,
+            supportingText = "Letters, numbers, and underscores only"
         )
 
         AuthInputField(
@@ -243,9 +314,11 @@ internal fun LiquidGlassSignUpScreen(
                 email = it
                 onClearError()
             },
-            placeholder = "Email",
+            label = "Email",
+            hint = "you@example.com",
             iconRes = R.drawable.ic_email,
-            accentColor = accentColor
+            accentColor = accentColor,
+            keyboardType = KeyboardType.Email
         )
 
         AuthInputField(
@@ -255,10 +328,18 @@ internal fun LiquidGlassSignUpScreen(
                 onClearError()
                 passwordError = null
             },
-            placeholder = "Password (min 8 chars)",
+            label = "Password",
+            hint = "At least 8 characters",
             iconRes = R.drawable.ic_lock,
             accentColor = accentColor,
-            visualTransformation = PasswordVisualTransformation()
+            isPassword = true,
+            keyboardType = KeyboardType.Password
+        )
+
+        AuthPasswordStrength(
+            password = password,
+            accentColor = accentColor,
+            contentColor = contentColor
         )
 
         AuthInputField(
@@ -267,16 +348,22 @@ internal fun LiquidGlassSignUpScreen(
                 confirmPassword = it
                 passwordError = null
             },
-            placeholder = "Confirm password",
+            label = "Confirm password",
+            hint = "Repeat password",
             iconRes = R.drawable.ic_check,
             accentColor = accentColor,
-            visualTransformation = PasswordVisualTransformation()
+            isPassword = true,
+            keyboardType = KeyboardType.Password
         )
 
         passwordError?.let { AuthInlineError(message = it) }
         error?.let { AuthInlineError(message = it) }
 
-        LiquidButton(
+        AuthPrimaryButton(
+            label = "Create an account",
+            isLoading = isLoading,
+            enabled = !isLoading,
+            accentColor = accentColor,
             onClick = {
                 when {
                     name.isBlank() -> passwordError = "Name is required"
@@ -285,41 +372,21 @@ internal fun LiquidGlassSignUpScreen(
                     email.isBlank() -> passwordError = "Email is required"
                     password.length < 8 -> passwordError = "Password must be at least 8 characters"
                     password != confirmPassword -> passwordError = "Passwords do not match"
-                    !isLoading -> onSignUp(email, password, name, username)
+                    !isLoading -> onSignUp(email.trim(), password, name.trim(), username.trim())
                 }
-            },
-            backdrop = backdrop,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            tint = accentColor,
-            isInteractive = !isLoading
-        ) {
-            if (isLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    color = Color.White,
-                    strokeWidth = 2.dp
-                )
-            } else {
-                BasicText(
-                    "Create Account",
-                    style = TextStyle(Color.White, 16.sp, FontWeight.SemiBold)
-                )
             }
-        }
+        )
 
         AuthDivider(contentColor = contentColor)
 
         AuthGoogleButton(
-            backdrop = backdrop,
             contentColor = contentColor,
             isLoading = isGoogleLoading,
             isEnabled = !isGoogleLoading && !isLoading,
             onClick = onGoogleSignIn
         )
 
-        AuthFooterRow(
+        AuthTextActionRow(
             prompt = "Already have an account?",
             action = "Sign in",
             accentColor = accentColor,
@@ -331,117 +398,91 @@ internal fun LiquidGlassSignUpScreen(
 
 @Composable
 private fun LiquidGlassAuthFrame(
-    backdrop: LayerBackdrop,
-    contentColor: Color,
     accentColor: Color,
-    title: String,
-    subtitle: String,
-    modeLabel: String,
-    scrollable: Boolean,
+    contentColor: Color,
+    isForm: Boolean,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val appearance = currentVormexAppearance()
-    val sensor = rememberUISensor()
-    val logoDrop = remember { Animatable(-220f) }
-    val cardDrop = remember { Animatable(120f) }
     val fade = remember { Animatable(0f) }
-    val scale = remember { Animatable(0.92f) }
+    val contentRise = remember { Animatable(18f) }
     val scrollState = rememberScrollState()
-    val sensorX by animateFloatAsState(
-        targetValue = sensor.gravity.x,
-        animationSpec = spring(dampingRatio = 0.72f, stiffness = 150f),
-        label = "authSensorX"
-    )
-    val sensorY by animateFloatAsState(
-        targetValue = sensor.gravity.y,
-        animationSpec = spring(dampingRatio = 0.68f, stiffness = 145f),
-        label = "authSensorY"
-    )
+    val appearance = currentVormexAppearance()
+    val backgroundColor = currentAuthBackgroundColor()
 
     LaunchedEffect(Unit) {
         launch { fade.animateTo(1f, tween(durationMillis = 520)) }
-        launch { scale.animateTo(1f, spring(dampingRatio = 0.72f, stiffness = 360f)) }
-        launch { logoDrop.animateTo(0f, spring(dampingRatio = 0.62f, stiffness = 260f)) }
-        delay(90)
-        cardDrop.animateTo(0f, spring(dampingRatio = 0.82f, stiffness = 300f))
+        contentRise.animateTo(0f, spring(dampingRatio = 0.82f, stiffness = 300f))
     }
 
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .displayCutoutPadding()
-            .imePadding()
+            .background(backgroundColor)
     ) {
-        val isCompactHeight = maxHeight < 760.dp
-        val cardPadding = if (isCompactHeight) 20.dp else 24.dp
-        val headerSpacing = if (isCompactHeight) 16.dp else 20.dp
-        val verticalPadding = if (scrollable || isCompactHeight) 20.dp else 28.dp
+        val isCompactHeight = maxHeight < 720.dp
+        val horizontalPadding = if (maxWidth < 380.dp) 24.dp else 26.dp
+        val topGap = when {
+            isForm -> if (isCompactHeight) 18.dp else 34.dp
+            isCompactHeight -> maxHeight * 0.22f
+            else -> maxHeight * 0.30f
+        }
+        val spacing = if (isCompactHeight) 18.dp else 24.dp
 
-        AuthAmbientOrbs(
-            accentColor = accentColor,
-            sensorX = sensorX,
-            sensorY = sensorY
-        )
+        if (!appearance.isDarkTheme) {
+            AuthQuietBackground(accentColor = accentColor)
+        }
 
-        val columnModifier = Modifier
-            .fillMaxSize()
-            .then(
-                if (scrollable || isCompactHeight) {
-                    Modifier.verticalScroll(scrollState)
-                } else {
-                    Modifier
-                }
-            )
-            .padding(horizontal = 22.dp, vertical = verticalPadding)
-
-        Column(
-            modifier = columnModifier,
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = if (scrollable || isCompactHeight) Arrangement.spacedBy(headerSpacing) else Arrangement.Center
-        ) {
-            if (!scrollable && !isCompactHeight) {
-                Spacer(Modifier.height(8.dp))
-            }
-
-            AuthHero(
-                accentColor = accentColor,
-                contentColor = contentColor,
-                title = title,
-                subtitle = subtitle,
-                modeLabel = modeLabel,
-                logoDrop = logoDrop.value,
-                alpha = fade.value,
-                scale = scale.value,
-                sensorX = sensorX,
-                sensorY = sensorY
-            )
-
-            Box(
+        if (isForm) {
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .displayCutoutPadding()
+                    .imePadding()
+                    .navigationBarsPadding()
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = horizontalPadding, vertical = 18.dp)
                     .graphicsLayer {
                         alpha = fade.value
-                        translationX = sensorX * 20f
-                        translationY = cardDrop.value - sensorY * 18f
-                        rotationX = sensorY * 3.1f
-                        rotationY = -sensorX * 3.6f
-                        cameraDistance = 28f * density
-                    }
-                    .vormexSurface(
-                        backdrop = backdrop,
-                        tone = VormexSurfaceTone.Card,
-                        cornerRadius = 34.dp,
-                        blurRadius = 22.dp,
-                        lensRadius = 10.dp,
-                        lensDepth = 18.dp,
-                        surfaceColor = if (appearance.isGlassTheme) Color.White.copy(alpha = 0.16f) else appearance.cardColor
-                    )
-                    .padding(cardPadding)
+                        translationY = contentRise.value
+                    },
+                verticalArrangement = Arrangement.spacedBy(if (isCompactHeight) 12.dp else 14.dp)
             ) {
+                Spacer(modifier = Modifier.height(topGap))
+                AuthEditorialHero(
+                    accentColor = accentColor,
+                    contentColor = contentColor,
+                    compact = true
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                content()
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .displayCutoutPadding()
+                    .navigationBarsPadding()
+                    .padding(horizontal = horizontalPadding, vertical = 18.dp)
+                    .graphicsLayer {
+                        alpha = fade.value
+                        translationY = contentRise.value
+                    }
+            ) {
+                Spacer(modifier = Modifier.height(topGap))
+                AuthEditorialHero(
+                    accentColor = accentColor,
+                    contentColor = contentColor,
+                    compact = false
+                )
+                Spacer(modifier = Modifier.weight(1f))
                 Column(
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 520.dp)
+                        .align(Alignment.CenterHorizontally),
+                    verticalArrangement = Arrangement.spacedBy(spacing)
                 ) {
                     content()
                 }
@@ -451,249 +492,369 @@ private fun LiquidGlassAuthFrame(
 }
 
 @Composable
-private fun AuthHero(
-    accentColor: Color,
-    contentColor: Color,
-    title: String,
-    subtitle: String,
-    modeLabel: String,
-    logoDrop: Float,
-    alpha: Float,
-    scale: Float,
-    sensorX: Float,
-    sensorY: Float
-) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally
+private fun AuthQuietBackground(accentColor: Color) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(currentAuthBackgroundColor())
     ) {
         Box(
             modifier = Modifier
-                .height(168.dp)
-                .fillMaxWidth(),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            Box(
-                modifier = Modifier
-                    .padding(top = 8.dp)
-                    .width(6.dp)
-                    .height(92.dp)
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(Color.White.copy(alpha = 0.16f))
-                    .blur(1.dp)
-                    .graphicsLayer { this.alpha = alpha * 0.85f }
-            )
-
-            Image(
-                painter = painterResource(R.drawable.vormex_logo),
-                contentDescription = "Vormex logo",
-                modifier = Modifier
-                    .padding(top = 28.dp)
-                    .size(136.dp)
-                    .graphicsLayer {
-                        this.alpha = alpha
-                        this.scaleX = scale
-                        this.scaleY = scale
-                        translationX = -sensorX * 38f
-                        translationY = logoDrop + sensorY * 28f
-                        rotationZ = -sensorX * 6.5f
-                        rotationX = sensorY * 2.2f
-                    },
-                contentScale = ContentScale.Fit
-            )
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(999.dp))
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(190.dp)
                 .background(
-                    Brush.horizontalGradient(
+                    Brush.verticalGradient(
                         listOf(
-                            accentColor.copy(alpha = 0.26f),
-                            Color.White.copy(alpha = 0.14f)
+                            Color.Transparent,
+                            accentColor.copy(alpha = 0.05f)
                         )
                     )
                 )
-                .border(
-                    width = 1.dp,
-                    color = Color.White.copy(alpha = 0.24f),
-                    shape = RoundedCornerShape(999.dp)
+        )
+    }
+}
+
+@Composable
+private fun AuthEditorialHero(
+    accentColor: Color,
+    contentColor: Color,
+    compact: Boolean
+) {
+    val resolvedContentColor = currentAuthTextColor(contentColor)
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 14.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                BasicText(
+                    "vormex",
+                    style = TextStyle(
+                        color = resolvedContentColor,
+                        fontSize = if (compact) 28.sp else 32.sp,
+                        lineHeight = if (compact) 32.sp else 36.sp,
+                        fontFamily = AuthBrandFontFamily
+                    )
                 )
-                .padding(horizontal = 14.dp, vertical = 7.dp)
-                .graphicsLayer { this.alpha = alpha }
-        ) {
+                Box(
+                    modifier = Modifier
+                        .padding(bottom = 7.dp)
+                        .size(if (compact) 6.dp else 7.dp)
+                        .clip(CircleShape)
+                        .background(accentColor)
+                )
+            }
             BasicText(
-                modeLabel,
+                "A quieter professional network".uppercase(),
                 style = TextStyle(
-                    color = accentColor,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 1.4.sp
+                    color = resolvedContentColor.copy(alpha = 0.52f),
+                    fontSize = if (compact) 10.sp else 11.sp,
+                    lineHeight = if (compact) 12.sp else 14.sp,
+                    fontWeight = FontWeight.Medium
                 )
             )
         }
 
-        Spacer(Modifier.height(16.dp))
+        BasicText(
+            buildAnnotatedString {
+                append("The work, ")
+                pushStyle(SpanStyle(fontStyle = FontStyle.Italic, fontWeight = FontWeight.Normal))
+                append("not")
+                pop()
+                append(" the noise.")
+            },
+            style = TextStyle(
+                color = resolvedContentColor,
+                fontSize = if (compact) 28.sp else 34.sp,
+                lineHeight = if (compact) 32.sp else 38.sp,
+                fontFamily = FontFamily.Serif,
+                fontWeight = FontWeight.Bold
+            )
+        )
 
+        BasicText(
+            "A place to share craft, find collaborators, and read the people you actually want to hear from.",
+            style = TextStyle(
+                color = resolvedContentColor.copy(alpha = 0.70f),
+                fontSize = if (compact) 14.sp else 15.sp,
+                lineHeight = if (compact) 20.sp else 22.sp
+            )
+        )
+    }
+}
+
+@Composable
+private fun currentAuthBackgroundColor(): Color {
+    val appearance = currentVormexAppearance()
+    return when {
+        appearance.isDarkTheme -> appearance.backgroundColor
+        appearance.backgroundColor == Color.Transparent -> AuthSurface
+        else -> appearance.backgroundColor
+    }
+}
+
+@Composable
+private fun currentAuthTextColor(fallback: Color): Color {
+    val appearance = currentVormexAppearance()
+    return when {
+        appearance.isDarkTheme -> appearance.contentColor
+        fallback == Color.Transparent -> AuthInk
+        else -> fallback
+    }
+}
+
+@Composable
+private fun currentAuthControlColor(): Color {
+    val appearance = currentVormexAppearance()
+    return if (appearance.isDarkTheme) appearance.controlColor else AuthSurface.copy(alpha = 0.86f)
+}
+
+@Composable
+private fun currentAuthBorderColor(): Color {
+    val appearance = currentVormexAppearance()
+    return if (appearance.isDarkTheme) appearance.controlBorderColor else AuthLine
+}
+
+@Composable
+private fun AuthSectionLabel(
+    title: String,
+    subtitle: String,
+    contentColor: Color
+) {
+    val resolvedContentColor = currentAuthTextColor(contentColor)
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
         BasicText(
             title,
-            modifier = Modifier.graphicsLayer { this.alpha = alpha },
             style = TextStyle(
-                color = accentColor,
-                fontSize = 34.sp,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center
+                color = resolvedContentColor,
+                fontSize = 18.sp,
+                lineHeight = 22.sp,
+                fontWeight = FontWeight.SemiBold
             )
         )
-
-        Spacer(Modifier.height(8.dp))
-
         BasicText(
             subtitle,
-            modifier = Modifier.graphicsLayer { this.alpha = alpha },
             style = TextStyle(
-                color = contentColor.copy(alpha = 0.76f),
-                fontSize = 15.sp,
-                textAlign = TextAlign.Center,
-                lineHeight = 22.sp
+                color = resolvedContentColor.copy(alpha = 0.62f),
+                fontSize = 13.sp,
+                lineHeight = 18.sp
             )
         )
     }
 }
 
 @Composable
-private fun AuthAmbientOrbs(
+private fun AuthPrimaryButton(
+    label: String,
+    isLoading: Boolean,
+    enabled: Boolean,
     accentColor: Color,
-    sensorX: Float,
-    sensorY: Float
+    onClick: () -> Unit
 ) {
-    val skyColor = Color(0xFF9FD4FF)
-    val iceColor = Color(0xFFEAF6FF)
-
-    Box(
-        modifier = Modifier.fillMaxSize()
+    Button(
+        onClick = {
+            if (!isLoading && enabled) {
+                onClick()
+            }
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp),
+        enabled = enabled,
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = accentColor,
+            contentColor = Color.White,
+            disabledContainerColor = accentColor.copy(alpha = 0.42f),
+            disabledContentColor = Color.White.copy(alpha = 0.70f)
+        )
     ) {
-        Orb(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset(x = (-42).dp, y = 34.dp),
-            size = 220.dp,
-            colors = listOf(
-                accentColor.copy(alpha = 0.24f),
-                skyColor.copy(alpha = 0.17f),
-                Color.Transparent
-            ),
-            translationX = -sensorX * 28f,
-            translationY = sensorY * 22f
-        )
-
-        Orb(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .offset(x = 36.dp, y = (-26).dp),
-            size = 260.dp,
-            colors = listOf(
-                iceColor.copy(alpha = 0.42f),
-                accentColor.copy(alpha = 0.18f),
-                Color.Transparent
-            ),
-            translationX = sensorX * 34f,
-            translationY = -sensorY * 18f
-        )
-
-        Orb(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .offset(x = 18.dp, y = 40.dp),
-            size = 180.dp,
-            colors = listOf(
-                accentColor.copy(alpha = 0.16f),
-                Color.White.copy(alpha = 0.12f),
-                Color.Transparent
-            ),
-            translationX = sensorX * 18f,
-            translationY = sensorY * 26f
-        )
+        if (isLoading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                color = Color.White,
+                strokeWidth = 2.dp
+            )
+        } else {
+            BasicText(
+                label,
+                style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold)
+            )
+        }
     }
 }
 
 @Composable
-private fun Orb(
-    modifier: Modifier,
-    size: androidx.compose.ui.unit.Dp,
-    colors: List<Color>,
-    translationX: Float,
-    translationY: Float
+private fun AuthSocialButton(
+    label: String,
+    contentColor: Color,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    isLoading: Boolean = false,
+    leadingContent: @Composable () -> Unit,
+    onClick: () -> Unit
 ) {
+    val resolvedContentColor = currentAuthTextColor(contentColor)
+    val shape = RoundedCornerShape(12.dp)
+
     Box(
         modifier = modifier
-            .size(size)
-            .graphicsLayer {
-                this.translationX = translationX
-                this.translationY = translationY
-            }
-            .blur(78.dp)
-            .background(
-                brush = Brush.radialGradient(colors),
-                shape = CircleShape
+            .height(46.dp)
+            .graphicsLayer { alpha = if (enabled) 1f else 0.56f }
+            .clip(shape)
+            .background(currentAuthControlColor(), shape)
+            .border(1.dp, currentAuthBorderColor(), shape)
+            .clickable(enabled = enabled && !isLoading, onClick = onClick)
+            .padding(horizontal = 14.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isLoading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                color = resolvedContentColor,
+                strokeWidth = 2.dp
             )
-    )
+        } else {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                leadingContent()
+                BasicText(
+                    label,
+                    style = TextStyle(
+                        color = resolvedContentColor,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuthTextActionRow(
+    prompt: String,
+    action: String,
+    accentColor: Color,
+    contentColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        BasicText(
+            prompt,
+            style = TextStyle(
+                color = currentAuthTextColor(contentColor).copy(alpha = 0.62f),
+                fontSize = 13.sp
+            )
+        )
+        BasicText(
+            action,
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            style = TextStyle(
+                color = accentColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+    }
 }
 
 @Composable
 private fun AuthInputField(
     value: String,
     onValueChange: (String) -> Unit,
-    placeholder: String,
+    label: String,
+    hint: String? = null,
     iconRes: Int,
     accentColor: Color,
-    visualTransformation: androidx.compose.ui.text.input.VisualTransformation = androidx.compose.ui.text.input.VisualTransformation.None
+    supportingText: String? = null,
+    isPassword: Boolean = false,
+    keyboardType: KeyboardType = KeyboardType.Text
 ) {
+    val colors = MaterialTheme.colorScheme
     val appearance = currentVormexAppearance()
-    val shape = RoundedCornerShape(22.dp)
-    val isGlassTheme = appearance.isGlassTheme
-    val borderColor = if (isGlassTheme) Color.White.copy(alpha = 0.72f) else appearance.inputBorderColor
-    val baseColor = Color(0xFFF9FCFF)
-    val textColor = if (isGlassTheme) Color(0xFF102033) else appearance.contentColor
-    val placeholderColor = if (isGlassTheme) Color(0xFF6B7280) else appearance.mutedContentColor
+    val resolvedTextColor = currentAuthTextColor(AuthInk)
+    val resolvedMutedColor = resolvedTextColor.copy(alpha = 0.58f)
+    val idleFieldColor = if (appearance.isDarkTheme) appearance.inputColor else AuthField
+    val focusedFieldColor = if (appearance.isDarkTheme) appearance.controlColor else AuthSurface
+    val idleBorderColor = if (appearance.isDarkTheme) appearance.inputBorderColor else AuthLine
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+    var passwordVisible by rememberSaveable { mutableStateOf(false) }
+    val fieldShape = RoundedCornerShape(12.dp)
+    val fieldFill by animateColorAsState(
+        targetValue = if (isFocused) {
+            focusedFieldColor
+        } else {
+            idleFieldColor
+        },
+        label = "authFieldFill"
+    )
+    val fieldBorder by animateColorAsState(
+        targetValue = if (isFocused) {
+            accentColor.copy(alpha = 0.75f)
+        } else {
+            idleBorderColor
+        },
+        label = "authFieldBorder"
+    )
+    val visualTransformation =
+        if (isPassword && !passwordVisible) PasswordVisualTransformation() else VisualTransformation.None
 
-    BasicTextField(
-        value = value,
-        onValueChange = onValueChange,
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        textStyle = TextStyle(
-            color = textColor,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Medium
-        ),
-        cursorBrush = SolidColor(accentColor),
-        visualTransformation = visualTransformation,
-        decorationBox = { innerTextField ->
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(shape)
-                    .then(
-                        if (isGlassTheme) {
-                            Modifier.background(
-                                Brush.verticalGradient(
-                                    listOf(
-                                        baseColor.copy(alpha = 0.92f),
-                                        baseColor.copy(alpha = 0.76f)
-                                    )
-                                )
-                            )
-                        } else {
-                            Modifier.background(appearance.inputColor, shape)
-                        }
-                    )
-                    .border(1.dp, borderColor, shape)
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-            ) {
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        BasicText(
+            label,
+            style = TextStyle(
+                color = if (isFocused) accentColor else resolvedMutedColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            textStyle = TextStyle(
+                color = resolvedTextColor,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            cursorBrush = SolidColor(accentColor),
+            visualTransformation = visualTransformation,
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+            interactionSource = interactionSource,
+            decorationBox = { innerTextField ->
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .clip(fieldShape)
+                        .background(fieldFill, fieldShape)
+                        .border(1.dp, fieldBorder, fieldShape)
+                        .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -701,38 +862,130 @@ private fun AuthInputField(
                         modifier = Modifier
                             .size(32.dp)
                             .clip(CircleShape)
-                            .background(accentColor.copy(alpha = 0.12f)),
+                            .background(
+                                if (isFocused) {
+                                    accentColor.copy(alpha = 0.16f)
+                                } else {
+                                    currentAuthControlColor()
+                                }
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             painter = painterResource(iconRes),
                             contentDescription = null,
-                            tint = accentColor,
-                            modifier = Modifier.size(16.dp)
+                            tint = if (isFocused) accentColor else resolvedMutedColor,
+                            modifier = Modifier.size(17.dp)
                         )
                     }
 
                     Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp),
+                        modifier = Modifier.weight(1f),
                         contentAlignment = Alignment.CenterStart
                     ) {
-                        if (value.isEmpty()) {
+                        if (value.isEmpty() && hint != null) {
                             BasicText(
-                                placeholder,
+                                hint,
                                 style = TextStyle(
-                                    color = placeholderColor,
+                                    color = resolvedMutedColor.copy(alpha = 0.72f),
                                     fontSize = 15.sp
                                 )
                             )
                         }
                         innerTextField()
                     }
+
+                    if (isPassword) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .clickable { passwordVisible = !passwordVisible },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_visibility),
+                                contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                                tint = if (passwordVisible) accentColor else resolvedMutedColor,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
+                    }
                 }
             }
+        )
+
+        supportingText?.let {
+            BasicText(
+                it,
+                modifier = Modifier.padding(horizontal = 4.dp),
+                style = TextStyle(
+                    color = colors.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+            )
         }
-    )
+    }
+}
+
+@Composable
+private fun AuthPasswordStrength(
+    password: String,
+    accentColor: Color,
+    contentColor: Color
+) {
+    if (password.isBlank()) return
+
+    val score = listOf(
+        password.length >= 8,
+        password.any { it.isUpperCase() },
+        password.any { it.isDigit() },
+        password.any { !it.isLetterOrDigit() }
+    ).count { it }
+    val label = when {
+        score <= 1 -> "Weak"
+        score == 2 -> "Fair"
+        score == 3 -> "Good"
+        else -> "Strong"
+    }
+    val activeColor = when {
+        score <= 1 -> Color(0xFFEF4444)
+        score == 2 -> Color(0xFFF59E0B)
+        else -> accentColor
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            repeat(4) { index ->
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(
+                            if (index < score) activeColor else contentColor.copy(alpha = 0.12f)
+                        )
+                )
+            }
+        }
+        BasicText(
+            "Password strength: $label",
+            style = TextStyle(
+                color = activeColor,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            )
+        )
+    }
 }
 
 @Composable
@@ -749,12 +1002,11 @@ private fun AuthDivider(contentColor: Color) {
                 .background(contentColor.copy(alpha = 0.18f))
         )
         BasicText(
-            "OR",
+            "or",
             style = TextStyle(
                 color = contentColor.copy(alpha = 0.52f),
                 fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 1.2.sp
+                fontWeight = FontWeight.SemiBold
             )
         )
         Box(
@@ -768,78 +1020,26 @@ private fun AuthDivider(contentColor: Color) {
 
 @Composable
 private fun AuthGoogleButton(
-    backdrop: LayerBackdrop,
     contentColor: Color,
     isLoading: Boolean,
     isEnabled: Boolean,
     onClick: () -> Unit
 ) {
-    val appearance = currentVormexAppearance()
-    LiquidButton(
-        onClick = {
-            if (isEnabled) {
-                onClick()
-            }
-        },
-        backdrop = backdrop,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(56.dp),
-        surfaceColor = if (appearance.isGlassTheme) Color.White.copy(alpha = 0.2f) else Color.Unspecified,
-        isInteractive = isEnabled
-    ) {
-        if (isLoading) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(22.dp),
-                color = contentColor,
-                strokeWidth = 2.dp
-            )
-        } else {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Image(
-                    painter = painterResource(R.drawable.ic_google),
-                    contentDescription = "Google",
-                    modifier = Modifier.size(20.dp)
-                )
-                BasicText(
-                    "Continue with Google",
-                    style = TextStyle(contentColor, 15.sp, FontWeight.Medium)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun AuthFooterRow(
-    prompt: String,
-    action: String,
-    accentColor: Color,
-    contentColor: Color,
-    onClick: () -> Unit
-) {
-    Row(
+    AuthSocialButton(
+        label = "Continue with Google",
+        contentColor = contentColor,
+        enabled = isEnabled,
+        isLoading = isLoading,
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        BasicText(
-            prompt,
-            style = TextStyle(contentColor.copy(alpha = 0.72f), 14.sp)
-        )
-        Spacer(Modifier.width(6.dp))
-        BasicText(
-            action,
-            modifier = Modifier
-                .clip(RoundedCornerShape(999.dp))
-                .clickable(onClick = onClick)
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            style = TextStyle(accentColor, 14.sp, FontWeight.SemiBold)
-        )
-    }
+        leadingContent = {
+            Image(
+                painter = painterResource(R.drawable.ic_google),
+                contentDescription = "Google",
+                modifier = Modifier.size(18.dp)
+            )
+        },
+        onClick = onClick
+    )
 }
 
 @Composable

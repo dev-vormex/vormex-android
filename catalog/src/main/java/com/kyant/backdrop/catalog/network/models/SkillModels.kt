@@ -41,7 +41,10 @@ data class SkillPassportSummary(
     val evidenceCount: Int = 0,
     val endorsementsCount: Int = 0,
     val passportScore: Int = 0,
-    val topCategory: String? = null
+    val topCategory: String? = null,
+    val verificationLinksCount: Int = 0,
+    val hasVerifiedSkillsBadge: Boolean = false,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -93,7 +96,44 @@ data class SkillPassportResponse(
     val teachingSkills: List<String> = emptyList(),
     val skills: List<SkillPassportSkill> = emptyList(),
     val recentEvidence: List<SkillPassportEvidence> = emptyList(),
-    val recentEndorsements: List<SkillPassportEndorsement> = emptyList()
+    val recentEndorsements: List<SkillPassportEndorsement> = emptyList(),
+    val verificationLinks: List<SkillVerificationLink> = emptyList()
+)
+
+@Serializable
+data class SkillVerificationLink(
+    val id: String = "",
+    val provider: String = "",
+    val username: String = "",
+    val profileUrl: String? = null,
+    val status: String = "verified",
+    val verifiedAt: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null
+)
+
+@Serializable
+data class SkillVerificationLinkRequest(
+    val provider: String,
+    val username: String,
+    val profileUrl: String? = null
+)
+
+@Serializable
+data class SkillVerificationLinkResponse(
+    val verificationLink: SkillVerificationLink = SkillVerificationLink()
+)
+
+@Serializable
+data class SkillEndorseRequest(
+    val skillName: String,
+    val note: String? = null,
+    val rating: Int? = null
+)
+
+@Serializable
+data class SkillEndorseResponse(
+    val endorsement: SkillPassportEndorsement = SkillPassportEndorsement()
 )
 
 @Serializable
