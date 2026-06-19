@@ -39,9 +39,12 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -85,6 +88,7 @@ import com.kyant.backdrop.catalog.data.ChatMutePreferences
 import com.kyant.backdrop.catalog.linkedin.VerificationBadge
 import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.network.GroupSocketManager
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
@@ -106,10 +110,13 @@ fun GroupChatScreen(
     accentColor: Color,
     currentUserId: String?,
     onNavigateBack: () -> Unit = {},
-    onNavigateToProfile: (String) -> Unit = {}
+    onNavigateToProfile: (String) -> Unit = {},
+    onNavigateToGroupDetail: () -> Unit = {},
+    onNavigateToSettings: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val viewModel: GroupsViewModel = viewModel(factory = GroupsViewModel.Factory(context))
+    val groupUiState by viewModel.uiState.collectAsState()
     val chatState by viewModel.chatState.collectAsState()
     val grammarScope = rememberCoroutineScope()
     val aiGateway = remember { VormexAiGateway(context.applicationContext) }
@@ -126,6 +133,7 @@ fun GroupChatScreen(
     // Load chat when screen opens
     LaunchedEffect(groupId) {
         viewModel.loadGroupChat(groupId)
+        viewModel.loadGroupInviteLink(groupId)
     }
     
     // Cleanup when leaving
@@ -173,6 +181,10 @@ fun GroupChatScreen(
             isFixingGrammar = false
         }
     }
+
+    val inviteLink = groupUiState.currentInviteLink
+        ?.takeIf { it.group.id == groupId && it.canShare }
+    val inviteUrl = inviteLink?.inviteUrl ?: inviteLink?.inviteCode?.let(::groupInviteUrl)
     
     Column(
         Modifier
@@ -188,6 +200,8 @@ fun GroupChatScreen(
             onlineCount = chatState.onlineCount,
             connectionState = chatState.connectionState,
             isNotificationsMuted = isNotificationsMuted,
+            canShareInvite = !inviteUrl.isNullOrBlank(),
+            isLoadingInvite = groupUiState.isLoadingInviteLink,
             onBackClick = onNavigateBack,
             onToggleNotifications = {
                 if (isNotificationsMuted) {
@@ -200,7 +214,21 @@ fun GroupChatScreen(
                     MessageNotificationManager.clearConversationNotification(context, groupMuteKey)
                     Toast.makeText(context, "Group notifications muted", Toast.LENGTH_SHORT).show()
                 }
-            }
+            },
+            onInviteClick = {
+                if (inviteUrl.isNullOrBlank()) {
+                    Toast.makeText(context, "Opening invite tools", Toast.LENGTH_SHORT).show()
+                    onNavigateToSettings()
+                } else {
+                    launchGroupInviteShareSheet(
+                        context = context,
+                        groupName = chatState.group?.name ?: "Team",
+                        inviteUrl = inviteUrl
+                    )
+                }
+            },
+            onGroupInfoClick = onNavigateToGroupDetail,
+            onSettingsClick = onNavigateToSettings
         )
         
         // Messages
@@ -366,8 +394,13 @@ private fun ChatHeader(
     onlineCount: Int,
     connectionState: GroupSocketManager.ConnectionState,
     isNotificationsMuted: Boolean,
+    canShareInvite: Boolean,
+    isLoadingInvite: Boolean,
     onBackClick: () -> Unit,
-    onToggleNotifications: () -> Unit
+    onToggleNotifications: () -> Unit,
+    onInviteClick: () -> Unit,
+    onGroupInfoClick: () -> Unit,
+    onSettingsClick: () -> Unit
 ) {
     val context = LocalContext.current
     var showMenu by remember { mutableStateOf(false) }
@@ -493,6 +526,48 @@ private fun ChatHeader(
             ) {
                 DropdownMenuItem(
                     leadingIcon = {
+                        Icon(Icons.Default.Info, contentDescription = null)
+                    },
+                    text = {
+                        Text("Group info")
+                    },
+                    onClick = {
+                        showMenu = false
+                        onGroupInfoClick()
+                    }
+                )
+                DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(Icons.Default.Share, contentDescription = null)
+                    },
+                    text = {
+                        Text(
+                            when {
+                                canShareInvite -> "Invite members"
+                                isLoadingInvite -> "Loading invite..."
+                                else -> "Invite tools"
+                            }
+                        )
+                    },
+                    onClick = {
+                        showMenu = false
+                        onInviteClick()
+                    }
+                )
+                DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(Icons.Default.Settings, contentDescription = null)
+                    },
+                    text = {
+                        Text("Settings and resources")
+                    },
+                    onClick = {
+                        showMenu = false
+                        onSettingsClick()
+                    }
+                )
+                DropdownMenuItem(
+                    leadingIcon = {
                         Icon(
                             if (isNotificationsMuted) Icons.Default.Notifications else Icons.Default.NotificationsOff,
                             contentDescription = null
@@ -529,7 +604,7 @@ private fun MessageBubble(
         message.mediaUrl.isNullOrBlank() &&
         isSystemEmojiOnlyMessage(message.content)
     val emojiFontSizeSp = if (isEmojiOnlyMessage) systemEmojiMessageFontSizeSp(message.content) else 14
-    val bubbleColor = if (isOwnMessage) accentColor else contentColor.copy(alpha = 0.1f)
+    val bubbleColor = if (isOwnMessage) Color(0xFF151A22) else contentColor.copy(alpha = 0.1f)
     val textColor = if (isOwnMessage && !isEmojiOnlyMessage) Color.White else contentColor
     
     Row(
@@ -587,6 +662,7 @@ private fun MessageBubble(
                     )
                     VerificationBadge(
                         verified = message.sender.hasVerificationBadge(),
+                        badgeStyle = message.sender.verificationBadgeStyle(),
                         size = VerificationBadgeSize.Micro
                     )
                 }

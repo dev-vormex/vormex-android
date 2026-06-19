@@ -84,6 +84,10 @@ object FindPeopleRanker {
             )
     }
 
+    fun preserveBackendSmartMatchOrder(matches: List<SmartMatch>): List<SmartMatch> {
+        return matches.distinctBy { it.user.id }
+    }
+
     fun buildSignalsFromPerson(person: PersonInfo): LearnedConnectionSignals {
         return LearnedConnectionSignals(
             skillWeights = tokenWeights(person.skills, weight = 1),
@@ -146,6 +150,11 @@ object FindPeopleRanker {
         score += learnedExactTokenBonus(branchToken, profile.learnedSignals.branchWeights, perWeight = 110, cap = 440)
         score += min(person.mutualConnections, 8) * 115
         score += if (person.isOnline) 90 else 0
+        score += premiumVisibilityBoost(
+            isPremium = person.isPremium,
+            profileBoostActive = person.profileBoostActive,
+            discoveryPriority = person.discoveryPriority
+        )
         score += profileStrength(person)
         score += stableExplorationBoost(person.id)
 
@@ -201,6 +210,11 @@ object FindPeopleRanker {
         score += user.interests.size * 18
         score += match.tags.size * 18
         score += match.reasons.size * 14
+        score += premiumVisibilityBoost(
+            isPremium = user.isPremium,
+            profileBoostActive = user.profileBoostActive,
+            discoveryPriority = user.discoveryPriority
+        )
         score += if (user.githubConnected) 40 else 0
         score += if (!user.headline.isNullOrBlank()) 25 else 0
         score += if (!user.bio.isNullOrBlank()) 15 else 0
@@ -258,6 +272,16 @@ object FindPeopleRanker {
             "connected" -> 1
             else -> 0
         }
+    }
+
+    private fun premiumVisibilityBoost(
+        isPremium: Boolean,
+        profileBoostActive: Boolean,
+        discoveryPriority: Int
+    ): Int {
+        return discoveryPriority * 28 +
+            if (profileBoostActive) 2_400 else 0 +
+            if (isPremium) 700 else 0
     }
 
     private fun profileStrength(person: PersonInfo): Int {

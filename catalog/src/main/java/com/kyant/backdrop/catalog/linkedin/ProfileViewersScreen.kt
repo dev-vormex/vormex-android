@@ -49,6 +49,11 @@ import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.models.ProfileViewHistory
 import com.kyant.backdrop.catalog.network.models.ProfileViewHistoryItem
 import com.kyant.backdrop.catalog.network.models.ProfileViewStats
+import com.kyant.backdrop.catalog.network.models.ProfileInsights
+import com.kyant.backdrop.catalog.network.models.ProfileSaverItem
+import com.kyant.backdrop.catalog.network.models.ProfileSavers
+import com.kyant.backdrop.catalog.network.models.RecentViewedProfileItem
+import com.kyant.backdrop.catalog.network.models.RecentViewedProfiles
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -64,7 +69,11 @@ private data class ProfileViewersUiState(
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
     val stats: ProfileViewStats? = null,
+    val insights: ProfileInsights? = null,
     val history: ProfileViewHistory = ProfileViewHistory(),
+    val savers: ProfileSavers = ProfileSavers(),
+    val recentlyViewed: RecentViewedProfiles = RecentViewedProfiles(),
+    val isPremiumRequired: Boolean = false,
     val error: String? = null
 )
 
@@ -94,7 +103,12 @@ private class ProfileViewersViewModel(
                 return@launch
             }
 
-            val hasExistingContent = _uiState.value.history.viewers.isNotEmpty() || _uiState.value.stats != null
+            val hasExistingContent =
+                _uiState.value.history.viewers.isNotEmpty() ||
+                    _uiState.value.savers.savers.isNotEmpty() ||
+                    _uiState.value.recentlyViewed.profiles.isNotEmpty() ||
+                    _uiState.value.stats != null ||
+                    _uiState.value.insights != null
             _uiState.value = _uiState.value.copy(
                 isLoading = showLoader || !hasExistingContent,
                 isRefreshing = hasExistingContent,
@@ -103,25 +117,55 @@ private class ProfileViewersViewModel(
 
             val statsDeferred = async { ApiClient.getProfileViewStats(context, userId) }
             val historyDeferred = async { ApiClient.getProfileViewHistory(context, userId, page = 1, limit = HISTORY_LIMIT) }
+            val insightsDeferred = async { ApiClient.getProfileInsights(context, userId) }
+            val saversDeferred = async { ApiClient.getProfileSavers(context, userId, page = 1, limit = HISTORY_LIMIT) }
+            val recentlyViewedDeferred = async { ApiClient.getRecentViewedProfiles(context, page = 1, limit = HISTORY_LIMIT) }
 
             val statsResult = statsDeferred.await()
             val historyResult = historyDeferred.await()
+            val insightsResult = insightsDeferred.await()
+            val saversResult = saversDeferred.await()
+            val recentlyViewedResult = recentlyViewedDeferred.await()
 
             val nextStats = statsResult.getOrNull() ?: _uiState.value.stats
             val nextHistory = historyResult.getOrNull() ?: _uiState.value.history
+            val nextInsights = insightsResult.getOrNull() ?: _uiState.value.insights
+            val nextSavers = saversResult.getOrNull() ?: _uiState.value.savers
+            val nextRecentlyViewed = recentlyViewedResult.getOrNull() ?: _uiState.value.recentlyViewed
+            val premiumRequiredError = listOf(
+                statsResult,
+                historyResult,
+                insightsResult,
+                saversResult
+            ).mapNotNull { it.exceptionOrNull()?.message }
+                .firstOrNull { message ->
+                    message.contains("Premium is required", ignoreCase = true) ||
+                        message.contains("premium_required", ignoreCase = true)
+                }
             val nextError = statsResult.exceptionOrNull()?.message
                 ?: historyResult.exceptionOrNull()?.message
+                ?: insightsResult.exceptionOrNull()?.message
+                ?: saversResult.exceptionOrNull()?.message
+                ?: recentlyViewedResult.exceptionOrNull()?.message
+            val hasLoadedPremiumContent =
+                nextStats != null ||
+                    nextInsights != null ||
+                    nextHistory.viewers.isNotEmpty() ||
+                    nextSavers.savers.isNotEmpty()
+            val hasLoadedContent = hasLoadedPremiumContent || nextRecentlyViewed.profiles.isNotEmpty()
 
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 isRefreshing = false,
                 stats = nextStats,
                 history = nextHistory,
-                error = if (nextStats == null && nextHistory.viewers.isEmpty()) {
+                insights = nextInsights,
+                savers = nextSavers,
+                recentlyViewed = nextRecentlyViewed,
+                isPremiumRequired = premiumRequiredError != null && !hasLoadedPremiumContent,
+                error = premiumRequiredError ?: if (!hasLoadedContent) {
                     nextError ?: "Failed to load profile viewers"
-                } else {
-                    null
-                }
+                } else null
             )
         }
     }
@@ -162,7 +206,7 @@ fun ProfileViewersScreen(
                 .padding(horizontal = 16.dp)
         ) {
             SettingsHeader(
-                title = "Profile viewers",
+                title = "Profile insights",
                 contentColor = contentColor,
                 onBack = onNavigateBack
             )
@@ -182,20 +226,65 @@ fun ProfileViewersScreen(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        item {
-                            ViewerSummaryCard(
-                                stats = uiState.stats,
-                                history = uiState.history,
-                                contentColor = contentColor,
-                                accentColor = accentColor,
-                                isDarkSurface = isDarkSurface
-                            )
+                        if (!uiState.isPremiumRequired) {
+                            item {
+                                ViewerSummaryCard(
+                                    stats = uiState.stats,
+                                    history = uiState.history,
+                                    contentColor = contentColor,
+                                    accentColor = accentColor,
+                                    isDarkSurface = isDarkSurface
+                                )
+                            }
+                        }
+
+                        if (uiState.recentlyViewed.profiles.isNotEmpty()) {
+                            item {
+                                BasicText(
+                                    text = "Recently viewed by you",
+                                    style = TextStyle(
+                                        color = contentColor.copy(alpha = 0.56f),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                )
+                            }
+
+                            items(uiState.recentlyViewed.profiles, key = { item -> item.viewedId }) { item ->
+                                RecentViewedProfileCard(
+                                    item = item,
+                                    contentColor = contentColor,
+                                    accentColor = accentColor,
+                                    isDarkSurface = isDarkSurface,
+                                    onClick = { onOpenProfile(item.profile.id) }
+                                )
+                            }
+                        }
+
+                        uiState.insights?.let { insights ->
+                            item {
+                                ProfileAnalyticsCard(
+                                    insights = insights,
+                                    contentColor = contentColor,
+                                    accentColor = accentColor,
+                                    isDarkSurface = isDarkSurface
+                                )
+                            }
+
+                            item {
+                                MatchInsightsCard(
+                                    insights = insights,
+                                    contentColor = contentColor,
+                                    accentColor = accentColor,
+                                    isDarkSurface = isDarkSurface
+                                )
+                            }
                         }
 
                         if (!uiState.error.isNullOrBlank()) {
                             item {
                                 InlineInfoCard(
-                                    title = "Couldn’t refresh right now",
+                                    title = if (uiState.isPremiumRequired) "Premium required" else "Couldn’t refresh right now",
                                     body = uiState.error ?: "",
                                     contentColor = contentColor,
                                     accentColor = accentColor,
@@ -204,7 +293,30 @@ fun ProfileViewersScreen(
                             }
                         }
 
-                        if (uiState.history.viewers.isEmpty()) {
+                        if (uiState.savers.savers.isNotEmpty()) {
+                            item {
+                                BasicText(
+                                    text = "Bookmarked you",
+                                    style = TextStyle(
+                                        color = contentColor.copy(alpha = 0.56f),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                )
+                            }
+
+                            items(uiState.savers.savers, key = { item -> item.id }) { item ->
+                                ProfileSaverCard(
+                                    item = item,
+                                    contentColor = contentColor,
+                                    accentColor = accentColor,
+                                    isDarkSurface = isDarkSurface,
+                                    onClick = { onOpenProfile(item.saver.id) }
+                                )
+                            }
+                        }
+
+                        if (uiState.history.viewers.isEmpty() && !uiState.isPremiumRequired) {
                             item {
                                 EmptyViewersState(
                                     contentColor = contentColor,
@@ -316,6 +428,128 @@ private fun ViewerSummaryCard(
 }
 
 @Composable
+private fun ProfileAnalyticsCard(
+    insights: ProfileInsights,
+    contentColor: Color,
+    accentColor: Color,
+    isDarkSurface: Boolean
+) {
+    val analytics = insights.analytics
+    SurfaceCard(
+        contentColor = contentColor,
+        isDarkSurface = isDarkSurface,
+        accentColor = accentColor
+    ) {
+        BasicText(
+            text = "Profile analytics",
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+        Spacer(Modifier.height(6.dp))
+        BasicText(
+            text = "${analytics.views.last30Days} views and ${analytics.searchAppearances.last30Days} search appearances in the last 30 days",
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.7f),
+                fontSize = 12.sp,
+                lineHeight = 16.sp
+            )
+        )
+        Spacer(Modifier.height(14.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            SummaryMetric(
+                label = "Searches",
+                value = analytics.searchAppearances.total.toString(),
+                contentColor = contentColor,
+                accentColor = accentColor,
+                modifier = Modifier.weight(1f)
+            )
+            SummaryMetric(
+                label = "Saved",
+                value = analytics.profileSaves.total.toString(),
+                contentColor = contentColor,
+                accentColor = accentColor,
+                modifier = Modifier.weight(1f)
+            )
+            SummaryMetric(
+                label = "Match rate",
+                value = analytics.matchRate.display,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MatchInsightsCard(
+    insights: ProfileInsights,
+    contentColor: Color,
+    accentColor: Color,
+    isDarkSurface: Boolean
+) {
+    val tags = insights.matchInsights.topTags.take(8)
+    val reasons = insights.matchInsights.reasons.take(3)
+    SurfaceCard(
+        contentColor = contentColor,
+        isDarkSurface = isDarkSurface,
+        accentColor = accentColor
+    ) {
+        BasicText(
+            text = "Match insights",
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+
+        if (tags.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            BasicText(
+                text = tags.joinToString(" • ") { it.label },
+                style = TextStyle(
+                    color = accentColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    lineHeight = 17.sp
+                )
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        if (reasons.isEmpty()) {
+            BasicText(
+                text = "Add skills, interests, and intent to make your match reasons sharper.",
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.68f),
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+            )
+        } else {
+            reasons.forEach { reason ->
+                BasicText(
+                    text = "• $reason",
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.72f),
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SummaryMetric(
     label: String,
     value: String,
@@ -406,6 +640,7 @@ private fun ViewerHistoryCard(
                     )
                     VerificationBadge(
                         verified = viewer?.hasVerificationBadge() == true,
+                        badgeStyle = viewer?.verificationBadgeStyle(),
                         size = VerificationBadgeSize.Small
                     )
                 }
@@ -462,6 +697,211 @@ private fun ViewerHistoryCard(
                 )
                 BasicText(
                     text = absoluteTime(item.lastViewedAt),
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.52f),
+                        fontSize = 10.sp
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileSaverCard(
+    item: ProfileSaverItem,
+    contentColor: Color,
+    accentColor: Color,
+    isDarkSurface: Boolean,
+    onClick: () -> Unit
+) {
+    val saver = item.saver
+    val title = saver.name.ifBlank { saver.username }
+    val subtitle = listOfNotNull(
+        saver.headline?.takeIf { it.isNotBlank() },
+        saver.college?.takeIf { it.isNotBlank() }
+    ).joinToString(" • ")
+
+    SurfaceCard(
+        contentColor = contentColor,
+        isDarkSurface = isDarkSurface,
+        accentColor = accentColor,
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ViewerAvatar(
+                imageUrl = saver.profileImage,
+                label = title,
+                accentColor = accentColor
+            )
+
+            Spacer(Modifier.width(12.dp))
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    BasicText(
+                        text = title,
+                        style = TextStyle(
+                            color = contentColor,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    VerificationBadge(
+                        verified = saver.hasVerificationBadge(),
+                        badgeStyle = saver.verificationBadgeStyle(),
+                        size = VerificationBadgeSize.Small
+                    )
+                }
+
+                if (subtitle.isNotBlank()) {
+                    BasicText(
+                        text = subtitle,
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.64f),
+                            fontSize = 11.sp
+                        ),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Spacer(Modifier.width(10.dp))
+
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                BasicText(
+                    text = relativeTime(item.savedAt),
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+                BasicText(
+                    text = "Saved",
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.52f),
+                        fontSize = 10.sp
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentViewedProfileCard(
+    item: RecentViewedProfileItem,
+    contentColor: Color,
+    accentColor: Color,
+    isDarkSurface: Boolean,
+    onClick: () -> Unit
+) {
+    val profile = item.profile
+    val title = profile.name.ifBlank { profile.username }
+    val subtitle = listOfNotNull(
+        profile.headline?.takeIf { it.isNotBlank() },
+        profile.college?.takeIf { it.isNotBlank() }
+    ).joinToString(" • ")
+
+    SurfaceCard(
+        contentColor = contentColor,
+        isDarkSurface = isDarkSurface,
+        accentColor = accentColor,
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ViewerAvatar(
+                imageUrl = profile.profileImage,
+                label = title,
+                accentColor = accentColor
+            )
+
+            Spacer(Modifier.width(12.dp))
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    BasicText(
+                        text = title,
+                        style = TextStyle(
+                            color = contentColor,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    VerificationBadge(
+                        verified = profile.hasVerificationBadge(),
+                        badgeStyle = profile.verificationBadgeStyle(),
+                        size = VerificationBadgeSize.Small
+                    )
+                }
+
+                if (subtitle.isNotBlank()) {
+                    BasicText(
+                        text = subtitle,
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.64f),
+                            fontSize = 11.sp
+                        ),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                if (item.viewCount > 1) {
+                    InfoChip(
+                        text = "${item.viewCount} visits",
+                        textColor = contentColor.copy(alpha = 0.75f),
+                        background = contentColor.copy(alpha = if (isDarkSurface) 0.08f else 0.06f),
+                        borderColor = contentColor.copy(alpha = 0.12f)
+                    )
+                }
+            }
+
+            Spacer(Modifier.width(10.dp))
+
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                BasicText(
+                    text = relativeTime(item.lastViewedAt),
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+                BasicText(
+                    text = "Viewed",
                     style = TextStyle(
                         color = contentColor.copy(alpha = 0.52f),
                         fontSize = 10.sp

@@ -28,6 +28,7 @@ import com.kyant.backdrop.catalog.linkedin.VerificationBadge
 import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.linkedin.vormexSurface
 import com.kyant.backdrop.catalog.network.models.LikeUser
 import com.kyant.backdrop.catalog.network.models.ReactionType
@@ -400,6 +401,7 @@ private fun LikeUserItem(
                 )
                 VerificationBadge(
                     verified = user.hasVerificationBadge(),
+                    badgeStyle = user.verificationBadgeStyle(),
                     size = VerificationBadgeSize.Small
                 )
             }

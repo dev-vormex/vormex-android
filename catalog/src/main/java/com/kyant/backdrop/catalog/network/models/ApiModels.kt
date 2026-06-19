@@ -1,7 +1,66 @@
 package com.kyant.backdrop.catalog.network.models
 
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonDecoder
+
+@OptIn(ExperimentalSerializationApi::class)
+object FlexibleLocationStringSerializer : KSerializer<String?> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("FlexibleLocationString", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): String? {
+        val jsonDecoder = decoder as? JsonDecoder
+            ?: return decoder.decodeString().takeIf { it.isNotBlank() }
+        return when (val element = jsonDecoder.decodeJsonElement()) {
+            JsonNull -> null
+            is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() }
+            is JsonObject -> profileLocationLabel(element)
+            else -> null
+        }
+    }
+
+    override fun serialize(encoder: Encoder, value: String?) {
+        if (value == null) {
+            encoder.encodeNull()
+        } else {
+            encoder.encodeString(value)
+        }
+    }
+
+    private fun profileLocationLabel(location: JsonObject): String? {
+        val display = stringField(location, "displayName")
+            ?: stringField(location, "label")
+            ?: stringField(location, "formatted")
+            ?: stringField(location, "name")
+        if (!display.isNullOrBlank()) return display
+
+        return listOfNotNull(
+            stringField(location, "city"),
+            stringField(location, "region"),
+            stringField(location, "country")
+        )
+            .distinct()
+            .joinToString(", ")
+            .takeIf { it.isNotBlank() }
+    }
+
+    private fun stringField(obj: JsonObject, key: String): String? =
+        obj[key]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
+}
 
 @Serializable
 data class Author(
@@ -11,7 +70,13 @@ data class Author(
     val profileImage: String? = null,
     val headline: String? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false,
+    val profileBoostActive: Boolean = false,
+    val profileBoostEndsAt: String? = null,
+    val profileBoostPriority: Int = 0,
+    val discoveryPriority: Int = 0
 )
 
 @Serializable
@@ -77,7 +142,8 @@ data class Post(
 data class FeedResponse(
     val posts: List<Post>,
     val nextCursor: String? = null,
-    val hasMore: Boolean = false
+    val hasMore: Boolean = false,
+    val adPlacements: List<ManagedAdPlacement> = emptyList()
 )
 
 @Serializable
@@ -89,6 +155,17 @@ data class LoginRequest(
 @Serializable
 data class ForgotPasswordRequest(
     val email: String
+)
+
+@Serializable
+data class ResendVerificationRequest(
+    val email: String
+)
+
+@Serializable
+data class VerifyEmailOtpRequest(
+    val email: String,
+    val code: String
 )
 
 @Serializable
@@ -123,6 +200,8 @@ data class User(
     val isPremium: Boolean = false,
     val canUseAgent: Boolean = false,
     val canAccessProfileCustomization: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val profileTheme: String = "default",
     val premiumDisplayAmount: String? = null
 )
 
@@ -148,7 +227,8 @@ data class ApiError(
     val statusCode: Int? = null,
     val code: String? = null,
     val requestId: String? = null,
-    val retryAfterSeconds: Int? = null
+    val retryAfterSeconds: Int? = null,
+    val requiresVerification: Boolean = false
 ) {
     fun getErrorMessage(): String {
         val base = error ?: message ?: "Unknown error"
@@ -382,7 +462,13 @@ data class PersonInfo(
     val contactName: String? = null,
     val isInContacts: Boolean = false,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false,
+    val profileBoostActive: Boolean = false,
+    val profileBoostEndsAt: String? = null,
+    val profileBoostPriority: Int = 0,
+    val discoveryPriority: Int = 0
 )
 
 @Serializable
@@ -438,7 +524,15 @@ data class PeopleYouKnowInviteResponse(
 @Serializable
 data class CollegeInfo(
     val name: String,
-    val count: Int
+    val id: String? = null,
+    val count: Int = 0,
+    val logoUrl: String? = null,
+    val domain: String? = null,
+    val country: String? = null,
+    val state: String? = null,
+    val city: String? = null,
+    val kind: String? = null,
+    val source: String? = null
 )
 
 @Serializable
@@ -450,7 +544,80 @@ data class CollegeSearchResponse(
 data class SuggestionsResponse(
     val suggestions: List<PersonInfo>,
     val total: Int = 0,
-    val hasMore: Boolean = false
+    val hasMore: Boolean = false,
+    val quota: SuggestionQuota? = null,
+    val canRewind: Boolean = false
+)
+
+@Serializable
+data class SuggestionQuota(
+    val isPremium: Boolean = false,
+    val limit: Int? = null,
+    val used: Int = 0,
+    val remaining: Int? = null,
+    val window: String = "day",
+    val resetsAt: String? = null
+)
+
+@Serializable
+data class DiscoveryPassRequest(
+    val targetUserId: String
+)
+
+@Serializable
+data class DiscoveryPassResponse(
+    val message: String = "",
+    val targetUserId: String? = null,
+    val canRewind: Boolean = false
+)
+
+@Serializable
+data class DiscoveryRewindResponse(
+    val rewound: Boolean = false,
+    val targetUserId: String? = null,
+    val canRewind: Boolean = false
+)
+
+@Serializable
+data class SaveDiscoverySearchRequest(
+    val name: String,
+    val filters: Map<String, String> = emptyMap(),
+    val notificationsEnabled: Boolean = true,
+    val digestEnabled: Boolean = true
+)
+
+@Serializable
+data class UpdateSavedDiscoverySearchRequest(
+    val name: String? = null,
+    val filters: Map<String, String>? = null,
+    val notificationsEnabled: Boolean? = null,
+    val digestEnabled: Boolean? = null,
+    val markViewed: Boolean? = null
+)
+
+@Serializable
+data class SavedDiscoverySearch(
+    val id: String,
+    val name: String,
+    val filters: Map<String, JsonElement> = emptyMap(),
+    val notificationsEnabled: Boolean = true,
+    val digestEnabled: Boolean = true,
+    val unseenCount: Int = 0,
+    val lastViewedAt: String? = null,
+    val lastScannedAt: String? = null,
+    val lastDigestSentAt: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null
+)
+
+@Serializable
+data class SavedDiscoverySearchesResponse(
+    val searches: List<SavedDiscoverySearch> = emptyList()
+)
+
+@Serializable
+data class SavedDiscoverySearchResponse(
+    val search: SavedDiscoverySearch
 )
 
 @Serializable
@@ -470,7 +637,13 @@ data class SmartMatchUser(
     val onboarding: SmartMatchOnboarding? = null,
     val stats: SmartMatchStats? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false,
+    val profileBoostActive: Boolean = false,
+    val profileBoostEndsAt: String? = null,
+    val profileBoostPriority: Int = 0,
+    val discoveryPriority: Int = 0
 )
 
 @Serializable
@@ -487,12 +660,38 @@ data class SmartMatchStats(
 )
 
 @Serializable
+data class SmartMatchScorecardItem(
+    val label: String,
+    val score: Int = 0,
+    val max: Int = 0,
+    val signals: List<String> = emptyList()
+)
+
+@Serializable
+data class SmartMatchWhyMatched(
+    val summary: String = "",
+    val bullets: List<String> = emptyList(),
+    val scorecard: List<SmartMatchScorecardItem> = emptyList()
+)
+
+@Serializable
+data class SmartMatchSharedSignals(
+    val skills: List<String> = emptyList(),
+    val interests: List<String> = emptyList(),
+    val goals: List<String> = emptyList(),
+    val locationLabel: String? = null,
+    val distanceKm: Double? = null
+)
+
+@Serializable
 data class SmartMatch(
     val user: SmartMatchUser,
     val score: Double = 0.0,
     val matchPercentage: Int = 0,
     val reasons: List<String> = emptyList(),
-    val tags: List<String> = emptyList()
+    val tags: List<String> = emptyList(),
+    val whyMatched: SmartMatchWhyMatched? = null,
+    val sharedSignals: SmartMatchSharedSignals? = null
 )
 
 @Serializable
@@ -533,7 +732,9 @@ data class NearbyUser(
     val isOnline: Boolean = false,
     val location: NearbyUserLocation? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -563,6 +764,24 @@ data class LocationUpdateRequest(
 )
 
 @Serializable
+data class LocationSettingsRequest(
+    val shareLocationPublic: Boolean? = null,
+    val locationPermission: Boolean? = null
+)
+
+@Serializable
+data class CurrentLocationResponse(
+    val lat: Double? = null,
+    val lng: Double? = null,
+    val city: String? = null,
+    val state: String? = null,
+    val country: String? = null,
+    val updatedAt: String? = null,
+    val shareLocationPublic: Boolean = false,
+    val locationPermission: Boolean = true
+)
+
+@Serializable
 data class ConnectionRequest(
     val receiverId: String
 )
@@ -589,7 +808,13 @@ data class PendingConnectionRequestUser(
     val headline: String? = null,
     val college: String? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false,
+    val profileBoostActive: Boolean = false,
+    val profileBoostEndsAt: String? = null,
+    val profileBoostPriority: Int = 0,
+    val discoveryPriority: Int = 0
 )
 
 @Serializable
@@ -598,6 +823,8 @@ data class PendingConnectionRequest(
     val status: String = "PENDING",
     val message: String? = null,
     val createdAt: String = "",
+    val priority: Int = 0,
+    val priorityLabel: String? = null,
     val user: PendingConnectionRequestUser
 )
 
@@ -620,7 +847,9 @@ data class ProfileRelationshipUser(
     val college: String? = null,
     val isOnline: Boolean = false,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -685,9 +914,11 @@ data class ProfileUser(
     val name: String,
     val email: String? = null,
     val avatar: String? = null,
+    val profileImage: String? = null,
     val bannerImageUrl: String? = null,
     val headline: String? = null,
     val bio: String? = null,
+    @Serializable(with = FlexibleLocationStringSerializer::class)
     val location: String? = null,
     val college: String? = null,
     val degree: String? = null,
@@ -704,10 +935,14 @@ data class ProfileUser(
     val profileVisibility: String = "PUBLIC",
     val verified: Boolean = false,
     val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false,
+    val canAccessProfileCustomization: Boolean = false,
     val interests: List<String> = emptyList(),
     val profileRing: String? = null,
     /** When set, visitors see this loader while opening this user's profile (client + optional API). */
     val visitLoaderGiftId: String? = null,
+    val profileTheme: String = "default",
     val hasClaimedWelcomeGift: Boolean = false,
     val createdAt: String = ""
 )
@@ -1095,7 +1330,13 @@ data class FullProfileResponse(
     val education: List<Education> = emptyList(),
     val projects: List<Project> = emptyList(),
     val certificates: List<Certificate> = emptyList(),
-    val achievements: List<Achievement> = emptyList()
+    val achievements: List<Achievement> = emptyList(),
+    val viewerContext: ProfileViewerContext = ProfileViewerContext()
+)
+
+@Serializable
+data class ProfileViewerContext(
+    val isProfileSaved: Boolean = false
 )
 
 @Serializable
@@ -1140,7 +1381,9 @@ data class MutualConnection(
     val username: String? = null,
     val avatar: String? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -1169,6 +1412,8 @@ data class ProfileUpdateRequest(
     val profileRing: String? = null,
     val hasClaimedWelcomeGift: Boolean? = null,
     val visitLoaderGiftId: String? = null,
+    val profileTheme: String? = null,
+    val profileBadgeStyle: String? = null,
     val college: String? = null,
     val branch: String? = null
 )
@@ -1176,6 +1421,22 @@ data class ProfileUpdateRequest(
 @Serializable
 data class AvatarUpdateRequest(
     val avatarUrl: String
+)
+
+@Serializable
+data class AvatarUploadUser(
+    val id: String? = null,
+    val username: String? = null,
+    val name: String? = null,
+    val profileImage: String? = null
+)
+
+@Serializable
+data class AvatarUploadResponse(
+    val avatar: String? = null,
+    val url: String? = null,
+    val avatarUrl: String? = null,
+    val user: AvatarUploadUser? = null
 )
 
 @Serializable
@@ -1478,7 +1739,143 @@ data class ProfileViewerPerson(
     val headline: String? = null,
     val isSameCollege: Boolean = false,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
+)
+
+@Serializable
+data class ProfileSaveToggleResponse(
+    val success: Boolean = true,
+    val data: ProfileSaveState = ProfileSaveState()
+)
+
+@Serializable
+data class ProfileSaveState(
+    val saved: Boolean = false,
+    val savesCount: Int = 0
+)
+
+@Serializable
+data class ProfileSaversApiResponse(
+    val success: Boolean = true,
+    val data: ProfileSavers = ProfileSavers()
+)
+
+@Serializable
+data class ProfileSavers(
+    val page: Int = 1,
+    val limit: Int = 50,
+    val totalCount: Int = 0,
+    val hasMore: Boolean = false,
+    val savers: List<ProfileSaverItem> = emptyList()
+)
+
+@Serializable
+data class ProfileSaverItem(
+    val id: String,
+    val savedAt: String,
+    val saver: ProfileViewerPerson
+)
+
+@Serializable
+data class RecentViewedProfilesApiResponse(
+    val success: Boolean = true,
+    val data: RecentViewedProfiles = RecentViewedProfiles()
+)
+
+@Serializable
+data class RecentViewedProfiles(
+    val page: Int = 1,
+    val limit: Int = 50,
+    val totalCount: Int = 0,
+    val totalViews: Int = 0,
+    val hasMore: Boolean = false,
+    val profiles: List<RecentViewedProfileItem> = emptyList()
+)
+
+@Serializable
+data class RecentViewedProfileItem(
+    val viewedId: String,
+    val lastViewedAt: String,
+    val firstViewedAt: String,
+    val viewCount: Int = 1,
+    val profile: ProfileViewerPerson
+)
+
+@Serializable
+data class SavedProfilesResponse(
+    val profiles: List<SavedProfileItem> = emptyList(),
+    val nextCursor: String? = null,
+    val hasMore: Boolean = false
+)
+
+@Serializable
+data class SavedProfileItem(
+    val id: String,
+    val savedAt: String,
+    val user: ProfileViewerPerson
+)
+
+@Serializable
+data class ProfileInsightsApiResponse(
+    val success: Boolean = true,
+    val data: ProfileInsights = ProfileInsights()
+)
+
+@Serializable
+data class ProfileInsights(
+    val analytics: ProfileAnalytics = ProfileAnalytics(),
+    val matchInsights: MatchInsights = MatchInsights()
+)
+
+@Serializable
+data class ProfileAnalytics(
+    val views: ProfileAnalyticsViews = ProfileAnalyticsViews(),
+    val searchAppearances: ProfileAnalyticsMetric = ProfileAnalyticsMetric(),
+    val suggestionAppearances: ProfileAnalyticsMetric = ProfileAnalyticsMetric(),
+    val profileSaves: ProfileAnalyticsMetric = ProfileAnalyticsMetric(),
+    val matchRate: ProfileMatchRate = ProfileMatchRate()
+)
+
+@Serializable
+data class ProfileAnalyticsViews(
+    val total: Int = 0,
+    val today: Int = 0,
+    val last7Days: Int = 0,
+    val last30Days: Int = 0,
+    val unique: Int = 0,
+    val trendPercent: Int = 0,
+    val trendDirection: String = "stable"
+)
+
+@Serializable
+data class ProfileAnalyticsMetric(
+    val total: Int = 0,
+    val last7Days: Int = 0,
+    val last30Days: Int = 0
+)
+
+@Serializable
+data class ProfileMatchRate(
+    val value: Double = 0.0,
+    val display: String = "0%",
+    val connectionRequests: Int = 0,
+    val acceptedConnections: Int = 0,
+    val appearances: Int = 0
+)
+
+@Serializable
+data class MatchInsights(
+    val reasons: List<String> = emptyList(),
+    val topTags: List<MatchInsightTag> = emptyList()
+)
+
+@Serializable
+data class MatchInsightTag(
+    val label: String,
+    val weight: Int = 0,
+    val source: String = ""
 )
 
 // ==================== Chat / Messaging Models ====================
@@ -1492,7 +1889,9 @@ data class ChatUser(
     val isOnline: Boolean = false,
     val lastActiveAt: String? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -1644,7 +2043,9 @@ data class SharedPostAuthor(
     val username: String? = null,
     val profileImage: String? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -1738,7 +2139,9 @@ data class ReelAuthor(
     val headline: String? = null,
     val isFollowing: Boolean = false,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -1815,7 +2218,35 @@ data class Reel(
 data class ReelsFeedResponse(
     val reels: List<Reel>,
     val nextCursor: String? = null,
-    val hasMore: Boolean = false
+    val hasMore: Boolean = false,
+    val adPlacements: List<ManagedAdPlacement> = emptyList()
+)
+
+@Serializable
+data class ManagedAdPlacement(
+    val placement: String,
+    val sequence: Int = 0,
+    val afterItemCount: Int = 0,
+    val slotKey: String,
+    val campaignId: String,
+    val sponsorName: String,
+    val ctaText: String? = null,
+    val ctaKind: String? = null,
+    val ctaUrl: String? = null,
+    val feedTitle: String? = null,
+    val feedBody: String? = null,
+    val feedImageUrl: String? = null,
+    val reelCaption: String? = null,
+    val reelsVideoUrl: String? = null,
+    val reelsHlsUrl: String? = null,
+    val reelsThumbnailUrl: String? = null
+)
+
+@Serializable
+data class ManagedAdEventRequest(
+    val placement: String,
+    val slotKey: String,
+    val sessionId: String
 )
 
 @Serializable
@@ -1989,12 +2420,14 @@ data class ConnectionCelebrationResponse(
 // Connection Request Limits (Scarcity)
 @Serializable
 data class ConnectionLimitData(
+    val canSend: Boolean = true,
     val used: Int = 0,
     val limit: Int = 10,
     val remaining: Int = 10,
     val isPremium: Boolean = false,
-    val resetsAt: String = "",
-    val unlimitedRequests: Boolean = false
+    val resetsAt: String? = null,
+    val unlimitedRequests: Boolean = false,
+    val window: String = "day"
 )
 
 @Serializable
@@ -2063,7 +2496,9 @@ data class NotificationActor(
     val name: String? = null,
     val profileImage: String? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -2110,7 +2545,189 @@ data class NotificationSettings(
 )
 
 @Serializable
+data class IdentityEmailState(
+    val verified: Boolean = false,
+    val masked: String? = null
+)
+
+@Serializable
+data class IdentityPhoneState(
+    val verified: Boolean = false,
+    val masked: String? = null,
+    val verifiedAt: String? = null
+)
+
+@Serializable
+data class IdentitySafetyState(
+    val restrictedUntil: String? = null,
+    val restrictionReason: String? = null,
+    val suspendedUntil: String? = null
+)
+
+@Serializable
+data class IdentityVerificationRecord(
+    val id: String,
+    val type: String,
+    val status: String,
+    val valueMasked: String? = null,
+    val requestedAt: String? = null,
+    val verifiedAt: String? = null,
+    val expiresAt: String? = null,
+    val reviewedById: String? = null,
+    val evidenceDeletedAt: String? = null,
+    val evidenceFileName: String? = null,
+    val evidenceMimeType: String? = null,
+    val evidenceSize: Int? = null,
+    val evidenceHasFile: Boolean = false,
+    val rejectionReason: String? = null,
+    val reviewNotes: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null
+)
+
+@Serializable
+data class IdentitySummary(
+    val trustLevel: String = "BASIC",
+    val email: IdentityEmailState = IdentityEmailState(),
+    val phone: IdentityPhoneState = IdentityPhoneState(),
+    val safety: IdentitySafetyState = IdentitySafetyState(),
+    val verifications: List<IdentityVerificationRecord> = emptyList()
+)
+
+@Serializable
+data class IdentityMeResponse(
+    val identity: IdentitySummary
+)
+
+@Serializable
+data class PhoneVerifyRequest(
+    val idToken: String
+)
+
+@Serializable
+data class IdentityMutationResponse(
+    val message: String,
+    val identity: IdentitySummary? = null
+)
+
+@Serializable
+data class ClaimStudentBadgeResponse(
+    val message: String,
+    val profileBadgeStyle: String? = null,
+    val identity: IdentitySummary? = null
+)
+
+@Serializable
+data class StudentEmailRequestBody(
+    val studentEmail: String
+)
+
+@Serializable
+data class StudentEmailRequestResponse(
+    val message: String,
+    val expiresAt: String,
+    val studentEmail: String
+)
+
+@Serializable
+data class StudentEmailConfirmRequest(
+    val studentEmail: String,
+    val code: String
+)
+
+@Serializable
+data class IdUploadRequestResponse(
+    val verificationId: String,
+    val uploadMode: String,
+    val submitUrl: String,
+    val fieldName: String,
+    val maxBytes: Long,
+    val allowedMimeTypes: List<String> = emptyList(),
+    val expiresAt: String? = null
+)
+
+@Serializable
+data class IdSubmitResponse(
+    val message: String,
+    val verificationId: String,
+    val status: String
+)
+
+@Serializable
+data class BlockedUser(
+    val id: String,
+    val username: String? = null,
+    val name: String? = null,
+    val profileImage: String? = null,
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val identityTrustLevel: String = "BASIC",
+    val verificationBadges: List<String> = emptyList()
+)
+
+@Serializable
+data class UserBlock(
+    val id: String,
+    val blockedUserId: String,
+    val createdAt: String,
+    val user: BlockedUser
+)
+
+@Serializable
+data class BlocksResponse(
+    val blocks: List<UserBlock> = emptyList()
+)
+
+@Serializable
+data class MySafetyReport(
+    val id: String,
+    val reportType: String,
+    val reason: String,
+    val status: String,
+    val conversationId: String? = null,
+    val reportedPostId: String? = null,
+    val reportedCommentId: String? = null,
+    val reportedUserId: String? = null,
+    val reportedGroupId: String? = null,
+    val blockedUserAfterReport: Boolean = false,
+    val createdAt: String
+)
+
+@Serializable
+data class MyReportsPagination(
+    val page: Int = 1,
+    val limit: Int = 10,
+    val total: Int = 0,
+    val totalPages: Int = 0
+)
+
+@Serializable
+data class MyReportsResponse(
+    val reports: List<MySafetyReport> = emptyList(),
+    val pagination: MyReportsPagination = MyReportsPagination()
+)
+
+@Serializable
+data class BlockUserRequest(
+    val reason: String? = null
+)
+
+@Serializable
+data class BlockUserResponse(
+    val message: String,
+    val block: UserBlock? = null
+)
+
+@Serializable
 data class ReportChatRequest(
     val reason: String,
-    val description: String = ""
+    val description: String = "",
+    val blockUser: Boolean = false
+)
+
+@Serializable
+data class ReportUserRequest(
+    val reason: String,
+    val description: String? = null,
+    val blockUser: Boolean = false
 )

@@ -4595,9 +4595,7 @@ private fun AchievementShowcaseCard(
 
 @Composable
 fun ActivityFeedHeaderSection(
-    isEmpty: Boolean,
     currentFilter: String,
-    isLoading: Boolean,
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
@@ -4646,14 +4644,68 @@ fun ActivityFeedHeaderSection(
                     }
                 }
             }
+        }
+    }
+}
 
-            if (isEmpty && !isLoading) {
-                Spacer(Modifier.height(12.dp))
-                EmptySectionPlaceholder(
-                    icon = "📭",
-                    message = "No activity yet",
-                    contentColor = contentColor
-                )
+@Composable
+fun ActivityFeedGridSection(
+    items: List<FeedItem>,
+    isLoading: Boolean,
+    contentColor: Color,
+    accentColor: Color,
+    isOwner: Boolean,
+    onOpenItem: (FeedItem) -> Unit,
+    onDeletePost: (String) -> Unit
+) {
+    val gridItems = remember(items) { items.mapNotNull(::activityGridItemFor) }
+
+    ActivityFeedSurface {
+        when {
+            gridItems.isNotEmpty() -> {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    gridItems.chunked(3).forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            rowItems.forEach { gridItem ->
+                                ActivityFeedGridTile(
+                                    gridItem = gridItem,
+                                    contentColor = contentColor,
+                                    accentColor = accentColor,
+                                    isOwner = isOwner,
+                                    onOpenItem = onOpenItem,
+                                    onDeletePost = onDeletePost,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            repeat(3 - rowItems.size) {
+                                Spacer(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .aspectRatio(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            !isLoading -> {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(ProfileCardShape)
+                        .background(contentColor.copy(alpha = 0.05f))
+                ) {
+                    EmptySectionPlaceholder(
+                        icon = "",
+                        iconRes = R.drawable.ic_image,
+                        message = "No photo or video posts yet",
+                        contentColor = contentColor
+                    )
+                }
             }
         }
     }
@@ -4679,6 +4731,186 @@ fun ActivityFeedItemSection(
             onVotePoll = onVotePoll,
             onDeletePost = onDeletePost
         )
+    }
+}
+
+private data class ActivityGridItem(
+    val item: FeedItem,
+    val thumbnailUrl: String?,
+    val mediaCount: Int,
+    val isVideo: Boolean,
+    val defaultVideoId: String?
+)
+
+private fun activityGridItemFor(item: FeedItem): ActivityGridItem? {
+    val imageUrls = item.images.orEmpty().filter { it.isNotBlank() }
+    val mediaUrls = item.mediaUrls.orEmpty().filter { it.isNotBlank() }
+    val mediaItems = when {
+        imageUrls.isNotEmpty() -> imageUrls
+        mediaUrls.isNotEmpty() -> mediaUrls
+        else -> emptyList()
+    }
+    val hasDefaultVideo = findDefaultPostVideo(item.defaultVideoId) != null
+    val isVideo =
+        item.contentType == "short_video" ||
+            item.postType?.equals("VIDEO", ignoreCase = true) == true ||
+            item.entityType?.equals("reel", ignoreCase = true) == true ||
+            !item.videoUrl.isNullOrBlank() ||
+            !item.videoThumbnail.isNullOrBlank() ||
+            hasDefaultVideo
+    val thumbnailUrl = when {
+        !item.videoThumbnail.isNullOrBlank() -> item.videoThumbnail
+        mediaItems.isNotEmpty() -> mediaItems.first()
+        !item.celebrationGifUrl.isNullOrBlank() -> item.celebrationGifUrl
+        else -> null
+    }
+
+    if (thumbnailUrl == null && !hasDefaultVideo) return null
+
+    return ActivityGridItem(
+        item = item,
+        thumbnailUrl = thumbnailUrl,
+        mediaCount = mediaItems.size.coerceAtLeast(if (isVideo || thumbnailUrl != null) 1 else 0),
+        isVideo = isVideo,
+        defaultVideoId = item.defaultVideoId?.takeIf { hasDefaultVideo }
+    )
+}
+
+@Composable
+private fun ActivityFeedGridTile(
+    gridItem: ActivityGridItem,
+    contentColor: Color,
+    accentColor: Color,
+    isOwner: Boolean,
+    onOpenItem: (FeedItem) -> Unit,
+    onDeletePost: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val item = gridItem.item
+    val canDelete = isOwner && item.entityType?.equals("post", ignoreCase = true) == true
+    var showMenu by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(3.dp))
+            .background(contentColor.copy(alpha = 0.07f))
+            .clickable { onOpenItem(item) }
+    ) {
+        if (gridItem.thumbnailUrl != null) {
+            AsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(gridItem.thumbnailUrl)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = if (gridItem.isVideo) "Video thumbnail" else "Post thumbnail",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else if (gridItem.defaultVideoId != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(accentColor.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                DefaultPostVideoPlayer(
+                    defaultVideoId = gridItem.defaultVideoId,
+                    modifier = Modifier.fillMaxSize(),
+                    reduceAnimations = true,
+                    accentColor = accentColor,
+                    height = null,
+                    contentScale = ContentScale.Crop
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.20f),
+                        0.45f to Color.Transparent,
+                        1f to Color.Black.copy(alpha = 0.18f)
+                    )
+                )
+        )
+
+        if (gridItem.isVideo) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.42f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_play_arrow),
+                    contentDescription = "Video",
+                    modifier = Modifier.size(22.dp),
+                    colorFilter = ColorFilter.tint(Color.White)
+                )
+            }
+        }
+
+        if (gridItem.mediaCount > 1) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.42f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_image),
+                    contentDescription = "Multiple media",
+                    modifier = Modifier.size(15.dp),
+                    colorFilter = ColorFilter.tint(Color.White)
+                )
+            }
+        }
+
+        if (canDelete) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.42f))
+                        .clickable { showMenu = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(R.drawable.ic_more),
+                        contentDescription = "Post options",
+                        modifier = Modifier.size(17.dp),
+                        colorFilter = ColorFilter.tint(Color.White)
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { BasicText("Delete post", style = TextStyle(Color(0xFFDC2626), 13.sp)) },
+                        onClick = {
+                            showMenu = false
+                            onDeletePost(item.id)
+                        }
+                    )
+                }
+            }
+        }
     }
 }
 

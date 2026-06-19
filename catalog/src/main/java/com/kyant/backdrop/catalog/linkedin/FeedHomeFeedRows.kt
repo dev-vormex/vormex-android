@@ -1,11 +1,14 @@
 package com.kyant.backdrop.catalog.linkedin
 
 import androidx.compose.runtime.Immutable
+import com.kyant.backdrop.catalog.network.models.ManagedAdPlacement
 import com.kyant.backdrop.catalog.network.models.Post
 
 internal const val HomeFeedPageSize = 40
 internal const val HomeStoryFeedLimit = 80
 internal const val HomeFeedPrefetchRemainingPosts = 8
+internal const val HomeFeedFirstNativeAdAfterPosts = 4
+internal const val HomeFeedNativeAdIntervalPosts = 8
 
 internal object HomeFeedPagingPolicy {
     fun canStartNextPageLoad(
@@ -14,6 +17,20 @@ internal object HomeFeedPagingPolicy {
         isLoadingMore: Boolean
     ): Boolean {
         return hasMore && !isLoadingMore && !nextCursor.isNullOrBlank()
+    }
+}
+
+internal object HomeFeedNativeAdPolicy {
+    fun isReservedAdSlotAfterPostCount(postCount: Int): Boolean {
+        return postCount >= HomeFeedFirstNativeAdAfterPosts &&
+            (postCount - HomeFeedFirstNativeAdAfterPosts) % HomeFeedNativeAdIntervalPosts == 0
+    }
+
+    fun shouldInsertAfterPostCount(
+        postCount: Int,
+        includeNativeAds: Boolean
+    ): Boolean {
+        return includeNativeAds && isReservedAdSlotAfterPostCount(postCount)
     }
 }
 
@@ -90,6 +107,21 @@ sealed class FeedListRow {
         override val itemKey = "widget_weekly_goals_fallback"
         override val contentType = "widget_weekly_goals"
     }
+
+    data class NativeAdItem(
+        val sequence: Int
+    ) : FeedListRow() {
+        val slotKey: String = "home_feed_native_$sequence"
+        override val itemKey: String = "ad_$slotKey"
+        override val contentType: Any = "native_ad"
+    }
+
+    data class ManagedAdItem(
+        val ad: ManagedAdPlacement
+    ) : FeedListRow() {
+        override val itemKey: String = "managed_ad_${ad.slotKey}_${ad.campaignId}"
+        override val contentType: Any = "managed_ad"
+    }
 }
 
 /**
@@ -99,10 +131,16 @@ sealed class FeedListRow {
 internal fun buildHomeFeedRows(
     posts: List<Post>,
     retentionState: RetentionUiState?,
-    widgetPositions: Map<Int, String>
+    widgetPositions: Map<Int, String>,
+    managedAdPlacements: List<ManagedAdPlacement> = emptyList(),
+    includeNativeAds: Boolean = false
 ): List<FeedListRow> {
-    val out = ArrayList<FeedListRow>(posts.size + 4)
+    val out = ArrayList<FeedListRow>(posts.size + 8)
     val postIdOccurrences = HashMap<String, Int>(posts.size)
+    val managedAdsBySequence = managedAdPlacements
+        .filter { it.placement.equals("feed", ignoreCase = true) }
+        .associateBy { it.sequence }
+    var nativeAdSequence = 0
     posts.forEachIndexed { index, post ->
         retentionState?.let { state ->
             when (widgetPositions[index]) {
@@ -124,6 +162,15 @@ internal fun buildHomeFeedRows(
         val occurrence = postIdOccurrences.getOrDefault(post.id, 0)
         postIdOccurrences[post.id] = occurrence + 1
         out.add(FeedListRow.PostItem(post, occurrence))
+
+        if (HomeFeedNativeAdPolicy.isReservedAdSlotAfterPostCount(index + 1)) {
+            val managedAd = managedAdsBySequence[nativeAdSequence]
+            when {
+                managedAd != null -> out.add(FeedListRow.ManagedAdItem(managedAd))
+                includeNativeAds -> out.add(FeedListRow.NativeAdItem(nativeAdSequence))
+            }
+            nativeAdSequence++
+        }
     }
 
     if (posts.size < 25) {

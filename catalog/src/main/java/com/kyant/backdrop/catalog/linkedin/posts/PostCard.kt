@@ -53,6 +53,7 @@ import com.kyant.backdrop.catalog.linkedin.SaveLottieEffect
 import com.kyant.backdrop.catalog.linkedin.DefaultPostVideoPlayer
 import com.kyant.backdrop.catalog.linkedin.findDefaultPostVideo
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.linkedin.vormexSurface
 import com.kyant.backdrop.catalog.linkedin.VerificationBadge
 import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
@@ -377,6 +378,7 @@ private fun PostHeaderInstagram(
                 )
                 VerificationBadge(
                     verified = post.author.hasVerificationBadge(),
+                    badgeStyle = post.author.verificationBadgeStyle(),
                     size = VerificationBadgeSize.Small
                 )
                 post.author.headline?.let {
@@ -1398,6 +1400,7 @@ private fun PostHeader(
                 )
                 VerificationBadge(
                     verified = post.author.hasVerificationBadge(),
+                    badgeStyle = post.author.verificationBadgeStyle(),
                     size = VerificationBadgeSize.Small
                 )
             }

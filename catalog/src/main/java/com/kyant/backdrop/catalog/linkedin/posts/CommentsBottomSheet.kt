@@ -33,6 +33,7 @@ import com.kyant.backdrop.catalog.linkedin.VerificationBadge
 import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.linkedin.vormexSurface
 import com.kyant.backdrop.catalog.network.models.FullComment
 import com.kyant.backdrop.catalog.network.models.MentionUser
@@ -567,6 +568,7 @@ private fun CommentCard(
                     )
                     VerificationBadge(
                         verified = comment.author.hasVerificationBadge(),
+                        badgeStyle = comment.author.verificationBadgeStyle(),
                         size = if (indentLevel > 0) VerificationBadgeSize.Micro else VerificationBadgeSize.Small
                     )
                     BasicText(

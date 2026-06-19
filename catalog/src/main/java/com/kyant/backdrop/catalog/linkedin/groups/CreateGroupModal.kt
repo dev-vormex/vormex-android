@@ -4,15 +4,21 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -42,16 +48,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.kyant.backdrop.backdrops.LayerBackdrop
-import com.kyant.backdrop.drawBackdrop
-import com.kyant.backdrop.effects.blur
-import com.kyant.backdrop.effects.vibrancy
+import kotlin.math.roundToInt
 
 // ==================== Create Group Modal ====================
 
@@ -71,30 +78,89 @@ fun CreateGroupModal(
     val rules = remember { mutableStateListOf<String>() }
     var newRule by remember { mutableStateOf("") }
     var showRulesSection by remember { mutableStateOf(false) }
+    var sheetDragOffset by remember { mutableStateOf(0f) }
     
     val nameError = name.length < 3
     val canCreate = name.length >= 3 && !isCreating
+    val sheetShape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+    val usesLightText = contentColor.luminance() > 0.55f
+    val sheetColor = if (usesLightText) {
+        Color(0xFF12161D).copy(alpha = 0.98f)
+    } else {
+        Color.White.copy(alpha = 0.98f)
+    }
+    val borderColor = if (usesLightText) {
+        Color.White.copy(alpha = 0.14f)
+    } else {
+        Color.Black.copy(alpha = 0.08f)
+    }
     
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
         Box(
             Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.5f))
                 .clickable(onClick = onDismiss),
-            contentAlignment = Alignment.Center
+            contentAlignment = Alignment.BottomCenter
         ) {
             Column(
                 Modifier
-                    .fillMaxWidth(0.9f)
-                    .glassBackground(backdrop, blurRadius = 30f, vibrancyAlpha = 0.15f)
-                    .clip(RoundedCornerShape(24.dp))
-                    .clickable(enabled = false) { } // Prevent dismiss on content click
-                    .padding(20.dp)
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.94f)
+                    .offset { IntOffset(0, sheetDragOffset.roundToInt()) }
+                    .clip(sheetShape)
+                    .background(sheetColor)
+                    .border(1.dp, borderColor, sheetShape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { }
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp, vertical = 16.dp)
                     .verticalScroll(rememberScrollState())
             ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(28.dp)
+                        .pointerInput(isCreating) {
+                            detectVerticalDragGestures(
+                                onVerticalDrag = { _, dragAmount ->
+                                    if (dragAmount > 0f) {
+                                        sheetDragOffset += dragAmount
+                                    }
+                                },
+                                onDragEnd = {
+                                    if (!isCreating && sheetDragOffset > 96f) {
+                                        onDismiss()
+                                    } else {
+                                        sheetDragOffset = 0f
+                                    }
+                                },
+                                onDragCancel = {
+                                    sheetDragOffset = 0f
+                                }
+                            )
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        Modifier
+                            .width(44.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(contentColor.copy(alpha = 0.22f))
+                    )
+                }
+
+                Spacer(Modifier.height(4.dp))
+
                 // Header
                 Row(
                     Modifier.fillMaxWidth(),

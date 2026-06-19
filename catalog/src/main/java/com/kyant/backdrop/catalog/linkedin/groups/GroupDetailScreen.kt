@@ -55,6 +55,7 @@ import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.catalog.linkedin.VerificationBadge
 import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -71,6 +72,7 @@ fun GroupDetailScreen(
     onNavigateToChat: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
     onNavigateToProfile: (String) -> Unit = {},
+    onMessageShortcutChanged: () -> Unit = {},
     onNavigateBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -117,9 +119,17 @@ fun GroupDetailScreen(
                         accentColor = accentColor,
                         group = group,
                         isJoining = group.id in uiState.joiningGroupIds,
+                        isUpdatingMessageShortcut = group.id in uiState.updatingMessageShortcutIds,
                         canShareInvite = !inviteUrl.isNullOrBlank(),
                         onJoinClick = { viewModel.joinGroup(group.id) },
                         onChatClick = onNavigateToChat,
+                        onMessageShortcutClick = {
+                            viewModel.setGroupMessageShortcut(
+                                group = group,
+                                enabled = !group.isAddedToMessages,
+                                onUpdated = onMessageShortcutChanged
+                            )
+                        },
                         onInviteClick = {
                             inviteUrl?.let { launchGroupInviteShareSheet(context, group.name, it) }
                         }
@@ -368,9 +378,11 @@ private fun GroupInfoCard(
     accentColor: Color,
     group: Group,
     isJoining: Boolean,
+    isUpdatingMessageShortcut: Boolean,
     canShareInvite: Boolean,
     onJoinClick: () -> Unit,
     onChatClick: () -> Unit,
+    onMessageShortcutClick: () -> Unit,
     onInviteClick: () -> Unit
 ) {
     Column(
@@ -529,6 +541,44 @@ private fun GroupInfoCard(
                                 fontWeight = FontWeight.SemiBold
                             )
                         )
+                    }
+                }
+
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .background(contentColor.copy(alpha = 0.1f), RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(enabled = !isUpdatingMessageShortcut, onClick = onMessageShortcutClick)
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isUpdatingMessageShortcut) {
+                        CircularProgressIndicator(
+                            color = accentColor,
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Chat,
+                                contentDescription = null,
+                                tint = accentColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            BasicText(
+                                if (group.isAddedToMessages) "Remove from Messages" else "Add to Messages",
+                                style = TextStyle(
+                                    color = accentColor,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
 
@@ -720,6 +770,7 @@ private fun GroupPostCard(
                     )
                     VerificationBadge(
                         verified = post.author.hasVerificationBadge(),
+                        badgeStyle = post.author.verificationBadgeStyle(),
                         size = VerificationBadgeSize.Small
                     )
                 }
@@ -1001,6 +1052,7 @@ private fun GroupMemberCard(
                 )
                 VerificationBadge(
                     verified = member.user.hasVerificationBadge(),
+                    badgeStyle = member.user.verificationBadgeStyle(),
                     size = VerificationBadgeSize.Small
                 )
                 

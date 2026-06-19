@@ -18,10 +18,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
 import com.kyant.backdrop.catalog.network.ChatSocketManager
 import com.kyant.backdrop.catalog.network.GroupSocketManager
+import com.kyant.backdrop.catalog.ads.VormexAdsManager
 import com.kyant.backdrop.catalog.data.ChatMutePreferences
 import com.kyant.backdrop.catalog.data.SettingsPreferences
 import com.kyant.backdrop.catalog.deeplink.VormexDeepLinks
@@ -32,6 +32,8 @@ import com.kyant.backdrop.catalog.onboarding.AppRoot
 import com.kyant.backdrop.catalog.payments.PremiumCheckoutManager
 import com.kyant.backdrop.catalog.ui.ProvideVormexFontFamily
 import com.google.firebase.messaging.FirebaseMessaging
+import com.razorpay.PaymentData
+import com.razorpay.PaymentResultWithDataListener
 
 /**
  * Deep link navigation state from push notifications
@@ -49,11 +51,12 @@ data class NotificationDeepLink(
     val groupInviteCode: String? = null,
     val referralCode: String? = null,
     val authMode: String? = null,
+    val tab: String? = null,
     val githubStatus: String? = null,
     val githubMessage: String? = null
 )
 
-class MainActivity : ComponentActivity() {
+class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
     
     companion object {
         private const val TAG = "MainActivity"
@@ -77,37 +80,12 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Install splash screen with animated exit
-        val splashScreen = installSplashScreen()
-        
-        // Add exit animation
-        splashScreen.setOnExitAnimationListener { splashScreenView ->
-            // Fade out animation
-            splashScreenView.view.animate()
-                .alpha(0f)
-                .scaleX(1.1f)
-                .scaleY(1.1f)
-                .setDuration(300)
-                .withEndAction {
-                    splashScreenView.remove()
-                }
-                .start()
-        }
-        
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         preferSmoothDisplayRefreshRate()
-        
-        // Request notification permission (Android 13+)
-        requestNotificationPermission()
-        
-        // Set up local notification callback for real-time messages
-        setupLocalNotifications()
-        
+
         // Handle initial intent (e.g., app launched from notification)
         handleIntent(intent)
-
-        PremiumCheckoutManager.preload(applicationContext)
 
         setContent {
             val isLightTheme = !isSystemInDarkTheme()
@@ -124,6 +102,14 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+
+        window.decorView.post {
+            // Defer non-visual startup work until after the first frame has a chance to draw.
+            setupLocalNotifications()
+            requestNotificationPermission()
+            VormexAdsManager.requestConsentAndInitialize(this)
+            PremiumCheckoutManager.preload(applicationContext)
         }
     }
 
@@ -150,12 +136,28 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         isInForeground = true
-        PremiumCheckoutManager.restorePurchases(applicationContext)
     }
 
     override fun onStop() {
         isInForeground = false
         super.onStop()
+    }
+
+    override fun onPaymentSuccess(razorpayPaymentID: String?, paymentData: PaymentData?) {
+        PremiumCheckoutManager.onPaymentSuccess(
+            context = this,
+            razorpayPaymentId = razorpayPaymentID,
+            paymentData = paymentData
+        )
+    }
+
+    override fun onPaymentError(code: Int, response: String?, paymentData: PaymentData?) {
+        PremiumCheckoutManager.onPaymentError(
+            context = this,
+            code = code,
+            response = response,
+            paymentData = paymentData
+        )
     }
 
     private fun handleIntent(intent: Intent?) {
@@ -193,6 +195,7 @@ class MainActivity : ComponentActivity() {
             val parentCommentId = intent.getStringExtra(VormexMessagingService.EXTRA_PARENT_COMMENT_ID)
             val conversationId = intent.getStringExtra(VormexMessagingService.EXTRA_CONVERSATION_ID)
             val groupId = intent.getStringExtra(VormexMessagingService.EXTRA_GROUP_ID)
+            val tab = intent.getStringExtra(VormexMessagingService.EXTRA_TAB)
             
             Log.d(TAG, "Handling deep link: action=$action, userId=$userId, postId=$postId, reelId=$reelId, commentId=$commentId, conversationId=$conversationId, groupId=$groupId")
             
@@ -205,7 +208,8 @@ class MainActivity : ComponentActivity() {
                 commentId = commentId,
                 parentCommentId = parentCommentId,
                 conversationId = conversationId,
-                groupId = groupId
+                groupId = groupId,
+                tab = tab
             )
         }
     }
@@ -236,8 +240,6 @@ class MainActivity : ComponentActivity() {
 
     private fun initializeFirebaseMessaging() {
         try {
-            PushTokenRegistrar.syncCurrentToken(this)
-            
             // Subscribe to general announcements topic
             FirebaseMessaging.getInstance().subscribeToTopic("announcements")
                 .addOnCompleteListener { task ->

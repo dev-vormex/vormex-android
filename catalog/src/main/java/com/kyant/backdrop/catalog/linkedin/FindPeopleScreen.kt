@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -76,6 +77,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -92,14 +94,19 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.google.android.gms.location.LocationServices
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.data.SettingsPreferences
 import com.kyant.backdrop.catalog.network.models.CollegeInfo
 import com.kyant.backdrop.catalog.network.models.NearbyUser
 import com.kyant.backdrop.catalog.network.models.PersonInfo
+import com.kyant.backdrop.catalog.network.models.RecentViewedProfileItem
+import com.kyant.backdrop.catalog.network.models.SavedDiscoverySearch
 import com.kyant.backdrop.catalog.network.models.SmartMatch
+import com.kyant.backdrop.catalog.network.models.SuggestionQuota
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -112,6 +119,9 @@ import org.osmdroid.views.CustomZoomButtonsController
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polygon
+import java.time.Duration
+import java.time.Instant
+import java.util.Locale
 import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -156,6 +166,7 @@ fun FindPeopleScreenNew(
     // Clear any existing errors when this screen is opened
     LaunchedEffect(Unit) {
         findPeopleViewModel.clearAllErrors()
+        findPeopleViewModel.refreshDiscoveryPremiumState()
         findPeopleViewModel.ensureFindSurfaceLoaded()
         retentionViewModel.ensureConnectionLimitLoaded()
     }
@@ -190,6 +201,21 @@ fun FindPeopleScreenNew(
                 selectedCollege = uiState.selectedCollege,
                 selectedBranch = uiState.selectedBranch,
                 selectedGraduationYear = uiState.selectedGraduationYear,
+                selectedSkillLevel = uiState.selectedSkillLevel,
+                selectedIntent = uiState.selectedIntent,
+                selectedAvailability = uiState.selectedAvailability,
+                verifiedOnly = uiState.verifiedOnly,
+                discoveryRadiusKm = uiState.discoveryRadiusKm,
+                discoveryScope = uiState.discoveryScope,
+                isDiscoveryPremiumUnlocked = uiState.isDiscoveryPremiumUnlocked,
+                savedSearches = uiState.savedDiscoverySearches,
+                isLoadingSavedSearches = uiState.isLoadingSavedDiscoverySearches,
+                isSavingSearch = uiState.isSavingDiscoverySearch,
+                savedSearchMessage = uiState.savedDiscoverySearchMessage,
+                savedSearchError = uiState.savedDiscoverySearchError,
+                recentlyViewedProfiles = uiState.recentlyViewedProfiles,
+                isLoadingRecentlyViewedProfiles = uiState.isLoadingRecentlyViewedProfiles,
+                recentlyViewedProfilesError = uiState.recentlyViewedProfilesError,
                 isFilterExpanded = uiState.isFilterExpanded,
                 onSearchQueryChange = { findPeopleViewModel.updateSearchQuery(it) },
                 onToggleFilter = { findPeopleViewModel.toggleFilterExpanded() },
@@ -197,6 +223,18 @@ fun FindPeopleScreenNew(
                 onCollegeSelected = { findPeopleViewModel.setCollegeFilter(it) },
                 onBranchSelected = { findPeopleViewModel.setBranchFilter(it) },
                 onYearSelected = { findPeopleViewModel.setGraduationYearFilter(it) },
+                onSkillLevelSelected = { findPeopleViewModel.setSkillLevelFilter(it) },
+                onIntentSelected = { findPeopleViewModel.setIntentFilter(it) },
+                onAvailabilitySelected = { findPeopleViewModel.setAvailabilityFilter(it) },
+                onVerifiedOnlyChanged = { findPeopleViewModel.setVerifiedOnlyFilter(it) },
+                onDiscoveryRadiusSelected = { findPeopleViewModel.setDiscoveryRadius(it) },
+                onDiscoveryScopeSelected = { findPeopleViewModel.setDiscoveryScope(it) },
+                onSaveSearch = { findPeopleViewModel.saveCurrentDiscoverySearch() },
+                onOpenSavedSearches = { findPeopleViewModel.loadSavedDiscoverySearches(forceRefresh = true) },
+                onSavedSearchSelected = { findPeopleViewModel.applySavedDiscoverySearch(it) },
+                onSavedSearchDeleted = { findPeopleViewModel.deleteSavedDiscoverySearch(it) },
+                onOpenRecentlyViewedProfiles = { findPeopleViewModel.loadRecentlyViewedProfiles(forceRefresh = true) },
+                onRecentProfileSelected = navigateToProfile,
                 onClearFilters = { findPeopleViewModel.clearFilters() }
             )
 
@@ -328,8 +366,14 @@ fun FindPeopleScreenNew(
                 people = uiState.suggestions,
                 isLoading = uiState.isLoadingSuggestions,
                 error = uiState.suggestionsError,
+                quota = uiState.suggestionQuota,
+                canRewind = uiState.canRewindSuggestionPass,
+                isRewinding = uiState.isRewindingSuggestionPass,
                 connectionActionInProgress = uiState.connectionActionInProgress,
+                passActionInProgress = uiState.suggestionPassInProgress,
                 onConnect = { findPeopleViewModel.sendConnectionRequest(it) },
+                onPass = { findPeopleViewModel.passSuggestion(it) },
+                onRewind = { findPeopleViewModel.rewindSuggestionPass() },
                 onNavigateToProfile = navigateToProfile,
                 onRetry = { findPeopleViewModel.loadSuggestions(forceRefresh = true) },
                 onDismissError = { findPeopleViewModel.dismissErrorsWithCooldown() }
@@ -426,6 +470,21 @@ private fun FindPeopleControlsCard(
     selectedCollege: String?,
     selectedBranch: String?,
     selectedGraduationYear: Int?,
+    selectedSkillLevel: String?,
+    selectedIntent: String?,
+    selectedAvailability: String?,
+    verifiedOnly: Boolean,
+    discoveryRadiusKm: Int?,
+    discoveryScope: DiscoveryScope,
+    isDiscoveryPremiumUnlocked: Boolean,
+    savedSearches: List<SavedDiscoverySearch>,
+    isLoadingSavedSearches: Boolean,
+    isSavingSearch: Boolean,
+    savedSearchMessage: String?,
+    savedSearchError: String?,
+    recentlyViewedProfiles: List<RecentViewedProfileItem>,
+    isLoadingRecentlyViewedProfiles: Boolean,
+    recentlyViewedProfilesError: String?,
     isFilterExpanded: Boolean,
     onSearchQueryChange: (String) -> Unit,
     onToggleFilter: () -> Unit,
@@ -433,14 +492,41 @@ private fun FindPeopleControlsCard(
     onCollegeSelected: (String?) -> Unit,
     onBranchSelected: (String?) -> Unit,
     onYearSelected: (Int?) -> Unit,
+    onSkillLevelSelected: (String?) -> Unit,
+    onIntentSelected: (String?) -> Unit,
+    onAvailabilitySelected: (String?) -> Unit,
+    onVerifiedOnlyChanged: (Boolean) -> Unit,
+    onDiscoveryRadiusSelected: (Int?) -> Unit,
+    onDiscoveryScopeSelected: (DiscoveryScope) -> Unit,
+    onSaveSearch: () -> Unit,
+    onOpenSavedSearches: () -> Unit,
+    onSavedSearchSelected: (SavedDiscoverySearch) -> Unit,
+    onSavedSearchDeleted: (String) -> Unit,
+    onOpenRecentlyViewedProfiles: () -> Unit,
+    onRecentProfileSelected: (String) -> Unit,
     onClearFilters: () -> Unit
 ) {
-    val activeFilterCount = listOf(selectedCollege, selectedBranch, selectedGraduationYear)
-        .count { it != null }
+    val activeFilterCount = listOf(
+        selectedCollege,
+        selectedBranch,
+        selectedGraduationYear,
+        selectedSkillLevel,
+        selectedIntent,
+        selectedAvailability,
+        discoveryRadiusKm
+    ).count { it != null } +
+        (if (verifiedOnly) 1 else 0) +
+        (if (discoveryScope == DiscoveryScope.GLOBAL) 1 else 0)
     val activeFilters = listOfNotNull(
         selectedCollege?.let { "College · $it" to { onCollegeSelected(null) } },
         selectedBranch?.let { "Branch · $it" to { onBranchSelected(null) } },
-        selectedGraduationYear?.let { "Year · $it" to { onYearSelected(null) } }
+        selectedGraduationYear?.let { "Year · $it" to { onYearSelected(null) } },
+        selectedSkillLevel?.let { "Level · $it" to { onSkillLevelSelected(null) } },
+        selectedIntent?.let { "Intent · $it" to { onIntentSelected(null) } },
+        selectedAvailability?.let { "Availability · $it" to { onAvailabilitySelected(null) } },
+        discoveryRadiusKm?.let { "Radius · ${it}km" to { onDiscoveryRadiusSelected(null) } },
+        if (verifiedOnly) "Verified" to { onVerifiedOnlyChanged(false) } else null,
+        if (discoveryScope == DiscoveryScope.GLOBAL) "Global" to { onDiscoveryScopeSelected(DiscoveryScope.LOCAL) } else null
     )
     val showAllControls = selectedTab == FindPeopleTab.ALL_PEOPLE
 
@@ -520,6 +606,26 @@ private fun FindPeopleControlsCard(
                 }
             }
 
+            SavedSearchControls(
+                contentColor = contentColor,
+                accentColor = accentColor,
+                isPremiumUnlocked = isDiscoveryPremiumUnlocked,
+                savedSearches = savedSearches,
+                isLoadingSavedSearches = isLoadingSavedSearches,
+                isSaving = isSavingSearch,
+                message = savedSearchMessage,
+                error = savedSearchError,
+                recentlyViewedProfiles = recentlyViewedProfiles,
+                isLoadingRecentlyViewedProfiles = isLoadingRecentlyViewedProfiles,
+                recentlyViewedProfilesError = recentlyViewedProfilesError,
+                onSaveSearch = onSaveSearch,
+                onOpenSavedSearches = onOpenSavedSearches,
+                onSavedSearchSelected = onSavedSearchSelected,
+                onSavedSearchDeleted = onSavedSearchDeleted,
+                onOpenRecentlyViewedProfiles = onOpenRecentlyViewedProfiles,
+                onRecentProfileSelected = onRecentProfileSelected
+            )
+
             AnimatedVisibility(
                 visible = isFilterExpanded,
                 enter = expandVertically(animationSpec = tween(220)) + fadeIn(animationSpec = tween(160)),
@@ -534,6 +640,13 @@ private fun FindPeopleControlsCard(
                     selectedCollege = selectedCollege,
                     selectedBranch = selectedBranch,
                     selectedGraduationYear = selectedGraduationYear,
+                    selectedSkillLevel = selectedSkillLevel,
+                    selectedIntent = selectedIntent,
+                    selectedAvailability = selectedAvailability,
+                    verifiedOnly = verifiedOnly,
+                    discoveryRadiusKm = discoveryRadiusKm,
+                    discoveryScope = discoveryScope,
+                    isDiscoveryPremiumUnlocked = isDiscoveryPremiumUnlocked,
                     isGlassTheme = isGlassTheme,
                     isLightTheme = isLightTheme,
                     reduceAnimations = reduceAnimations,
@@ -541,6 +654,12 @@ private fun FindPeopleControlsCard(
                     onCollegeSelected = onCollegeSelected,
                     onBranchSelected = onBranchSelected,
                     onYearSelected = onYearSelected,
+                    onSkillLevelSelected = onSkillLevelSelected,
+                    onIntentSelected = onIntentSelected,
+                    onAvailabilitySelected = onAvailabilitySelected,
+                    onVerifiedOnlyChanged = onVerifiedOnlyChanged,
+                    onDiscoveryRadiusSelected = onDiscoveryRadiusSelected,
+                    onDiscoveryScopeSelected = onDiscoveryScopeSelected,
                     onClearFilters = onClearFilters
                 )
             }
@@ -1041,6 +1160,7 @@ fun PersonCard(
                         )
                         VerificationBadge(
                             verified = person.hasVerificationBadge(),
+                            badgeStyle = person.verificationBadgeStyle(),
                             size = VerificationBadgeSize.Small
                         )
                     }
@@ -1197,6 +1317,7 @@ private fun ConnectionButton(
 
 // ==================== Smart Match Card ====================
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SmartMatchCard(
     match: SmartMatch,
@@ -1208,21 +1329,28 @@ fun SmartMatchCard(
     onViewClick: () -> Unit = {},
     reduceAnimations: Boolean = false
 ) {
+    var whyExpanded by remember(match.user.id) { mutableStateOf(false) }
     val imageCrossfadeMs = if (reduceAnimations) 0 else 300
+    val boundedPercentage = match.matchPercentage.coerceIn(0, 100)
     val percentageColor = when {
-        match.matchPercentage >= 60 -> Color(0xFF22C55E) // Green
-        match.matchPercentage >= 35 -> Color(0xFF3B82F6) // Blue
+        boundedPercentage >= 70 -> Color(0xFF22C55E)
+        boundedPercentage >= 45 -> Color(0xFF3B82F6)
         else -> Color(0xFFF97316) // Orange
     }
     val matchFitLabel = when {
-        match.matchPercentage >= 60 -> "Strong fit"
-        match.matchPercentage >= 35 -> "Good fit"
+        boundedPercentage >= 70 -> "Strong fit"
+        boundedPercentage >= 45 -> "Good fit"
         else -> "Fresh fit"
     }
     val displayName = match.user.name ?: match.user.username ?: "Unknown"
+    val why = match.whyMatched
+    val sharedSignals = match.sharedSignals
+    val reasonChips = (match.tags.ifEmpty { match.reasons }).take(4)
+    val summary = why?.summary?.takeIf { it.isNotBlank() }
     val details = buildList {
         match.user.college?.let { add(it) }
         match.user.onboarding?.primaryGoal?.let { add(mapPrimaryGoalToDisplay(it)) }
+        sharedSignals?.locationLabel?.takeIf { it.isNotBlank() && !contains(it) }?.let { add(it) }
     }
     
     Box(
@@ -1250,62 +1378,81 @@ fun SmartMatchCard(
             .clickable(onClick = onViewClick)
             .padding(12.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(accentColor.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center
-            ) {
-                if (!match.user.profileImage.isNullOrEmpty()) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(LocalContext.current)
-                            .data(match.user.profileImage)
-                            .crossfade(imageCrossfadeMs)
-                            .build(),
-                        contentDescription = "Profile",
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(accentColor.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (!match.user.profileImage.isNullOrEmpty()) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(match.user.profileImage)
+                                .crossfade(imageCrossfadeMs)
+                                .build(),
+                            contentDescription = "Profile",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .clip(CircleShape)
-                    )
-                } else {
-                    val initials = displayName
-                        .split(" ")
-                        .mapNotNull { it.firstOrNull()?.uppercase() }
-                        .take(2)
-                        .joinToString("")
-                    BasicText(
-                        initials,
-                        style = TextStyle(accentColor, 15.sp, FontWeight.SemiBold)
-                    )
+                        )
+                    } else {
+                        val initials = displayName
+                            .split(" ")
+                            .mapNotNull { it.firstOrNull()?.uppercase() }
+                            .take(2)
+                            .joinToString("")
+                        BasicText(
+                            initials,
+                            style = TextStyle(accentColor, 15.sp, FontWeight.SemiBold)
+                        )
+                    }
                 }
-            }
-            
-            Spacer(Modifier.width(12.dp))
-            
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    BasicText(
-                        displayName,
-                        style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    VerificationBadge(
-                        verified = match.user.hasVerificationBadge(),
-                        size = VerificationBadgeSize.Small
-                    )
 
+                Spacer(Modifier.width(12.dp))
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        BasicText(
+                            displayName,
+                            style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        VerificationBadge(
+                            verified = match.user.hasVerificationBadge(),
+                            badgeStyle = match.user.verificationBadgeStyle(),
+                            size = VerificationBadgeSize.Small
+                        )
+                    }
+
+                    if (details.isNotEmpty()) {
+                        BasicText(
+                            details.joinToString(" · "),
+                            style = TextStyle(contentColor.copy(alpha = 0.58f), 12.sp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(10.dp))
+
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     Box(
                         Modifier
                             .clip(RoundedCornerShape(11.dp))
@@ -1313,55 +1460,157 @@ fun SmartMatchCard(
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         BasicText(
-                            matchFitLabel,
-                            style = TextStyle(percentageColor, 10.sp, FontWeight.SemiBold),
+                            "$boundedPercentage%",
+                            style = TextStyle(percentageColor, 11.sp, FontWeight.Bold),
                             maxLines = 1
                         )
                     }
-                }
-                
-                if (details.isNotEmpty()) {
                     BasicText(
-                        details.joinToString(" · "),
-                        style = TextStyle(contentColor.copy(alpha = 0.58f), 12.sp),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        matchFitLabel,
+                        style = TextStyle(percentageColor, 10.sp, FontWeight.SemiBold),
+                        maxLines = 1
                     )
                 }
-                
-                if (match.tags.isNotEmpty()) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                        match.tags.take(3).forEach { tag ->
-                            Box(
-                                Modifier
-                                    .clip(RoundedCornerShape(9.dp))
-                                    .background(accentColor.copy(alpha = 0.08f))
-                                    .padding(horizontal = 7.dp, vertical = 3.dp)
-                            ) {
-                                BasicText(
-                                    tag,
-                                    style = TextStyle(contentColor.copy(alpha = 0.72f), 10.sp, FontWeight.Medium),
-                                    maxLines = 1
-                                )
-                            }
+            }
+
+            if (!summary.isNullOrBlank()) {
+                BasicText(
+                    summary,
+                    style = TextStyle(contentColor.copy(alpha = 0.76f), 12.sp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (reasonChips.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    reasonChips.forEach { tag ->
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(accentColor.copy(alpha = 0.08f))
+                                .padding(horizontal = 7.dp, vertical = 3.dp)
+                        ) {
+                            BasicText(
+                                tag,
+                                style = TextStyle(contentColor.copy(alpha = 0.72f), 10.sp, FontWeight.Medium),
+                                maxLines = 1
+                            )
                         }
                     }
                 }
             }
-            
-            Spacer(Modifier.width(10.dp))
-            
-            Box(
-                Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(accentColor.copy(alpha = 0.12f))
-                    .clickable(onClick = onViewClick)
-                    .padding(horizontal = 11.dp, vertical = 7.dp)
+
+            why?.scorecard
+                ?.filter { it.max > 0 }
+                ?.take(3)
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { scorecard ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        scorecard.forEach { item ->
+                            val progress = (item.score.toFloat() / item.max.toFloat()).coerceIn(0f, 1f)
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    BasicText(
+                                        item.label,
+                                        style = TextStyle(contentColor.copy(alpha = 0.62f), 10.sp, FontWeight.Medium),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    BasicText(
+                                        "${item.score}",
+                                        style = TextStyle(contentColor.copy(alpha = 0.54f), 10.sp),
+                                        maxLines = 1
+                                    )
+                                }
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(contentColor.copy(alpha = 0.08f))
+                                ) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth(progress)
+                                            .height(4.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(percentageColor.copy(alpha = 0.72f))
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+            AnimatedVisibility(visible = whyExpanded && why != null) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    why?.bullets.orEmpty().take(4).forEach { bullet ->
+                        BasicText(
+                            bullet,
+                            style = TextStyle(contentColor.copy(alpha = 0.70f), 11.sp),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    why?.scorecard
+                        ?.filter { it.signals.isNotEmpty() }
+                        ?.forEach { item ->
+                            BasicText(
+                                "${item.label}: ${item.signals.take(3).joinToString(", ")}",
+                                style = TextStyle(contentColor.copy(alpha = 0.58f), 10.sp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                BasicText(
-                    "View",
-                    style = TextStyle(accentColor, 12.sp, FontWeight.SemiBold)
-                )
+                if (why != null) {
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(contentColor.copy(alpha = 0.06f))
+                            .clickable { whyExpanded = !whyExpanded }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        BasicText(
+                            if (whyExpanded) "Hide why" else "Why matched",
+                            style = TextStyle(contentColor.copy(alpha = 0.72f), 11.sp, FontWeight.SemiBold),
+                            maxLines = 1
+                        )
+                    }
+                } else {
+                    Spacer(Modifier.width(1.dp))
+                }
+
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(accentColor.copy(alpha = 0.12f))
+                        .clickable(onClick = onViewClick)
+                        .padding(horizontal = 11.dp, vertical = 7.dp)
+                ) {
+                    BasicText(
+                        "View",
+                        style = TextStyle(accentColor, 12.sp, FontWeight.SemiBold)
+                    )
+                }
             }
         }
     }
@@ -1872,6 +2121,310 @@ private fun ActiveFilterPill(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SavedSearchControls(
+    contentColor: Color,
+    accentColor: Color,
+    isPremiumUnlocked: Boolean,
+    savedSearches: List<SavedDiscoverySearch>,
+    isLoadingSavedSearches: Boolean,
+    isSaving: Boolean,
+    message: String?,
+    error: String?,
+    recentlyViewedProfiles: List<RecentViewedProfileItem>,
+    isLoadingRecentlyViewedProfiles: Boolean,
+    recentlyViewedProfilesError: String?,
+    onSaveSearch: () -> Unit,
+    onOpenSavedSearches: () -> Unit,
+    onSavedSearchSelected: (SavedDiscoverySearch) -> Unit,
+    onSavedSearchDeleted: (String) -> Unit,
+    onOpenRecentlyViewedProfiles: () -> Unit,
+    onRecentProfileSelected: (String) -> Unit
+) {
+    var showSheet by remember { mutableStateOf(false) }
+    var showRecentSheet by remember { mutableStateOf(false) }
+    val savedSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    val recentSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    val unseenCount = savedSearches.sumOf { it.unseenCount }
+
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        SavedSearchActionChip(
+            label = if (isSaving) "Saving" else if (isPremiumUnlocked) "Save search" else "Premium save",
+            contentColor = contentColor,
+            accentColor = accentColor,
+            isPremiumUnlocked = isPremiumUnlocked,
+            isSaving = isSaving,
+            onClick = {
+                if (isPremiumUnlocked && !isSaving) {
+                    onSaveSearch()
+                } else {
+                    showSheet = true
+                }
+            }
+        )
+
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(14.dp))
+                .background(
+                    if (unseenCount > 0) accentColor.copy(alpha = 0.12f)
+                    else contentColor.copy(alpha = 0.045f)
+                )
+                .clickable {
+                    if (isPremiumUnlocked) {
+                        onOpenSavedSearches()
+                    }
+                    showSheet = true
+                }
+                .padding(horizontal = 13.dp, vertical = 8.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                BasicText(
+                    "Saved",
+                    style = TextStyle(
+                        color = if (unseenCount > 0) accentColor else contentColor.copy(alpha = 0.72f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+                if (unseenCount > 0) {
+                    BasicText(
+                        unseenCount.coerceAtMost(99).toString(),
+                        style = TextStyle(
+                            color = accentColor,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                }
+            }
+        }
+
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(14.dp))
+                .background(contentColor.copy(alpha = 0.045f))
+                .clickable {
+                    onOpenRecentlyViewedProfiles()
+                    showRecentSheet = true
+                }
+                .padding(horizontal = 13.dp, vertical = 8.dp)
+        ) {
+            BasicText(
+                "Recent",
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.72f),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+
+    val statusText = error ?: message
+    if (!statusText.isNullOrBlank()) {
+        BasicText(
+            statusText,
+            style = TextStyle(
+                color = if (error != null) Color(0xFFEF4444) else contentColor.copy(alpha = 0.64f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            modifier = Modifier.padding(top = 6.dp)
+        )
+    }
+
+    if (showSheet) {
+        val sheetContainerColor = Color(0xFF101114)
+        val sheetContentColor = Color.White.copy(alpha = 0.94f)
+        val sheetMutedContentColor = Color.White.copy(alpha = 0.64f)
+        val sheetRowColor = Color.White.copy(alpha = 0.07f)
+        ModalBottomSheet(
+            onDismissRequest = { showSheet = false },
+            sheetState = savedSheetState,
+            containerColor = sheetContainerColor,
+            contentColor = sheetContentColor,
+            tonalElevation = 0.dp,
+            scrimColor = Color.Transparent
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                BasicText(
+                    "Saved searches",
+                    style = TextStyle(sheetContentColor, 18.sp, FontWeight.Bold)
+                )
+
+                if (!isPremiumUnlocked) {
+                    BasicText(
+                        "Premium required to save and reopen discovery searches.",
+                        style = TextStyle(sheetMutedContentColor, 13.sp)
+                    )
+                } else if (isLoadingSavedSearches) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            color = accentColor,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        BasicText(
+                            "Loading saved searches",
+                            style = TextStyle(sheetMutedContentColor, 13.sp)
+                        )
+                    }
+                } else if (savedSearches.isEmpty()) {
+                    BasicText(
+                        "No saved searches yet. Add a search or filter, then tap Save search.",
+                        style = TextStyle(sheetMutedContentColor, 13.sp)
+                    )
+                } else {
+                    savedSearches.forEach { search ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(sheetRowColor)
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Column(
+                                Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        showSheet = false
+                                        onSavedSearchSelected(search)
+                                    }
+                            ) {
+                                BasicText(
+                                    search.name,
+                                    style = TextStyle(sheetContentColor, 14.sp, FontWeight.SemiBold),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                BasicText(
+                                    if (search.unseenCount > 0) "${search.unseenCount} new" else "Up to date",
+                                    style = TextStyle(
+                                        color = if (search.unseenCount > 0) accentColor else sheetMutedContentColor,
+                                        fontSize = 12.sp
+                                    )
+                                )
+                            }
+
+                            BasicText(
+                                "Delete",
+                                style = TextStyle(sheetMutedContentColor, 12.sp, FontWeight.SemiBold),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { onSavedSearchDeleted(search.id) }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+
+    if (showRecentSheet) {
+        val sheetContainerColor = Color(0xFF101114)
+        val sheetContentColor = Color.White.copy(alpha = 0.94f)
+        val sheetMutedContentColor = Color.White.copy(alpha = 0.64f)
+        ModalBottomSheet(
+            onDismissRequest = { showRecentSheet = false },
+            sheetState = recentSheetState,
+            containerColor = sheetContainerColor,
+            contentColor = sheetContentColor,
+            tonalElevation = 0.dp,
+            scrimColor = Color.Transparent
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                BasicText(
+                    "Recently viewed",
+                    style = TextStyle(sheetContentColor, 18.sp, FontWeight.Bold)
+                )
+
+                when {
+                    isLoadingRecentlyViewedProfiles -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = accentColor,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            BasicText(
+                                "Loading recently viewed profiles",
+                                style = TextStyle(sheetMutedContentColor, 13.sp)
+                            )
+                        }
+                    }
+                    !recentlyViewedProfilesError.isNullOrBlank() -> {
+                        BasicText(
+                            recentlyViewedProfilesError,
+                            style = TextStyle(Color(0xFFFCA5A5), 13.sp)
+                        )
+                    }
+                    recentlyViewedProfiles.isEmpty() -> {
+                        BasicText(
+                            "Profiles you open from Find People will show up here.",
+                            style = TextStyle(sheetMutedContentColor, 13.sp)
+                        )
+                    }
+                    else -> {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 520.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(recentlyViewedProfiles, key = { item -> item.viewedId }) { item ->
+                                RecentlyViewedProfileRow(
+                                    item = item,
+                                    accentColor = accentColor,
+                                    sheetContentColor = sheetContentColor,
+                                    sheetMutedContentColor = sheetMutedContentColor,
+                                    onClick = {
+                                        showRecentSheet = false
+                                        onRecentProfileSelected(item.profile.id)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+}
+
 @Composable
 private fun FilterPanel(
     backdrop: LayerBackdrop,
@@ -1882,6 +2435,13 @@ private fun FilterPanel(
     selectedCollege: String?,
     selectedBranch: String?,
     selectedGraduationYear: Int?,
+    selectedSkillLevel: String?,
+    selectedIntent: String?,
+    selectedAvailability: String?,
+    verifiedOnly: Boolean,
+    discoveryRadiusKm: Int?,
+    discoveryScope: DiscoveryScope,
+    isDiscoveryPremiumUnlocked: Boolean,
     isGlassTheme: Boolean,
     isLightTheme: Boolean,
     reduceAnimations: Boolean,
@@ -1889,9 +2449,25 @@ private fun FilterPanel(
     onCollegeSelected: (String?) -> Unit,
     onBranchSelected: (String?) -> Unit,
     onYearSelected: (Int?) -> Unit,
+    onSkillLevelSelected: (String?) -> Unit,
+    onIntentSelected: (String?) -> Unit,
+    onAvailabilitySelected: (String?) -> Unit,
+    onVerifiedOnlyChanged: (Boolean) -> Unit,
+    onDiscoveryRadiusSelected: (Int?) -> Unit,
+    onDiscoveryScopeSelected: (DiscoveryScope) -> Unit,
     onClearFilters: () -> Unit
 ) {
-    val activeFilterCount = listOf(selectedCollege, selectedBranch, selectedGraduationYear).count { it != null }
+    val activeFilterCount = listOf(
+        selectedCollege,
+        selectedBranch,
+        selectedGraduationYear,
+        selectedSkillLevel,
+        selectedIntent,
+        selectedAvailability,
+        discoveryRadiusKm
+    ).count { it != null } +
+        (if (verifiedOnly) 1 else 0) +
+        (if (discoveryScope == DiscoveryScope.GLOBAL) 1 else 0)
     var isCollegeSheetVisible by remember { mutableStateOf(false) }
     var isBranchSheetVisible by remember { mutableStateOf(false) }
     var isYearSheetVisible by remember { mutableStateOf(false) }
@@ -2024,6 +2600,131 @@ private fun FilterPanel(
             }
         )
 
+        PremiumFilterChipSection(
+            label = "Discovery scope",
+            locked = !isDiscoveryPremiumUnlocked,
+            contentColor = contentColor,
+            accentColor = accentColor
+        ) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    FilterOptionChip(
+                        label = "Local",
+                        isSelected = discoveryScope == DiscoveryScope.LOCAL,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onClick = { onDiscoveryScopeSelected(DiscoveryScope.LOCAL) }
+                    )
+                }
+                item {
+                    FilterOptionChip(
+                        label = if (isDiscoveryPremiumUnlocked) "Global" else "Global Premium",
+                        isSelected = discoveryScope == DiscoveryScope.GLOBAL,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onClick = { onDiscoveryScopeSelected(DiscoveryScope.GLOBAL) }
+                    )
+                }
+            }
+        }
+
+        PremiumFilterChipSection(
+            label = "Skill level",
+            locked = !isDiscoveryPremiumUnlocked,
+            contentColor = contentColor,
+            accentColor = accentColor
+        ) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Beginner", "Intermediate", "Advanced").forEach { level ->
+                    item {
+                        FilterOptionChip(
+                            label = level,
+                            isSelected = selectedSkillLevel == level,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            onClick = { onSkillLevelSelected(if (selectedSkillLevel == level) null else level) }
+                        )
+                    }
+                }
+            }
+        }
+
+        PremiumFilterChipSection(
+            label = "Intent",
+            locked = !isDiscoveryPremiumUnlocked,
+            contentColor = contentColor,
+            accentColor = accentColor
+        ) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("co-founder", "collab", "mentor", "learn").forEach { intent ->
+                    item {
+                        FilterOptionChip(
+                            label = intent,
+                            isSelected = selectedIntent == intent,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            onClick = { onIntentSelected(if (selectedIntent == intent) null else intent) }
+                        )
+                    }
+                }
+            }
+        }
+
+        PremiumFilterChipSection(
+            label = "Availability",
+            locked = !isDiscoveryPremiumUnlocked,
+            contentColor = contentColor,
+            accentColor = accentColor
+        ) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Weekdays", "Weekends", "Evenings").forEach { availability ->
+                    item {
+                        FilterOptionChip(
+                            label = availability,
+                            isSelected = selectedAvailability == availability,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            onClick = {
+                                onAvailabilitySelected(
+                                    if (selectedAvailability == availability) null else availability
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        PremiumFilterChipSection(
+            label = "Trust",
+            locked = !isDiscoveryPremiumUnlocked,
+            contentColor = contentColor,
+            accentColor = accentColor
+        ) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    FilterOptionChip(
+                        label = "Verified only",
+                        isSelected = verifiedOnly,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onClick = { onVerifiedOnlyChanged(!verifiedOnly) }
+                    )
+                }
+                listOf(25, 50, 100).forEach { radius ->
+                    item {
+                        FilterOptionChip(
+                            label = "${radius}km",
+                            isSelected = discoveryRadiusKm == radius,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            onClick = { onDiscoveryRadiusSelected(if (discoveryRadiusKm == radius) null else radius) }
+                        )
+                    }
+                }
+            }
+        }
+
         if (activeFilterCount > 0) {
             Box(
                 Modifier
@@ -2129,6 +2830,206 @@ private fun FilterChipSection(
 
         content()
     }
+}
+
+@Composable
+private fun PremiumFilterChipSection(
+    label: String,
+    locked: Boolean,
+    contentColor: Color,
+    accentColor: Color,
+    content: @Composable () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText(
+                label,
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.58f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+            if (locked) {
+                BasicText(
+                    "Premium",
+                    style = TextStyle(
+                        color = accentColor,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+            }
+        }
+        content()
+    }
+}
+
+@Composable
+private fun RecentlyViewedProfileRow(
+    item: RecentViewedProfileItem,
+    accentColor: Color,
+    sheetContentColor: Color,
+    sheetMutedContentColor: Color,
+    onClick: () -> Unit
+) {
+    val profile = item.profile
+    val title = profile.name.ifBlank { profile.username }
+    val subtitle = listOfNotNull(
+        profile.headline?.takeIf { it.isNotBlank() },
+        profile.college?.takeIf { it.isNotBlank() }
+    ).joinToString(" • ")
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White.copy(alpha = 0.07f))
+            .clickable(onClick = onClick)
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (!profile.profileImage.isNullOrBlank()) {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(profile.profileImage)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = title,
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(accentColor.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center
+            ) {
+                BasicText(
+                    text = title.trim().take(1).uppercase(Locale.getDefault()).ifBlank { "?" },
+                    style = TextStyle(accentColor, 14.sp, FontWeight.Bold)
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                BasicText(
+                    title,
+                    style = TextStyle(sheetContentColor, 14.sp, FontWeight.SemiBold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                VerificationBadge(
+                    verified = profile.hasVerificationBadge(),
+                    badgeStyle = profile.verificationBadgeStyle(),
+                    size = VerificationBadgeSize.Small
+                )
+            }
+            if (subtitle.isNotBlank()) {
+                BasicText(
+                    subtitle,
+                    style = TextStyle(sheetMutedContentColor, 11.sp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            BasicText(
+                findPeopleRelativeTime(item.lastViewedAt),
+                style = TextStyle(sheetContentColor, 12.sp, FontWeight.SemiBold)
+            )
+            if (item.viewCount > 1) {
+                BasicText(
+                    "${item.viewCount} visits",
+                    style = TextStyle(sheetMutedContentColor, 10.sp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SavedSearchActionChip(
+    label: String,
+    contentColor: Color,
+    accentColor: Color,
+    isPremiumUnlocked: Boolean,
+    isSaving: Boolean,
+    onClick: () -> Unit
+) {
+    val accentTextColor = if (accentColor.luminance() > 0.55f) {
+        Color.Black.copy(alpha = 0.86f)
+    } else {
+        Color.White
+    }
+    val backgroundColor = when {
+        isPremiumUnlocked && !isSaving -> accentColor.copy(alpha = 0.94f)
+        isPremiumUnlocked -> accentColor.copy(alpha = 0.36f)
+        else -> contentColor.copy(alpha = 0.06f)
+    }
+    val textColor = if (isPremiumUnlocked) accentTextColor else accentColor
+
+    Box(
+        Modifier
+            .widthIn(max = 190.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(backgroundColor)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 13.dp, vertical = 8.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            if (isSaving) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(13.dp),
+                    color = textColor,
+                    strokeWidth = 2.dp
+                )
+            } else if (!isPremiumUnlocked) {
+                Box(
+                    Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(accentColor)
+                )
+            }
+            BasicText(
+                label,
+                style = TextStyle(
+                    color = textColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+
 }
 
 @Composable
@@ -2554,32 +3455,76 @@ private fun ForYouContent(
     people: List<PersonInfo>,
     isLoading: Boolean,
     error: String?,
+    quota: SuggestionQuota?,
+    canRewind: Boolean,
+    isRewinding: Boolean,
     connectionActionInProgress: Set<String>,
+    passActionInProgress: Set<String>,
     onConnect: (String) -> Unit,
+    onPass: (String) -> Unit,
+    onRewind: () -> Unit,
     onNavigateToProfile: (String) -> Unit = {},
     onRetry: () -> Unit,
     onDismissError: () -> Unit = {}
 ) {
-    PeopleGridContent(
-        backdrop = backdrop,
-        contentColor = contentColor,
-        accentColor = accentColor,
-        isGlassTheme = isGlassTheme,
-        isLightTheme = isLightTheme,
-        listShimmerBrush = listShimmerBrush,
-        reduceAnimations = reduceAnimations,
-        people = people,
-        isLoading = isLoading,
-        error = error,
-        emptyIcon = R.drawable.ic_sparkles,
-        emptyTitle = "No suggestions yet",
-        emptySubtitle = "We'll suggest people based on your profile and interests",
-        connectionActionInProgress = connectionActionInProgress,
-        onConnect = onConnect,
-        onNavigateToProfile = onNavigateToProfile,
-        onRetry = onRetry,
-        onDismissError = onDismissError
-    )
+    Column(Modifier.fillMaxSize()) {
+        if (quota != null || canRewind) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (quota != null && !quota.isPremium) {
+                    BasicText(
+                        "${quota.remaining ?: 0}/${quota.limit ?: 20} suggestions left",
+                        style = TextStyle(contentColor.copy(alpha = 0.68f), 12.sp, FontWeight.SemiBold)
+                    )
+                } else {
+                    Spacer(Modifier.width(1.dp))
+                }
+
+                if (canRewind || isRewinding) {
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(accentColor.copy(alpha = 0.12f))
+                            .clickable(enabled = !isRewinding, onClick = onRewind)
+                            .padding(horizontal = 12.dp, vertical = 7.dp)
+                    ) {
+                        BasicText(
+                            if (isRewinding) "Rewinding" else "Rewind",
+                            style = TextStyle(accentColor, 12.sp, FontWeight.SemiBold)
+                        )
+                    }
+                }
+            }
+        }
+
+        PeopleGridContent(
+            backdrop = backdrop,
+            contentColor = contentColor,
+            accentColor = accentColor,
+            isGlassTheme = isGlassTheme,
+            isLightTheme = isLightTheme,
+            listShimmerBrush = listShimmerBrush,
+            reduceAnimations = reduceAnimations,
+            people = people,
+            isLoading = isLoading,
+            error = error,
+            emptyIcon = R.drawable.ic_sparkles,
+            emptyTitle = "No suggestions yet",
+            emptySubtitle = "We'll suggest people based on your profile and interests",
+            connectionActionInProgress = connectionActionInProgress,
+            passActionInProgress = passActionInProgress,
+            onConnect = onConnect,
+            onPass = onPass,
+            onNavigateToProfile = onNavigateToProfile,
+            onRetry = onRetry,
+            onDismissError = onDismissError
+        )
+    }
 }
 
 @Composable
@@ -2798,6 +3743,7 @@ private fun CollegeInputForm(
                     Box(
                         Modifier
                             .fillMaxWidth()
+                            .heightIn(max = 420.dp)
                             .findPeopleGlassSurface(
                                 backdrop = backdrop,
                                 cornerDp = 12f,
@@ -2807,33 +3753,20 @@ private fun CollegeInputForm(
                                 onDrawSurfaceColor = Color.White.copy(alpha = 0.15f)
                             )
                     ) {
-                        Column(Modifier.padding(8.dp)) {
-                            collegeSuggestions.forEach { college ->
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable {
-                                            collegeName = college.name
-                                            showSuggestions = false
-                                        }
-                                        .padding(12.dp)
-                                ) {
-                                    Row(
-                                        Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        BasicText(
-                                            college.name,
-                                            style = TextStyle(contentColor, 14.sp)
-                                        )
-                                        BasicText(
-                                            "${college.count} ${if (college.count == 1) "member" else "members"}",
-                                            style = TextStyle(contentColor.copy(alpha = 0.5f), 12.sp)
-                                        )
+                        Column(
+                            Modifier
+                                .verticalScroll(rememberScrollState())
+                                .padding(8.dp)
+                        ) {
+                            collegeSuggestions.take(12).forEach { college ->
+                                FindPeopleCollegeSuggestionRow(
+                                    college = college,
+                                    contentColor = contentColor,
+                                    onClick = {
+                                        collegeName = college.name
+                                        showSuggestions = false
                                     }
-                                }
+                                )
                             }
                         }
                     }
@@ -2888,6 +3821,112 @@ private fun CollegeInputForm(
     }
 }
 
+@Composable
+private fun FindPeopleCollegeSuggestionRow(
+    college: CollegeInfo,
+    contentColor: Color,
+    onClick: () -> Unit
+) {
+    val meta = buildList {
+        college.kind?.takeIf { it.isNotBlank() }?.let { add(it) }
+        college.city?.takeIf { it.isNotBlank() }?.let { add(it) }
+        college.state?.takeIf { it.isNotBlank() && !it.equals(college.city, ignoreCase = true) }?.let { add(it) }
+        college.country?.takeIf { it.isNotBlank() }?.let { add(it) }
+        if (college.count > 0) add("${college.count} ${if (college.count == 1) "member" else "members"}")
+    }.joinToString(" · ")
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        FindPeopleCollegeLogoBadge(college = college, contentColor = contentColor)
+        Column(Modifier.weight(1f)) {
+            BasicText(
+                college.name,
+                style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (meta.isNotBlank()) {
+                BasicText(
+                    meta,
+                    style = TextStyle(contentColor.copy(alpha = 0.55f), 12.sp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FindPeopleCollegeLogoBadge(
+    college: CollegeInfo,
+    contentColor: Color
+) {
+    val context = LocalContext.current
+    val initials = remember(college.name) { findPeopleCollegeInitials(college.name) }
+    val logoUrl = remember(college.logoUrl, college.domain) {
+        ApiClient.resolveCollegeLogoUrl(college.logoUrl, college.domain)
+    }
+    Box(
+        Modifier
+            .size(38.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color.White.copy(alpha = 0.86f)),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            initials,
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.72f),
+                fontSize = if (initials.length > 2) 10.sp else 12.sp,
+                fontWeight = FontWeight.Bold
+            ),
+            maxLines = 1
+        )
+        logoUrl?.let { resolvedLogoUrl ->
+            val logoRequest = remember(logoUrl) {
+                ImageRequest.Builder(context)
+                    .data(resolvedLogoUrl)
+                    .crossfade(true)
+                    .allowHardware(false)
+                    .memoryCachePolicy(CachePolicy.ENABLED)
+                    .diskCachePolicy(CachePolicy.ENABLED)
+                    .networkCachePolicy(CachePolicy.ENABLED)
+                    .build()
+            }
+            AsyncImage(
+                model = logoRequest,
+                contentDescription = null,
+                modifier = Modifier
+                    .matchParentSize()
+                    .padding(4.dp),
+                contentScale = ContentScale.Fit
+            )
+        }
+    }
+}
+
+private fun findPeopleCollegeInitials(name: String): String {
+    Regex("\\b[A-Z]{2,5}\\b").find(name)?.let { return it.value.take(3) }
+    return name
+        .replace("&", " ")
+        .split(Regex("\\s+"))
+        .map { it.trim(',', '.', '-', '(', ')') }
+        .filter { it.isNotBlank() }
+        .filterNot { it.lowercase(Locale.US) in setOf("of", "and", "the", "in", "for") }
+        .take(3)
+        .mapNotNull { it.firstOrNull()?.uppercaseChar()?.toString() }
+        .joinToString("")
+        .ifBlank { "S" }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PeopleGridContent(
@@ -2905,7 +3944,9 @@ private fun PeopleGridContent(
     emptyTitle: String,
     emptySubtitle: String,
     connectionActionInProgress: Set<String>,
+    passActionInProgress: Set<String> = emptySet(),
     onConnect: (String) -> Unit,
+    onPass: ((String) -> Unit)? = null,
     onNavigateToProfile: (String) -> Unit = {},
     onRetry: () -> Unit,
     onDismissError: () -> Unit = {}
@@ -2971,18 +4012,42 @@ private fun PeopleGridContent(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(items = people, key = { it.id }) { person ->
-                        PersonCard(
-                            person = person,
-                            backdrop = backdrop,
-                            contentColor = contentColor,
-                            accentColor = accentColor,
-                            isGlassTheme = isGlassTheme,
-                            isLightTheme = isLightTheme,
-                            isActionInProgress = connectionActionInProgress.contains(person.id),
-                            onConnect = { onConnect(person.id) },
-                            onCardClick = { onNavigateToProfile(person.id) },
-                            reduceAnimations = reduceAnimations
-                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            PersonCard(
+                                person = person,
+                                backdrop = backdrop,
+                                contentColor = contentColor,
+                                accentColor = accentColor,
+                                isGlassTheme = isGlassTheme,
+                                isLightTheme = isLightTheme,
+                                isActionInProgress = connectionActionInProgress.contains(person.id),
+                                onConnect = { onConnect(person.id) },
+                                onCardClick = { onNavigateToProfile(person.id) },
+                                reduceAnimations = reduceAnimations
+                            )
+                            if (onPass != null) {
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(contentColor.copy(alpha = 0.06f))
+                                        .clickable(enabled = !passActionInProgress.contains(person.id)) {
+                                            onPass(person.id)
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    BasicText(
+                                        if (passActionInProgress.contains(person.id)) "Passing" else "Pass",
+                                        style = TextStyle(
+                                            color = contentColor.copy(alpha = 0.72f),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3921,6 +4986,7 @@ private fun NearbyPersonCard(
                     )
                     VerificationBadge(
                         verified = user.hasVerificationBadge(),
+                        badgeStyle = user.verificationBadgeStyle(),
                         size = VerificationBadgeSize.Small
                     )
 
@@ -4193,5 +5259,19 @@ private fun ErrorState(
                 }
             }
         }
+    }
+}
+
+private fun findPeopleRelativeTime(timestamp: String): String {
+    val instant = runCatching { Instant.parse(timestamp) }.getOrNull() ?: return "Just now"
+    val duration = Duration.between(instant, Instant.now())
+    return when {
+        duration.isNegative || duration.toMinutes() < 1 -> "Just now"
+        duration.toHours() < 1 -> "${duration.toMinutes()}m ago"
+        duration.toDays() < 1 -> "${duration.toHours()}h ago"
+        duration.toDays() < 7 -> "${duration.toDays()}d ago"
+        duration.toDays() < 30 -> "${duration.toDays() / 7}w ago"
+        duration.toDays() < 365 -> "${duration.toDays() / 30}mo ago"
+        else -> "${duration.toDays() / 365}y ago"
     }
 }

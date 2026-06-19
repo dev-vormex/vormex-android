@@ -18,6 +18,7 @@ import com.kyant.backdrop.catalog.linkedin.reels.player.PlayerPool
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.PostsApiService
 import com.kyant.backdrop.catalog.network.models.Conversation
+import com.kyant.backdrop.catalog.network.models.ManagedAdPlacement
 import com.kyant.backdrop.catalog.network.models.MentionUser
 import com.kyant.backdrop.catalog.network.models.PersonInfo
 import com.kyant.backdrop.catalog.network.models.ProfileConnectionItem
@@ -41,9 +42,11 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.LinkedHashMap
 
 private const val REELS_PREVIEW_LIMIT = 10
-private const val REELS_INITIAL_FEED_LIMIT = 12
-private const val REELS_PAGE_LIMIT = 10
-private const val REELS_THUMBNAIL_WARM_AHEAD_COUNT = 3
+private const val REELS_INITIAL_FEED_LIMIT = 30
+private const val REELS_PAGE_LIMIT = 30
+private const val REELS_THUMBNAIL_WARM_AHEAD_COUNT = 4
+internal const val REELS_PREFETCH_DISTANCE = 12
+private const val REELS_PAGINATION_NULL_CURSOR_RETRY_LIMIT = 1
 
 /**
  * UI State for Reels feature
@@ -56,6 +59,7 @@ data class ReelsUiState(
 
     // Full feed state
     val feedReels: List<Reel> = emptyList(),
+    val feedAdPlacements: List<ManagedAdPlacement> = emptyList(),
     val isLoadingFeed: Boolean = false,
     val feedError: String? = null,
     val nextCursor: String? = null,
@@ -140,12 +144,22 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
     private var lastFeedLoadedAt = 0L
     private var isPreviewRequestInFlight = false
     private var isFeedRequestInFlight = false
+    private var isLoadMoreRequestInFlight = false
     private var isDraftsRequestInFlight = false
+    private var isShareTargetsRequestInFlight = false
+    private var feedMemoryCache: CachedReelsFeed? = null
+    private var nullCursorRetryCount = 0
+    private var pendingStaleCurrentReelId: String? = null
+    private var viewerOpenedAtMillis = 0L
+    private val appStartedAtMillis = System.currentTimeMillis()
+    private val sessionWatchedReelIds = LinkedHashSet<String>()
+    private val seenReelIdsThisSession = LinkedHashSet<String>()
     private val thumbnailWarmAheadCount = REELS_THUMBNAIL_WARM_AHEAD_COUNT
     private val sharePayloadJson = Json { encodeDefaults = true }
     private val likingReelIds = mutableSetOf<String>()
     private val savingReelIds = mutableSetOf<String>()
     private val sharingReelIds = mutableSetOf<String>()
+    private val trackedManagedAdImpressionKeys = mutableSetOf<String>()
     private val submittingCommentKeys = mutableSetOf<String>()
     private var shareTargetsLoaded = false
     private var cachedShareTargets: List<PostShareTarget> = emptyList()
@@ -155,10 +169,33 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
         }
     }
 
+    init {
+        restoreCachedFeed()
+    }
+
+    private fun restoreCachedFeed() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cached = ReelsFeedCacheStore.read(context, ApiClient.getCurrentUserId(context)) ?: return@launch
+            feedMemoryCache = cached
+            if (cached.ageMs <= REELS_FEED_DISK_STALE_MS && cached.reels.isNotEmpty()) {
+                val paginationState = restoredPaginationState(cached)
+                _uiState.value = _uiState.value.copy(
+                    feedReels = cached.reels,
+                    feedAdPlacements = cached.adPlacements,
+                    nextCursor = paginationState.nextCursor,
+                    hasMore = paginationState.hasMore,
+                    isLoadingFeed = cached.ageMs > REELS_FEED_MEMORY_FRESH_MS
+                )
+                preloadThumbnails(cached.reels.take(thumbnailWarmAheadCount + 1))
+            }
+        }
+    }
+
     private fun prefetchFeedSilently(mode: String = "foryou") {
         val now = System.currentTimeMillis()
         val isFeedFresh =
-            _uiState.value.feedReels.isNotEmpty() &&
+            (feedMemoryCache?.ageMs ?: Long.MAX_VALUE) < REELS_FEED_MEMORY_FRESH_MS &&
+                _uiState.value.feedReels.isNotEmpty() &&
                 (now - lastFeedLoadedAt) < feedCacheTtlMillis
 
         if (isFeedFresh || isFeedRequestInFlight) return
@@ -168,7 +205,7 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
             val result = ApiClient.getReelsFeed(context, limit = REELS_INITIAL_FEED_LIMIT, mode = mode)
             result.onSuccess { response ->
                 lastFeedLoadedAt = System.currentTimeMillis()
-                applyFreshFeed(response.reels, response.nextCursor, response.hasMore)
+                applyFreshFeed(response.reels, response.nextCursor, response.hasMore, response.adPlacements)
             }
             isFeedRequestInFlight = false
         }
@@ -179,6 +216,7 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
             loadPreviewReels()
         }
         prefetchFeedSilently()
+        warmShareTargets()
     }
 
     /**
@@ -217,6 +255,7 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
 
                 // Warm preview thumbnails so the entry point feels instant.
                 preloadThumbnails(response.reels.take(REELS_THUMBNAIL_WARM_AHEAD_COUNT + 1))
+                warmShareTargets()
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(
                     isLoadingPreview = false,
@@ -232,6 +271,11 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
      */
     fun loadReelsFeed(mode: String = "foryou", forceRefresh: Boolean = false) {
         val now = System.currentTimeMillis()
+        val cached = feedMemoryCache
+        if (!forceRefresh && cached != null && cached.reels.isNotEmpty() && cached.ageMs <= REELS_FEED_DISK_STALE_MS) {
+            applyCachedFeed(cached)
+            if (cached.ageMs < REELS_FEED_MEMORY_FRESH_MS) return
+        }
         val isFeedFresh =
             !forceRefresh &&
                 _uiState.value.feedReels.isNotEmpty() &&
@@ -244,7 +288,7 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
             _uiState.value = _uiState.value.copy(
                 isLoadingFeed = true,
                 feedError = null,
-                nextCursor = null,
+                nextCursor = if (forceRefresh) null else _uiState.value.nextCursor,
                 hasMore = true
             )
 
@@ -252,7 +296,8 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
 
             result.onSuccess { response ->
                 lastFeedLoadedAt = System.currentTimeMillis()
-                applyFreshFeed(response.reels, response.nextCursor, response.hasMore)
+                applyFreshFeed(response.reels, response.nextCursor, response.hasMore, response.adPlacements)
+                warmShareTargets()
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(
                     isLoadingFeed = false,
@@ -269,35 +314,116 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
     fun loadMoreReels(mode: String = "foryou") {
         val currentState = _uiState.value
 
-        if (currentState.isLoadingMore || !currentState.hasMore || currentState.nextCursor == null) {
+        if (currentState.isLoadingMore || isLoadMoreRequestInFlight || !currentState.hasMore) {
+            return
+        }
+        if (currentState.nextCursor == null) {
+            recoverNullCursorPagination(mode)
             return
         }
 
+        isLoadMoreRequestInFlight = true
         viewModelScope.launch {
-            _uiState.value = currentState.copy(isLoadingMore = true)
+            try {
+                _uiState.value = currentState.copy(isLoadingMore = true)
 
-            val result = ApiClient.getReelsFeed(
-                context,
-                cursor = currentState.nextCursor,
-                limit = REELS_PAGE_LIMIT,
-                mode = mode
-            )
-
-            result.onSuccess { response ->
-                val updatedFeed = (currentState.feedReels + response.reels).distinctBy { it.id }
-                _uiState.value = _uiState.value.copy(
-                    feedReels = updatedFeed,
-                    isLoadingMore = false,
-                    nextCursor = response.nextCursor,
-                    hasMore = response.hasMore
+                val result = ApiClient.getReelsFeed(
+                    context,
+                    cursor = currentState.nextCursor,
+                    limit = REELS_PAGE_LIMIT,
+                    mode = mode,
+                    adItemOffset = currentState.feedReels.size
                 )
-                preloadThumbnails(response.reels.take(thumbnailWarmAheadCount + 1))
-                if (_uiState.value.isViewerOpen) {
-                    syncPlaybackWindow(updatedFeed, _uiState.value.currentReelIndex)
+
+                result.onSuccess { response ->
+                    nullCursorRetryCount = 0
+                    val updatedFeed = mergeReelsById(currentState.feedReels, response.reels, seenReelIdsThisSession)
+                    val madeProgress = updatedFeed.size > currentState.feedReels.size
+                    _uiState.value = _uiState.value.copy(
+                        feedReels = updatedFeed,
+                        // Prefer network placements over cached entries; cached ad creative can be filtered or stale.
+                        feedAdPlacements = managedAdPlacementsNetworkFirst(
+                            existing = _uiState.value.feedAdPlacements,
+                            incoming = response.adPlacements
+                        ),
+                        isLoadingMore = false,
+                        nextCursor = response.nextCursor,
+                        hasMore = response.hasMore && (madeProgress || response.nextCursor != null)
+                    )
+                    persistFeedSnapshot(updatedFeed, response.nextCursor, _uiState.value.hasMore, _uiState.value.feedAdPlacements)
+                    ReelsTelemetry.pagination(context, success = madeProgress, itemCount = response.reels.size, reason = if (madeProgress) null else "no_new_reels")
+                    preloadThumbnails(response.reels.take(thumbnailWarmAheadCount + 1))
+                    if (_uiState.value.isViewerOpen) {
+                        syncPlaybackWindow(updatedFeed, _uiState.value.currentReelIndex)
+                        maybeLoadMoreForVisibleReel(_uiState.value.currentReelIndex)
+                    }
+                }.onFailure {
+                    ReelsTelemetry.pagination(context, success = false, itemCount = 0, reason = it.message)
+                    _uiState.value = _uiState.value.copy(isLoadingMore = false)
                 }
-            }.onFailure {
-                _uiState.value = _uiState.value.copy(isLoadingMore = false)
+            } finally {
+                isLoadMoreRequestInFlight = false
             }
+        }
+    }
+
+    fun maybeLoadMoreForVisibleReel(currentReelIndex: Int, mode: String = "foryou") {
+        val state = _uiState.value
+        // Keep the prefetch distance comfortably below page size to avoid immediate repeated fetches.
+        if (shouldPrefetchMoreReels(currentReelIndex, state.feedReels.size)) {
+            loadMoreReels(mode)
+        }
+    }
+
+    private fun maybeWarmNextReelsPage(mode: String = "foryou") {
+        val state = _uiState.value
+        if (
+            state.isViewerOpen &&
+            state.hasMore &&
+            state.nextCursor != null &&
+            state.feedReels.size <= REELS_INITIAL_FEED_LIMIT &&
+            !state.isLoadingMore &&
+            !isLoadMoreRequestInFlight
+        ) {
+            loadMoreReels(mode)
+        }
+    }
+
+    private fun recoverNullCursorPagination(mode: String) {
+        if (nullCursorRetryCount >= REELS_PAGINATION_NULL_CURSOR_RETRY_LIMIT) {
+            ReelsTelemetry.pagination(context, success = false, itemCount = 0, reason = "null_cursor_refresh")
+            loadReelsFeed(mode = mode, forceRefresh = true)
+            return
+        }
+        nullCursorRetryCount++
+        viewModelScope.launch {
+            delay(1_000L)
+            loadReelsFeed(mode = mode, forceRefresh = true)
+        }
+    }
+
+    fun trackManagedAdImpression(ad: ManagedAdPlacement) {
+        val key = "${ad.campaignId}:${ad.slotKey}"
+        if (!trackedManagedAdImpressionKeys.add(key)) return
+
+        viewModelScope.launch {
+            ApiClient.trackManagedAdImpression(
+                context = context,
+                campaignId = ad.campaignId,
+                placement = ad.placement,
+                slotKey = ad.slotKey
+            )
+        }
+    }
+
+    fun trackManagedAdClick(ad: ManagedAdPlacement) {
+        viewModelScope.launch {
+            ApiClient.trackManagedAdClick(
+                context = context,
+                campaignId = ad.campaignId,
+                placement = ad.placement,
+                slotKey = ad.slotKey
+            )
         }
     }
 
@@ -305,10 +431,19 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
      * Open the full-screen reels viewer at a specific index
      */
     fun openReelsViewer(reels: List<Reel>, startIndex: Int = 0) {
-        val playbackReels = reels.ifEmpty { _uiState.value.feedReels }
+        val playbackReels = mergeReelsById(
+            existing = reels.ifEmpty { _uiState.value.feedReels },
+            incoming = feedMemoryCache?.reels.orEmpty(),
+            seenReelIdsThisSession = seenReelIdsThisSession
+        )
         if (playbackReels.isEmpty()) return
         val safeIndex = startIndex.coerceIn(0, playbackReels.lastIndex)
 
+        viewerOpenedAtMillis = System.currentTimeMillis()
+        sessionWatchedReelIds.clear()
+        seenReelIdsThisSession.clear()
+        sessionWatchedReelIds += playbackReels[safeIndex].id
+        ReelsTelemetry.viewerOpened(context, source = "feed", cached = feedMemoryCache != null)
         _uiState.value = _uiState.value.copy(
             isViewerOpen = true,
             currentReelIndex = safeIndex,
@@ -317,6 +452,9 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
 
         preloadUpcomingThumbnails(safeIndex)
         syncPlaybackWindow(playbackReels, safeIndex)
+        warmShareTargets()
+        maybeLoadMoreForVisibleReel(safeIndex)
+        maybeWarmNextReelsPage()
     }
 
     /**
@@ -347,22 +485,42 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
         } else {
             safePreviewIndex
         }
+        val cachedReels = feedMemoryCache?.reels.orEmpty()
+        val hydratedPlaybackReels = mergeReelsById(
+            existing = playbackReels,
+            incoming = cachedReels,
+            seenReelIdsThisSession = seenReelIdsThisSession
+        )
+        val stablePlaybackIndex = indexOfReelIdOrNearest(
+            reels = hydratedPlaybackReels,
+            reelId = targetReelId,
+            fallbackIndex = playbackIndex
+        )
         val shouldHydrate = playbackReels.size <= REELS_PREVIEW_LIMIT ||
             (state.hasMore && state.nextCursor == null)
 
+        viewerOpenedAtMillis = System.currentTimeMillis()
+        sessionWatchedReelIds.clear()
+        seenReelIdsThisSession.clear()
+        hydratedPlaybackReels.getOrNull(stablePlaybackIndex)?.id?.let(sessionWatchedReelIds::add)
+        ReelsTelemetry.viewerOpened(context, source = "preview", cached = cachedReels.isNotEmpty())
         _uiState.value = state.copy(
             isViewerOpen = true,
-            currentReelIndex = playbackIndex,
-            feedReels = playbackReels,
+            currentReelIndex = stablePlaybackIndex,
+            feedReels = hydratedPlaybackReels,
             isLoadingFeed = shouldHydrate,
             feedError = null
         )
 
-        preloadUpcomingThumbnails(playbackIndex)
-        syncPlaybackWindow(playbackReels, playbackIndex)
+        preloadUpcomingThumbnails(stablePlaybackIndex)
+        syncPlaybackWindow(hydratedPlaybackReels, stablePlaybackIndex)
+        warmShareTargets()
 
         if (shouldHydrate) {
             loadReelsFeed(forceRefresh = true)
+        } else {
+            maybeLoadMoreForVisibleReel(stablePlaybackIndex)
+            maybeWarmNextReelsPage()
         }
     }
 
@@ -383,6 +541,9 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
             currentReelIndex = state.currentReelIndex.coerceAtMost((nextFeedReels.size - 1).coerceAtLeast(0)),
             activeDraftPreviewId = null
         )
+        ReelsTelemetry.sessionClosed(context, sessionWatchedReelIds.size)
+        sessionWatchedReelIds.clear()
+        seenReelIdsThisSession.clear()
         releasePlayback()
     }
 
@@ -485,9 +646,10 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
                     forceCurrentToStart = forceCurrentToStart
                 )
             } else {
+                val message = exactReelResult.exceptionOrNull()?.message ?: "Failed to load reel"
                 _uiState.value = _uiState.value.copy(
                     isLoadingFeed = false,
-                    feedError = exactReelResult.exceptionOrNull()?.message ?: "Failed to load reel",
+                    feedError = if (message.isReelUnavailableError()) "Reel unavailable" else message,
                     isViewerOpen = _uiState.value.feedReels.isNotEmpty()
                 )
             }
@@ -573,6 +735,15 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
      */
     fun loadAndOpenReels() {
         val state = _uiState.value
+        val cached = feedMemoryCache
+        if (cached != null && cached.reels.isNotEmpty() && cached.ageMs <= REELS_FEED_DISK_STALE_MS) {
+            openReelsViewer(cached.reels, 0)
+            if (cached.ageMs >= REELS_FEED_MEMORY_FRESH_MS) {
+                loadReelsFeed(forceRefresh = true)
+            }
+            return
+        }
+
         if (state.feedReels.size > state.previewReels.size) {
             openReelsViewer(state.feedReels, 0)
             return
@@ -603,10 +774,30 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
      * Update current reel index (called when user scrolls)
      */
     fun onReelChanged(newIndex: Int) {
-        _uiState.value = _uiState.value.copy(currentReelIndex = newIndex)
+        val state = _uiState.value
+        val newReelId = state.feedReels.getOrNull(newIndex)?.id
+        val staleCurrentId = pendingStaleCurrentReelId
+        if (staleCurrentId != null && newReelId != null && newReelId != staleCurrentId) {
+            val prunedFeed = state.feedReels.filterNot { it.id == staleCurrentId }
+            val prunedIndex = indexOfReelIdOrNearest(prunedFeed, newReelId, newIndex)
+            pendingStaleCurrentReelId = null
+            _uiState.value = state.copy(
+                feedReels = prunedFeed,
+                currentReelIndex = prunedIndex
+            )
+            newReelId.let(sessionWatchedReelIds::add)
+            preloadUpcomingThumbnails(prunedIndex)
+            syncPlaybackWindow(prunedFeed, prunedIndex)
+            maybeLoadMoreForVisibleReel(prunedIndex)
+            return
+        }
+
+        _uiState.value = state.copy(currentReelIndex = newIndex)
+        newReelId?.let(sessionWatchedReelIds::add)
 
         preloadUpcomingThumbnails(newIndex)
         syncPlaybackWindow(currentPlaybackReels(), newIndex)
+        maybeLoadMoreForVisibleReel(newIndex)
     }
 
     fun playerForIndex(index: Int): ExoPlayer? {
@@ -614,7 +805,16 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
     }
 
     fun handlePlaybackError(index: Int): Boolean {
-        return PlayerPool.handlePlaybackError(context, index)
+        val recovered = PlayerPool.handlePlaybackError(context, index)
+        currentPlaybackReels().getOrNull(index)?.id?.let { reelId ->
+            ReelsTelemetry.playbackError(
+                context = context,
+                reelId = reelId,
+                reason = if (recovered) "recovered_or_retrying" else "retry_exhausted",
+                fallbackUsed = recovered
+            )
+        }
+        return recovered
     }
 
     fun retryPlayback(index: Int) {
@@ -631,6 +831,17 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
 
     fun releasePlayback() {
         PlayerPool.release()
+    }
+
+    fun recordFirstFrameRendered(reelId: String) {
+        if (sessionWatchedReelIds.size > 1) return
+        val now = System.currentTimeMillis()
+        ReelsTelemetry.firstFrame(
+            context = context,
+            reelId = reelId,
+            viewerOpenMs = now - viewerOpenedAtMillis,
+            appOpenMs = now - appStartedAtMillis
+        )
     }
 
     /**
@@ -706,7 +917,16 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
     }
 
     fun loadShareTargets() {
-        if (_uiState.value.isLoadingShareTargets) return
+        loadShareTargets(silent = false)
+    }
+
+    private fun warmShareTargets() {
+        if (shareTargetsLoaded || isShareTargetsRequestInFlight) return
+        loadShareTargets(silent = true)
+    }
+
+    private fun loadShareTargets(silent: Boolean) {
+        if (isShareTargetsRequestInFlight || _uiState.value.isLoadingShareTargets) return
         if (shareTargetsLoaded) {
             _uiState.value = _uiState.value.copy(
                 shareTargets = cachedShareTargets,
@@ -720,43 +940,59 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
             return
         }
 
+        isShareTargetsRequestInFlight = true
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(
-                isLoadingShareTargets = true,
-                shareError = null
-            )
-
-            val currentUserId = ApiClient.getCurrentUserId(context)
-            val recentConversationsDeferred = async {
-                ApiClient.getConversations(context, limit = 10).getOrNull()?.conversations.orEmpty()
-            }
-            val connectionsDeferred = async {
-                currentUserId?.let { userId ->
-                    ApiClient.getUserConnections(context, userId, limit = 60).getOrNull()?.connections
-                }.orEmpty()
-            }
-            val recommendationsDeferred = async {
-                ApiClient.getPeopleSuggestions(context, limit = 24).getOrNull()?.suggestions.orEmpty()
-            }
-
-            val shareTargets = buildReelShareTargets(
-                currentUserId = currentUserId,
-                recentConversations = recentConversationsDeferred.await(),
-                connections = connectionsDeferred.await(),
-                recommendations = recommendationsDeferred.await()
-            )
-
-            cachedShareTargets = shareTargets
-            shareTargetsLoaded = true
-            _uiState.value = _uiState.value.copy(
-                shareTargets = shareTargets,
-                isLoadingShareTargets = false,
-                shareError = if (shareTargets.isEmpty()) {
-                    "No people found to share with yet."
-                } else {
-                    null
+            try {
+                if (!silent || _uiState.value.showShareModal) {
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingShareTargets = true,
+                        shareError = null
+                    )
                 }
-            )
+
+                val currentUserId = ApiClient.getCurrentUserId(context)
+                val recentConversationsDeferred = async {
+                    ApiClient.getConversations(context, limit = 10).getOrNull()?.conversations.orEmpty()
+                }
+                val connectionsDeferred = async {
+                    currentUserId?.let { userId ->
+                        ApiClient.getUserConnections(context, userId, limit = 60).getOrNull()?.connections
+                    }.orEmpty()
+                }
+                val recommendationsDeferred = async {
+                    ApiClient.getPeopleSuggestions(context, limit = 24).getOrNull()?.suggestions.orEmpty()
+                }
+
+                val shareTargets = buildReelShareTargets(
+                    currentUserId = currentUserId,
+                    recentConversations = recentConversationsDeferred.await(),
+                    connections = connectionsDeferred.await(),
+                    recommendations = recommendationsDeferred.await()
+                )
+
+                cachedShareTargets = shareTargets
+                shareTargetsLoaded = true
+                if (!silent || _uiState.value.showShareModal) {
+                    _uiState.value = _uiState.value.copy(
+                        shareTargets = shareTargets,
+                        isLoadingShareTargets = false,
+                        shareError = if (shareTargets.isEmpty()) {
+                            "No people found to share with yet."
+                        } else {
+                            null
+                        }
+                    )
+                }
+            } catch (error: Exception) {
+                if (!silent || _uiState.value.showShareModal) {
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingShareTargets = false,
+                        shareError = error.message ?: "Failed to load people."
+                    )
+                }
+            } finally {
+                isShareTargetsRequestInFlight = false
+            }
         }
     }
 
@@ -1652,14 +1888,35 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
     private fun applyFreshFeed(
         freshReels: List<Reel>,
         nextCursor: String?,
-        hasMore: Boolean
+        hasMore: Boolean,
+        adPlacements: List<ManagedAdPlacement> = emptyList()
     ) {
         val state = _uiState.value
         val currentReelId = state.feedReels.getOrNull(state.currentReelIndex)?.id
-        val updatedFeed = if (state.isViewerOpen && state.feedReels.isNotEmpty()) {
-            (state.feedReels + freshReels).distinctBy { it.id }
+        val baseFeed = if (state.isViewerOpen && state.feedReels.isNotEmpty()) {
+            state.feedReels
         } else {
-            freshReels
+            emptyList()
+        }
+        val updatedFeed = mergeReelsById(baseFeed, freshReels, seenReelIdsThisSession)
+        pendingStaleCurrentReelId = if (
+            state.isViewerOpen &&
+            currentReelId != null &&
+            freshReels.none { it.id == currentReelId } &&
+            updatedFeed.any { it.id == currentReelId }
+        ) {
+            currentReelId
+        } else {
+            null
+        }
+        val updatedAdPlacements = if (state.isViewerOpen && state.feedReels.isNotEmpty()) {
+            // Prefer network placements over cached entries; cached ad creative can be filtered or stale.
+            managedAdPlacementsNetworkFirst(
+                existing = state.feedAdPlacements,
+                incoming = adPlacements
+            )
+        } else {
+            adPlacements
         }
         val updatedIndex = when {
             updatedFeed.isEmpty() -> 0
@@ -1681,12 +1938,63 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
             },
             nextCursor = nextCursor,
             hasMore = hasMore,
+            feedAdPlacements = updatedAdPlacements,
             currentReelIndex = updatedIndex
         )
+        lastFeedLoadedAt = System.currentTimeMillis()
+        nullCursorRetryCount = 0
+        persistFeedSnapshot(updatedFeed, nextCursor, hasMore, updatedAdPlacements)
 
         preloadUpcomingThumbnails(updatedIndex)
         if (_uiState.value.isViewerOpen) {
             syncPlaybackWindow(updatedFeed, updatedIndex)
+            maybeLoadMoreForVisibleReel(updatedIndex)
+            maybeWarmNextReelsPage()
+        }
+    }
+
+    private fun applyCachedFeed(cached: CachedReelsFeed) {
+        feedMemoryCache = cached
+        val state = _uiState.value
+        val currentReelId = state.feedReels.getOrNull(state.currentReelIndex)?.id
+        val merged = mergeReelsById(state.feedReels, cached.reels, seenReelIdsThisSession)
+        val currentIndex = indexOfReelIdOrNearest(merged, currentReelId, state.currentReelIndex)
+        val paginationState = restoredPaginationState(cached)
+        _uiState.value = state.copy(
+            feedReels = merged,
+            feedAdPlacements = cached.adPlacements,
+            nextCursor = paginationState.nextCursor,
+            hasMore = paginationState.hasMore,
+            currentReelIndex = currentIndex,
+            isLoadingFeed = cached.ageMs >= REELS_FEED_MEMORY_FRESH_MS,
+            feedError = null
+        )
+    }
+
+    private fun persistFeedSnapshot(
+        reels: List<Reel>,
+        nextCursor: String?,
+        hasMore: Boolean,
+        adPlacements: List<ManagedAdPlacement>
+    ) {
+        val snapshot = CachedReelsFeed(
+            reels = reels,
+            nextCursor = nextCursor,
+            hasMore = hasMore,
+            adPlacements = adPlacements,
+            updatedAt = System.currentTimeMillis(),
+            ownerUserId = null
+        )
+        feedMemoryCache = snapshot
+        viewModelScope.launch(Dispatchers.IO) {
+            ReelsFeedCacheStore.write(
+                context = context,
+                reels = reels,
+                nextCursor = nextCursor,
+                hasMore = hasMore,
+                adPlacements = adPlacements,
+                ownerUserId = ApiClient.getCurrentUserId(context)
+            )
         }
     }
 
@@ -1742,6 +2050,13 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
         return _uiState.value.feedReels.firstOrNull { it.id == reelId }
             ?: _uiState.value.previewReels.firstOrNull { it.id == reelId }
             ?: _uiState.value.lastCreatedReel?.takeIf { it.id == reelId }
+    }
+
+    private fun String.isReelUnavailableError(): Boolean {
+        return contains("404") ||
+            contains("not found", ignoreCase = true) ||
+            contains("not ready", ignoreCase = true) ||
+            contains("unavailable", ignoreCase = true)
     }
 
     companion object {

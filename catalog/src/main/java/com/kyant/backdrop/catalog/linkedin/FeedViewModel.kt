@@ -29,6 +29,7 @@ import com.kyant.backdrop.catalog.network.models.MentionUser
 import com.kyant.backdrop.catalog.network.models.FullProfileResponse
 import com.kyant.backdrop.catalog.network.models.AuthResponse
 import com.kyant.backdrop.catalog.network.models.FeedResponse
+import com.kyant.backdrop.catalog.network.models.ManagedAdPlacement
 import com.kyant.backdrop.catalog.network.models.Post
 import com.kyant.backdrop.catalog.network.models.Story
 import com.kyant.backdrop.catalog.network.models.StoryGroup
@@ -39,11 +40,15 @@ import com.kyant.backdrop.catalog.network.models.PersonInfo
 import com.kyant.backdrop.catalog.network.models.ProfileConnectionItem
 import com.kyant.backdrop.catalog.network.models.SharedPostAuthor
 import com.kyant.backdrop.catalog.network.models.SharedPostContent
+import com.kyant.backdrop.catalog.network.models.StoriesFeedResponse
 import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
 import com.kyant.backdrop.catalog.notifications.PushTokenRegistrar
+import com.kyant.backdrop.catalog.payments.PremiumCheckoutManager
+import com.kyant.backdrop.catalog.linkedin.reels.ReelsFeedCacheStore
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -52,6 +57,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlin.random.Random
@@ -274,12 +280,13 @@ private fun FullPost.toPost(): Post = Post(
 
 enum class AuthScreen {
     LOGIN,
-    SIGNUP
+    SIGNUP,
+    EMAIL_VERIFICATION
 }
 
 private fun AuthResponse.authTokenMissingMessage(fallback: String): String {
     return message ?: if (requiresVerification) {
-        "Registration successful. Please verify your email before signing in."
+        "Enter the 6-digit code sent to your email."
     } else {
         fallback
     }
@@ -304,13 +311,19 @@ data class UploadProgress(
 data class FeedUiState(
     val isLoggedIn: Boolean = false,
     val isRestoringSession: Boolean = false,
+    val isBackendWaking: Boolean = false,
     val isLoading: Boolean = false,
     val isRefreshingFeed: Boolean = false,
     val isCreatingPost: Boolean = false,
     val isGoogleLoading: Boolean = false,
+    val isSwitchingAccount: Boolean = false,
     val authScreen: AuthScreen = AuthScreen.LOGIN,
+    val pendingVerificationEmail: String? = null,
+    val isEmailVerificationSuccess: Boolean = false,
+    val savedAccounts: List<ApiClient.SavedAccountSession> = emptyList(),
     val pendingReferralCode: String? = null,
     val posts: ImmutableList<Post> = persistentListOf(),
+    val feedAdPlacements: List<ManagedAdPlacement> = emptyList(),
     val storyGroups: List<StoryGroup> = emptyList(),
     val myStories: List<Story> = emptyList(),
     val error: String? = null,
@@ -370,11 +383,12 @@ data class FeedUiState(
 class FeedViewModel(private val context: Context) : ViewModel() {
     private val authLogTag = "FeedViewModelAuth"
 
-    private val _uiState = MutableStateFlow(FeedUiState(isRestoringSession = true))
+    private val _uiState = MutableStateFlow(FeedUiState(isRestoringSession = true, isLoading = true))
     val uiState: StateFlow<FeedUiState> = _uiState.asStateFlow()
 
     private val feedCacheTtlMillis = VormexPerformancePolicy.FeedCacheTtlMillis
     private val supportingDataTtlMillis = VormexPerformancePolicy.SupportingDataTtlMillis
+    private val sessionRestoreRetryDelaysMillis = longArrayOf(0L, 4_000L, 10_000L, 20_000L)
 
     private var lastFeedLoadedAt = 0L
     private var lastStoriesLoadedAt = 0L
@@ -388,16 +402,73 @@ class FeedViewModel(private val context: Context) : ViewModel() {
     private var isCurrentUserRequestInFlight = false
     private var isStreakRequestInFlight = false
     private var restoredPersistentFeedCache = false
+    private var restoredPersistentStoriesCache = false
     private val likingPostIds = mutableSetOf<String>()
     private val savingPostIds = mutableSetOf<String>()
     private val sharingPostIds = mutableSetOf<String>()
     private val submittingCommentKeys = mutableSetOf<String>()
     private val likingCommentIds = mutableSetOf<String>()
+    private val trackedManagedAdImpressionKeys = mutableSetOf<String>()
     private var shareTargetsLoaded = false
     private var cachedShareTargets: List<PostShareTarget> = emptyList()
     private var mentionSearchJob: Job? = null
 
+    private fun emptyStatePreservingAccounts(
+        isLoggedIn: Boolean = false,
+        isRestoringSession: Boolean = false,
+        isLoading: Boolean = false,
+        authScreen: AuthScreen = _uiState.value.authScreen
+    ): FeedUiState {
+        return FeedUiState(
+            isLoggedIn = isLoggedIn,
+            isRestoringSession = isRestoringSession,
+            isLoading = isLoading,
+            authScreen = authScreen,
+            savedAccounts = _uiState.value.savedAccounts
+        )
+    }
+
+    private fun resetSessionRuntimeState() {
+        lastFeedLoadedAt = 0L
+        lastStoriesLoadedAt = 0L
+        lastCurrentUserLoadedAt = 0L
+        lastStreakLoadedAt = 0L
+        isFeedRequestInFlight = false
+        pendingFeedForceRefresh = false
+        isStoriesRequestInFlight = false
+        isCurrentUserRequestInFlight = false
+        isStreakRequestInFlight = false
+        restoredPersistentFeedCache = false
+        restoredPersistentStoriesCache = false
+        shareTargetsLoaded = false
+        cachedShareTargets = emptyList()
+        likingPostIds.clear()
+        savingPostIds.clear()
+        sharingPostIds.clear()
+        submittingCommentKeys.clear()
+        likingCommentIds.clear()
+        trackedManagedAdImpressionKeys.clear()
+    }
+
+    private fun disconnectRealtimeForAccountChange() {
+        _uiState.value.selectedPostId?.let { PostSocketManager.leavePost(it) }
+        PostSocketManager.disconnect()
+        ChatSocketManager.resetSession()
+        GroupSocketManager.currentUserId = null
+        GroupSocketManager.disconnect()
+        AgentSocketManager.disconnect()
+        ArcadeSocketManager.disconnect()
+        MessageNotificationManager.clearAll(context)
+        PremiumCheckoutManager.clearUserData(context)
+    }
+
     init {
+        viewModelScope.launch(Dispatchers.IO) {
+            restoreLatestCurrentUserCache()
+            restoreInitialPersistentFeedCache()
+            restoreInitialPersistentStoriesCache()
+        }
+        refreshSavedAccounts()
         observePostRealtime()
         checkLoginStatus()
     }
@@ -521,12 +592,69 @@ class FeedViewModel(private val context: Context) : ViewModel() {
         PostSocketManager.connect(token)
     }
 
+    private suspend fun hasStoredSession(): Boolean {
+        return ApiClient.getToken(context) != null || ApiClient.getRefreshToken(context) != null
+    }
+
+    private suspend fun <T> retrySessionRestoreRequest(
+        request: suspend () -> Result<T>
+    ): Result<T> {
+        var lastFailure: Throwable? = null
+
+        sessionRestoreRetryDelaysMillis.forEachIndexed { index, delayMillis ->
+            if (delayMillis > 0L) {
+                delay(delayMillis)
+            }
+
+            val result = request()
+            if (result.isSuccess) {
+                return result
+            }
+
+            lastFailure = result.exceptionOrNull()
+            if (ApiClient.isConfirmedSessionExpired(lastFailure)) {
+                ApiClient.clearToken(context)
+                return result
+            }
+            if (!hasStoredSession()) {
+                return result
+            }
+
+            if (index < sessionRestoreRetryDelaysMillis.lastIndex) {
+                _uiState.value = _uiState.value.copy(
+                    isBackendWaking = true,
+                    isLoading = _uiState.value.posts.isEmpty(),
+                    error = null
+                )
+            }
+        }
+
+        return Result.failure(lastFailure ?: Exception("Connection issue. Please try again."))
+    }
+
     fun showLogin() {
-        _uiState.value = _uiState.value.copy(authScreen = AuthScreen.LOGIN, error = null)
+        _uiState.value = _uiState.value.copy(
+            authScreen = AuthScreen.LOGIN,
+            pendingVerificationEmail = null,
+            isEmailVerificationSuccess = false,
+            error = null
+        )
     }
 
     fun showSignUp() {
-        _uiState.value = _uiState.value.copy(authScreen = AuthScreen.SIGNUP, error = null)
+        _uiState.value = _uiState.value.copy(
+            authScreen = AuthScreen.SIGNUP,
+            pendingVerificationEmail = null,
+            isEmailVerificationSuccess = false,
+            error = null
+        )
+    }
+
+    fun refreshSavedAccounts() {
+        viewModelScope.launch {
+            val accounts = ApiClient.getSavedAccountSessions(context)
+            _uiState.value = _uiState.value.copy(savedAccounts = accounts)
+        }
     }
 
     fun setPendingReferralCode(code: String?) {
@@ -539,27 +667,81 @@ class FeedViewModel(private val context: Context) : ViewModel() {
         viewModelScope.launch {
             val token = ApiClient.getToken(context)
             val storedUserId = ApiClient.getCurrentUserId(context)
+            val refreshToken = ApiClient.getRefreshToken(context)
 
-            if (token == null) {
-                _uiState.value = FeedUiState(isLoggedIn = false, isRestoringSession = false)
+            if (token == null && refreshToken == null) {
+                _uiState.value = emptyStatePreservingAccounts(isLoggedIn = false, isRestoringSession = false)
                 return@launch
             }
 
-            restorePersistentFeedCache(storedUserId)
+            withContext(Dispatchers.IO) {
+                restoreCurrentUserCache(storedUserId)
+                restorePersistentFeedCache(storedUserId)
+                restorePersistentStoriesCache(storedUserId)
+            }
             _uiState.value = _uiState.value.copy(
-                isLoggedIn = true,
-                isRestoringSession = false,
+                isLoggedIn = false,
+                isRestoringSession = true,
+                isBackendWaking = token == null,
                 isLoading = _uiState.value.posts.isEmpty(),
                 currentUserId = storedUserId,
                 error = null
             )
-            ensurePostRealtimeConnected()
 
-            ApiClient.getCurrentUser(context)
+            if (token == null) {
+                val refreshResult = retrySessionRestoreRequest {
+                    ApiClient.refreshSession(context)
+                }
+
+                if (refreshResult.isFailure) {
+                    if (!hasStoredSession()) {
+                        _uiState.value = emptyStatePreservingAccounts(isLoggedIn = false, isRestoringSession = false)
+                    } else {
+                        _uiState.value = _uiState.value.copy(
+                            isLoggedIn = false,
+                            isRestoringSession = false,
+                            isBackendWaking = false,
+                            isLoading = false,
+                            currentUserId = _uiState.value.currentUserId ?: storedUserId,
+                            error = if (_uiState.value.posts.isEmpty()) {
+                                refreshResult.exceptionOrNull()?.message ?: "Connection issue. Please try again."
+                            } else {
+                                null
+                            }
+                        )
+                    }
+                    return@launch
+                }
+
+                refreshResult.getOrNull()?.user?.let { user ->
+                    cachePersistentCurrentUser(user)
+                    _uiState.value = _uiState.value.copy(
+                        isLoggedIn = false,
+                        isRestoringSession = true,
+                        isBackendWaking = false,
+                        currentUser = user,
+                        currentUserId = user.id,
+                        onboardingCompleted = user.onboardingCompleted,
+                        showOnboarding = !user.onboardingCompleted
+                    )
+                    restorePersistentFeedCache(user.id)
+                }
+                PushTokenRegistrar.syncCurrentToken(context)
+            }
+
+            retrySessionRestoreRequest {
+                ApiClient.getCurrentUser(context)
+            }
                 .onSuccess { user ->
+                    cachePersistentCurrentUser(user)
+                    ApiClient.saveActiveAccountSnapshot(context, user)
+                    refreshSavedAccounts()
+                    PushTokenRegistrar.syncCurrentToken(context)
+                    ensurePostRealtimeConnected()
                     _uiState.value = _uiState.value.copy(
                         isLoggedIn = true,
                         isRestoringSession = false,
+                        isBackendWaking = false,
                         currentUser = user,
                         currentUserId = user.id,
                         onboardingCompleted = user.onboardingCompleted,
@@ -574,17 +756,21 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                     loadStreakData()
                 }
                 .onFailure {
-                    if (ApiClient.getToken(context) != null) {
+                    if (hasStoredSession()) {
                         _uiState.value = _uiState.value.copy(
-                            isLoggedIn = true,
+                            isLoggedIn = false,
                             isRestoringSession = false,
+                            isBackendWaking = false,
                             isLoading = false,
                             currentUserId = _uiState.value.currentUserId ?: storedUserId,
-                            error = null
+                            error = if (_uiState.value.posts.isEmpty()) {
+                                it.message ?: "Connection issue. Please try again."
+                            } else {
+                                null
+                            }
                         )
-                        loadFeed()
                     } else {
-                        _uiState.value = FeedUiState(isLoggedIn = false, isRestoringSession = false)
+                        _uiState.value = emptyStatePreservingAccounts(isLoggedIn = false, isRestoringSession = false)
                     }
                 }
         }
@@ -700,7 +886,7 @@ class FeedViewModel(private val context: Context) : ViewModel() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
 
-            ApiClient.login(email, password)
+            ApiClient.login(context, email, password)
                 .onSuccess { response ->
                     val token = response.token
                     if (token.isNullOrBlank()) {
@@ -710,7 +896,9 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                         )
                         return@onSuccess
                     }
-                    ApiClient.saveToken(context, token, response.user.id, response.refreshToken)
+                    ApiClient.saveAuthenticatedSession(context, token, response.user, response.refreshToken)
+                    refreshSavedAccounts()
+                    cachePersistentCurrentUser(response.user)
                     PushTokenRegistrar.syncCurrentToken(context)
                     ensurePostRealtimeConnected()
                     _uiState.value = _uiState.value.copy(
@@ -727,9 +915,13 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                     loadStreakData(forceRefresh = true)
                 }
                 .onFailure { e ->
+                    val message = e.message ?: "Login failed"
+                    val needsVerification = message.contains("verify", ignoreCase = true)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = e.message ?: "Login failed"
+                        pendingVerificationEmail = if (needsVerification) email.trim() else _uiState.value.pendingVerificationEmail,
+                        isEmailVerificationSuccess = false,
+                        error = if (needsVerification) null else message
                     )
                 }
         }
@@ -739,18 +931,23 @@ class FeedViewModel(private val context: Context) : ViewModel() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
 
-            ApiClient.register(email, password, name, username)
+            ApiClient.register(context, email, password, name, username)
                 .onSuccess { response ->
                     val token = response.token
                     if (token.isNullOrBlank()) {
+                        val needsVerification = response.requiresVerification
                         _uiState.value = _uiState.value.copy(
                             isLoading = false,
-                            authScreen = AuthScreen.LOGIN,
-                            error = response.authTokenMissingMessage("Registration successful. Please verify your email before signing in.")
+                            authScreen = if (needsVerification) AuthScreen.SIGNUP else AuthScreen.LOGIN,
+                            pendingVerificationEmail = if (needsVerification) email.trim() else null,
+                            isEmailVerificationSuccess = false,
+                            error = if (needsVerification) null else response.authTokenMissingMessage("Registration successful. Please verify your email before signing in.")
                         )
                         return@onSuccess
                     }
-                    ApiClient.saveToken(context, token, response.user.id, response.refreshToken)
+                    ApiClient.saveAuthenticatedSession(context, token, response.user, response.refreshToken)
+                    refreshSavedAccounts()
+                    cachePersistentCurrentUser(response.user)
                     applyPendingReferralCodeIfNeeded(shouldApply = true)
                     PushTokenRegistrar.syncCurrentToken(context)
                     ensurePostRealtimeConnected()
@@ -776,6 +973,88 @@ class FeedViewModel(private val context: Context) : ViewModel() {
         }
     }
 
+    fun verifyEmailOtp(code: String) {
+        val email = _uiState.value.pendingVerificationEmail?.takeIf { it.isNotBlank() }
+        if (email == null) {
+            _uiState.value = _uiState.value.copy(
+                authScreen = AuthScreen.LOGIN,
+                error = "Start sign in again to verify your email."
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            ApiClient.verifyEmailOtp(context, email, code)
+                .onSuccess { response ->
+                    val token = response.token
+                    if (token.isNullOrBlank()) {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            error = response.authTokenMissingMessage("Email verified, but sign-in could not start.")
+                        )
+                        return@onSuccess
+                    }
+                    ApiClient.saveAuthenticatedSession(context, token, response.user, response.refreshToken)
+                    refreshSavedAccounts()
+                    cachePersistentCurrentUser(response.user)
+                    applyPendingReferralCodeIfNeeded(shouldApply = true)
+                    PushTokenRegistrar.syncCurrentToken(context)
+                    ensurePostRealtimeConnected()
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        isLoggedIn = true,
+                        currentUser = response.user,
+                        currentUserId = response.user.id,
+                        showOnboarding = !response.user.onboardingCompleted,
+                        onboardingCompleted = response.user.onboardingCompleted,
+                        pendingVerificationEmail = email,
+                        isEmailVerificationSuccess = true,
+                        error = null
+                    )
+                    loadCurrentUser(forceRefresh = true)
+                    loadFeed(forceRefresh = true)
+                    loadStories(forceRefresh = true)
+                    loadStreakData(forceRefresh = true)
+                }
+                .onFailure { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = e.message ?: "Could not verify code"
+                    )
+                }
+        }
+    }
+
+    fun resendVerificationCode() {
+        val email = _uiState.value.pendingVerificationEmail?.takeIf { it.isNotBlank() } ?: return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            ApiClient.resendVerificationCode(email)
+                .onSuccess { response ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = null
+                    )
+                }
+                .onFailure { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = e.message ?: "Could not resend verification code"
+                    )
+                }
+        }
+    }
+
+    fun completeEmailVerificationAnimation() {
+        _uiState.value = _uiState.value.copy(
+            authScreen = AuthScreen.LOGIN,
+            pendingVerificationEmail = null,
+            isEmailVerificationSuccess = false,
+            error = null
+        )
+    }
+
     fun googleSignIn(activity: Activity) {
         viewModelScope.launch {
             Log.d(authLogTag, "Google sign-in started.")
@@ -786,7 +1065,7 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                 is GoogleAuthHelper.GoogleSignInResult.Success -> {
                     Log.d(authLogTag, "Google credential received; sending ID token to backend.")
                     // Send ID token to backend
-                    ApiClient.googleSignIn(result.idToken)
+                    ApiClient.googleSignIn(context, result.idToken)
                         .onSuccess { response ->
                             Log.d(authLogTag, "Backend Google sign-in response received.")
                             val token = response.token
@@ -798,7 +1077,9 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                                 )
                                 return@onSuccess
                             }
-                            ApiClient.saveToken(context, token, response.user.id, response.refreshToken)
+                            ApiClient.saveAuthenticatedSession(context, token, response.user, response.refreshToken)
+                            refreshSavedAccounts()
+                            cachePersistentCurrentUser(response.user)
                             applyPendingReferralCodeIfNeeded(shouldApply = shouldApplyReferral)
                             PushTokenRegistrar.syncCurrentToken(context)
                             ensurePostRealtimeConnected()
@@ -832,7 +1113,10 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                 }
                 GoogleAuthHelper.GoogleSignInResult.Cancelled -> {
                     Log.d(authLogTag, "Google sign-in cancelled.")
-                    _uiState.value = _uiState.value.copy(isGoogleLoading = false)
+                    _uiState.value = _uiState.value.copy(
+                        isGoogleLoading = false,
+                        error = null
+                    )
                 }
             }
         }
@@ -846,19 +1130,85 @@ class FeedViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(pendingReferralCode = null)
     }
 
+    fun switchToSavedAccount(userId: String) {
+        viewModelScope.launch {
+            val targetUserId = userId.takeIf { it.isNotBlank() } ?: return@launch
+            if (targetUserId == _uiState.value.currentUserId && _uiState.value.isLoggedIn) {
+                return@launch
+            }
+
+            _uiState.value.currentUser?.let { currentUser ->
+                ApiClient.saveActiveAccountSnapshot(context, currentUser)
+            }
+            disconnectRealtimeForAccountChange()
+            resetSessionRuntimeState()
+            _uiState.value = emptyStatePreservingAccounts(
+                isRestoringSession = true,
+                isLoading = true
+            ).copy(isSwitchingAccount = true)
+
+            ApiClient.switchToSavedAccount(context, targetUserId)
+                .onSuccess {
+                    val accounts = ApiClient.getSavedAccountSessions(context)
+                    _uiState.value = FeedUiState(
+                        isRestoringSession = true,
+                        isLoading = true,
+                        savedAccounts = accounts
+                    )
+                    checkLoginStatus()
+                }
+                .onFailure { error ->
+                    val accounts = ApiClient.getSavedAccountSessions(context)
+                    _uiState.value = emptyStatePreservingAccounts(
+                        isLoggedIn = false,
+                        isRestoringSession = false,
+                        isLoading = false
+                    ).copy(
+                        savedAccounts = accounts,
+                        error = error.message ?: "Could not switch account."
+                    )
+                }
+        }
+    }
+
+    fun addExistingAccount() {
+        startAccountAddFlow(AuthScreen.LOGIN)
+    }
+
+    fun addNewAccount() {
+        startAccountAddFlow(AuthScreen.SIGNUP)
+    }
+
+    private fun startAccountAddFlow(authScreen: AuthScreen) {
+        viewModelScope.launch {
+            _uiState.value.currentUser?.let { currentUser ->
+                ApiClient.saveActiveAccountSnapshot(context, currentUser)
+            }
+            disconnectRealtimeForAccountChange()
+            resetSessionRuntimeState()
+            ReelsFeedCacheStore.clear(context)
+            ApiClient.clearToken(context)
+            val accounts = ApiClient.getSavedAccountSessions(context)
+            _uiState.value = FeedUiState(
+                isLoggedIn = false,
+                isRestoringSession = false,
+                isLoading = false,
+                authScreen = authScreen,
+                savedAccounts = accounts
+            )
+        }
+    }
+
     fun logout() {
         viewModelScope.launch {
-            _uiState.value.selectedPostId?.let { PostSocketManager.leavePost(it) }
-            PostSocketManager.disconnect()
-            ChatSocketManager.resetSession()
-            GroupSocketManager.currentUserId = null
-            GroupSocketManager.disconnect()
-            AgentSocketManager.disconnect()
-            ArcadeSocketManager.disconnect()
-            MessageNotificationManager.clearAll(context)
-            HomeFeedCache.clearAll(context)
+            val currentUserId = _uiState.value.currentUserId ?: ApiClient.getCurrentUserId(context)
+            disconnectRealtimeForAccountChange()
+            resetSessionRuntimeState()
+            ReelsFeedCacheStore.clear(context)
             ApiClient.logout(context)
-            _uiState.value = FeedUiState()
+            currentUserId?.let { ApiClient.removeSavedAccount(context, it) }
+            val accounts = ApiClient.getSavedAccountSessions(context)
+            _uiState.value = FeedUiState(savedAccounts = accounts)
         }
     }
 
@@ -872,6 +1222,9 @@ class FeedViewModel(private val context: Context) : ViewModel() {
             isCurrentUserRequestInFlight = true
             ApiClient.getCurrentUser(context)
                 .onSuccess { user ->
+                    cachePersistentCurrentUser(user)
+                    ApiClient.saveActiveAccountSnapshot(context, user)
+                    refreshSavedAccounts()
                     lastCurrentUserLoadedAt = System.currentTimeMillis()
                     _uiState.value = _uiState.value.copy(
                         currentUser = user,
@@ -922,18 +1275,119 @@ class FeedViewModel(private val context: Context) : ViewModel() {
 
     private fun restorePersistentFeedCache(userId: String?) {
         if (restoredPersistentFeedCache || _uiState.value.posts.isNotEmpty()) return
-        restoredPersistentFeedCache = true
 
         val cachedFeed = HomeFeedCache.read(context, userId) ?: return
+        applyPersistentFeedCache(userId, cachedFeed)
+    }
+
+    private fun restoreInitialPersistentFeedCache() {
+        val userId = _uiState.value.currentUserId
+        if (userId != null) {
+            restorePersistentFeedCache(userId)
+        } else {
+            restoreLatestPersistentFeedCache()
+        }
+    }
+
+    private fun restoreLatestPersistentFeedCache() {
+        if (restoredPersistentFeedCache || _uiState.value.posts.isNotEmpty()) return
+
+        val snapshot = HomeFeedCache.readLatest(context) ?: return
+        applyPersistentFeedCache(snapshot.userId, snapshot.cachedFeed)
+    }
+
+    private fun applyPersistentFeedCache(userId: String?, cachedFeed: CachedHomeFeed) {
+        restoredPersistentFeedCache = true
         val cachedPosts = prepareFeedPosts(cachedFeed.response.posts)
         lastFeedLoadedAt =
             if (isFresh(cachedFeed.cachedAtMillis, feedCacheTtlMillis)) cachedFeed.cachedAtMillis else 0L
         _uiState.value = _uiState.value.copy(
             posts = cachedPosts.toImmutableList(),
+            feedAdPlacements = cachedFeed.response.adPlacements,
             nextCursor = cachedFeed.response.nextCursor,
             hasMore = cachedFeed.response.hasMore,
+            currentUserId = _uiState.value.currentUserId ?: userId,
             isLoading = false,
             error = null
+        )
+    }
+
+    private fun restoreCurrentUserCache(userId: String?) {
+        val currentUser = _uiState.value.currentUser
+        if (currentUser != null && (userId == null || currentUser.id == userId)) return
+
+        val cachedUser = CurrentUserCache.read(context, userId) ?: return
+        applyCurrentUserCache(cachedUser)
+    }
+
+    private fun restoreLatestCurrentUserCache() {
+        if (_uiState.value.currentUser != null) return
+
+        val cachedUser = CurrentUserCache.readLatest(context) ?: return
+        applyCurrentUserCache(cachedUser)
+    }
+
+    private fun applyCurrentUserCache(cachedUser: CachedCurrentUser) {
+        val user = cachedUser.user
+        lastCurrentUserLoadedAt =
+            if (isFresh(cachedUser.cachedAtMillis, supportingDataTtlMillis)) cachedUser.cachedAtMillis else 0L
+        _uiState.value = _uiState.value.copy(
+            currentUser = user,
+            currentUserId = user.id,
+            onboardingCompleted = user.onboardingCompleted,
+            showOnboarding = !user.onboardingCompleted
+        )
+    }
+
+    private fun cachePersistentCurrentUser(user: User) {
+        CurrentUserCache.write(context, user)
+    }
+
+    private fun restorePersistentStoriesCache(userId: String?) {
+        if (restoredPersistentStoriesCache || _uiState.value.storyGroups.isNotEmpty()) return
+
+        val cachedStories = HomeStoriesCache.read(context, userId) ?: return
+        applyPersistentStoriesCache(userId, cachedStories)
+    }
+
+    private fun restoreInitialPersistentStoriesCache() {
+        val userId = _uiState.value.currentUserId
+        if (userId != null) {
+            restorePersistentStoriesCache(userId)
+        } else {
+            restoreLatestPersistentStoriesCache()
+        }
+    }
+
+    private fun restoreLatestPersistentStoriesCache() {
+        if (restoredPersistentStoriesCache || _uiState.value.storyGroups.isNotEmpty()) return
+
+        val snapshot = HomeStoriesCache.readLatest(context) ?: return
+        applyPersistentStoriesCache(snapshot.userId, snapshot.cachedStories)
+    }
+
+    private fun applyPersistentStoriesCache(userId: String?, cachedStories: CachedHomeStories) {
+        restoredPersistentStoriesCache = true
+        lastStoriesLoadedAt =
+            if (
+                cachedStories.response.storyGroups.isNotEmpty() &&
+                isFresh(cachedStories.cachedAtMillis, supportingDataTtlMillis)
+            ) {
+                cachedStories.cachedAtMillis
+            } else {
+                0L
+            }
+        _uiState.value = _uiState.value.copy(
+            storyGroups = cachedStories.response.storyGroups,
+            currentUserId = _uiState.value.currentUserId ?: userId
+        )
+    }
+
+    private fun cachePersistentStories(storyGroups: List<StoryGroup>) {
+        HomeStoriesCache.write(
+            context = context,
+            userId = _uiState.value.currentUserId,
+            response = StoriesFeedResponse(storyGroups = storyGroups)
         )
     }
 
@@ -982,6 +1436,7 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                     cachePersistentFeed(response)
                     _uiState.value = _uiState.value.copy(
                         posts = recommendedPosts.toImmutableList(),
+                        feedAdPlacements = response.adPlacements,
                         nextCursor = response.nextCursor,
                         hasMore = response.hasMore,
                         isLoading = false,
@@ -1009,6 +1464,9 @@ class FeedViewModel(private val context: Context) : ViewModel() {
     }
 
     fun loadStories(forceRefresh: Boolean = false) {
+        if (!forceRefresh) {
+            restorePersistentStoriesCache(_uiState.value.currentUserId)
+        }
         if (!forceRefresh && isFresh(lastStoriesLoadedAt, supportingDataTtlMillis)) {
             return
         }
@@ -1019,6 +1477,11 @@ class FeedViewModel(private val context: Context) : ViewModel() {
             ApiClient.getStories(context, limit = HomeStoryFeedLimit)
                 .onSuccess { response ->
                     lastStoriesLoadedAt = System.currentTimeMillis()
+                    HomeStoriesCache.write(
+                        context = context,
+                        userId = _uiState.value.currentUserId,
+                        response = response
+                    )
                     _uiState.value = _uiState.value.copy(
                         storyGroups = response.storyGroups
                     )
@@ -1067,15 +1530,17 @@ class FeedViewModel(private val context: Context) : ViewModel() {
             )
                 .onSuccess { response ->
                     val currentState = _uiState.value
+                    val updatedStoryGroups = prependCreatedStory(
+                        story = response.story,
+                        currentStoryGroups = currentState.storyGroups,
+                        currentUser = currentState.currentUser
+                    )
                     _uiState.value = _uiState.value.copy(
                         myStories = listOf(response.story) + currentState.myStories.filterNot { it.id == response.story.id },
-                        storyGroups = prependCreatedStory(
-                            story = response.story,
-                            currentStoryGroups = currentState.storyGroups,
-                            currentUser = currentState.currentUser
-                        ),
+                        storyGroups = updatedStoryGroups,
                         isCreatingStory = false
                     )
+                    cachePersistentStories(updatedStoryGroups)
                     loadStories(forceRefresh = true) // Refresh all stories
                     onSuccess?.invoke()
                 }
@@ -1107,6 +1572,7 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                         )
                     }
                     _uiState.value = _uiState.value.copy(storyGroups = updatedGroups)
+                    cachePersistentStories(updatedGroups)
                 }
         }
     }
@@ -1128,6 +1594,7 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                         )
                     }
                     _uiState.value = _uiState.value.copy(storyGroups = updatedGroups)
+                    cachePersistentStories(updatedGroups)
                 }
         }
     }
@@ -1185,10 +1652,23 @@ class FeedViewModel(private val context: Context) : ViewModel() {
         viewModelScope.launch {
             ApiClient.deleteStory(context, storyId)
                 .onSuccess {
+                    val updatedGroups = _uiState.value.storyGroups.mapNotNull { group ->
+                        val updatedStories = group.stories.filterNot { it.id == storyId }
+                        if (updatedStories.isEmpty()) {
+                            null
+                        } else {
+                            group.copy(
+                                stories = updatedStories,
+                                hasUnviewed = !group.isOwnStory && updatedStories.any { !it.isViewed }
+                            )
+                        }
+                    }
                     // Remove from my stories
                     _uiState.value = _uiState.value.copy(
-                        myStories = _uiState.value.myStories.filter { it.id != storyId }
+                        myStories = _uiState.value.myStories.filter { it.id != storyId },
+                        storyGroups = updatedGroups
                     )
+                    cachePersistentStories(updatedGroups)
                     loadStories(forceRefresh = true) // Refresh all stories
                 }
         }
@@ -1786,13 +2266,16 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                 context = context,
                 cursor = cursor,
                 limit = HomeFeedPageSize,
-                mode = "recommended"
+                mode = "recommended",
+                adItemOffset = currentState.posts.size
             )
                 .onSuccess { response ->
                     // Keep backend-ranked order while applying client-side sanitizing/deduping.
                     val recommendedNewPosts = prepareFeedPosts(response.posts)
                     _uiState.value = _uiState.value.copy(
                         posts = appendUniquePosts(_uiState.value.posts, recommendedNewPosts),
+                        feedAdPlacements = (_uiState.value.feedAdPlacements + response.adPlacements)
+                            .distinctBy { it.slotKey },
                         nextCursor = response.nextCursor,
                         hasMore = response.hasMore,
                         isLoadingMore = false
@@ -1801,6 +2284,31 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                 .onFailure {
                     _uiState.value = _uiState.value.copy(isLoadingMore = false)
                 }
+        }
+    }
+
+    fun trackManagedAdImpression(ad: ManagedAdPlacement) {
+        val key = "${ad.campaignId}:${ad.slotKey}"
+        if (!trackedManagedAdImpressionKeys.add(key)) return
+
+        viewModelScope.launch {
+            ApiClient.trackManagedAdImpression(
+                context = context,
+                campaignId = ad.campaignId,
+                placement = ad.placement,
+                slotKey = ad.slotKey
+            )
+        }
+    }
+
+    fun trackManagedAdClick(ad: ManagedAdPlacement) {
+        viewModelScope.launch {
+            ApiClient.trackManagedAdClick(
+                context = context,
+                campaignId = ad.campaignId,
+                placement = ad.placement,
+                slotKey = ad.slotKey
+            )
         }
     }
 

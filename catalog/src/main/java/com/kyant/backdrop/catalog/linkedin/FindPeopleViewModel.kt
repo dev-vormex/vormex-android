@@ -24,7 +24,11 @@ import com.kyant.backdrop.catalog.network.models.PeopleYouKnowImportContact
 import com.kyant.backdrop.catalog.network.models.PeopleYouKnowInvite
 import com.kyant.backdrop.catalog.network.models.PeopleYouKnowResponse
 import com.kyant.backdrop.catalog.network.models.ProfileUpdateRequest
+import com.kyant.backdrop.catalog.network.models.RecentViewedProfileItem
+import com.kyant.backdrop.catalog.network.models.SavedDiscoverySearch
 import com.kyant.backdrop.catalog.network.models.SmartMatch
+import com.kyant.backdrop.catalog.network.models.SuggestionQuota
+import com.kyant.backdrop.catalog.network.models.UpdateSavedDiscoverySearchRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -54,6 +58,11 @@ enum class SmartMatchFilter {
 enum class AllPeopleDisplayMode(val columns: Int) {
     TWO_PER_ROW(2),
     ONE_PER_ROW(1)
+}
+
+enum class DiscoveryScope {
+    LOCAL,
+    GLOBAL
 }
 
 data class FindPeopleUiState(
@@ -94,12 +103,35 @@ data class FindPeopleUiState(
     val selectedCollege: String? = null,
     val selectedBranch: String? = null,
     val selectedGraduationYear: Int? = null,
+    val selectedSkillLevel: String? = null,
+    val selectedIntent: String? = null,
+    val selectedAvailability: String? = null,
+    val verifiedOnly: Boolean = false,
+    val discoveryRadiusKm: Int? = null,
+    val discoveryScope: DiscoveryScope = DiscoveryScope.LOCAL,
+    val isDiscoveryPremiumUnlocked: Boolean = false,
     val isFilterExpanded: Boolean = false,
     
     // For You
     val suggestions: List<PersonInfo> = emptyList(),
     val isLoadingSuggestions: Boolean = false,
     val suggestionsError: String? = null,
+    val suggestionQuota: SuggestionQuota? = null,
+    val canRewindSuggestionPass: Boolean = false,
+    val suggestionPassInProgress: Set<String> = emptySet(),
+    val isRewindingSuggestionPass: Boolean = false,
+
+    // Saved discovery searches
+    val savedDiscoverySearches: List<SavedDiscoverySearch> = emptyList(),
+    val isLoadingSavedDiscoverySearches: Boolean = false,
+    val isSavingDiscoverySearch: Boolean = false,
+    val savedDiscoverySearchError: String? = null,
+    val savedDiscoverySearchMessage: String? = null,
+
+    // Recently viewed profiles
+    val recentlyViewedProfiles: List<RecentViewedProfileItem> = emptyList(),
+    val isLoadingRecentlyViewedProfiles: Boolean = false,
+    val recentlyViewedProfilesError: String? = null,
     
     // Same Campus
     val sameCampusPeople: List<PersonInfo> = emptyList(),
@@ -161,6 +193,29 @@ data class FindPeopleUiState(
     val showTrendingBanner: Boolean = false
 )
 
+private fun FindPeopleUiState.hasPremiumDiscoveryFilters(): Boolean {
+    return selectedSkillLevel != null ||
+        selectedIntent != null ||
+        selectedAvailability != null ||
+        verifiedOnly ||
+        discoveryRadiusKm != null ||
+        discoveryScope == DiscoveryScope.GLOBAL
+}
+
+private fun FindPeopleUiState.withPremiumDiscoveryLocked(): FindPeopleUiState {
+    return copy(
+        selectedSkillLevel = null,
+        selectedIntent = null,
+        selectedAvailability = null,
+        verifiedOnly = false,
+        discoveryRadiusKm = null,
+        discoveryScope = DiscoveryScope.LOCAL,
+        isDiscoveryPremiumUnlocked = false,
+        canRewindSuggestionPass = false,
+        savedDiscoverySearches = emptyList()
+    )
+}
+
 data class PeopleYouKnowStatsUi(
     val totalContacts: Int = 0,
     val matchedCount: Int = 0,
@@ -198,6 +253,9 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
     private var peopleYouKnowLoadedAt = 0L
     private var pendingConnectionRequestsLoadedAt = 0L
     private var rankingProfileLoadedAt = 0L
+    private var discoveryPremiumLoadedAt = 0L
+    private var savedDiscoverySearchesLoadedAt = 0L
+    private var recentlyViewedProfilesLoadedAt = 0L
 
     private var isFilterOptionsRequestInFlight = false
     private var isStreakRequestInFlight = false
@@ -209,6 +267,9 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
     private var isPeopleYouKnowRequestInFlight = false
     private var isPendingConnectionRequestsRequestInFlight = false
     private var isRankingProfileRequestInFlight = false
+    private var isDiscoveryPremiumRequestInFlight = false
+    private var isSavedDiscoverySearchesRequestInFlight = false
+    private var isRecentlyViewedProfilesRequestInFlight = false
 
     private val smartMatchesCache = mutableMapOf<SmartMatchFilter, List<SmartMatch>>()
     private val smartMatchesLoadedAt = mutableMapOf<SmartMatchFilter, Long>()
@@ -240,10 +301,15 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
     }
 
     fun ensureFindSurfaceLoaded(forceRefresh: Boolean = false) {
+        loadDiscoveryPremiumState(forceRefresh = forceRefresh)
         ensureTabDataLoaded(_uiState.value.selectedTab, forceRefresh = forceRefresh)
         loadRankingProfile(forceRefresh = forceRefresh)
         loadStreakData(forceRefresh = forceRefresh)
         loadPendingConnectionRequests(forceRefresh = forceRefresh)
+    }
+
+    fun refreshDiscoveryPremiumState() {
+        loadDiscoveryPremiumState(forceRefresh = true)
     }
 
     fun ensureTabDataLoaded(tab: FindPeopleTab, forceRefresh: Boolean = false) {
@@ -516,6 +582,39 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(showTrendingBanner = false)
     }
 
+    private fun loadDiscoveryPremiumState(forceRefresh: Boolean = false) {
+        if (!forceRefresh && isFresh(discoveryPremiumLoadedAt)) return
+        if (isDiscoveryPremiumRequestInFlight) return
+
+        viewModelScope.launch {
+            isDiscoveryPremiumRequestInFlight = true
+            ApiClient.getPremiumSubscription(context)
+                .onSuccess { subscription ->
+                    discoveryPremiumLoadedAt = System.currentTimeMillis()
+                    if (subscription.isPremium) {
+                        _uiState.value = _uiState.value.copy(
+                            isDiscoveryPremiumUnlocked = true
+                        )
+                        loadSavedDiscoverySearches(forceRefresh = forceRefresh)
+                    } else {
+                        val hadPremiumFilters = _uiState.value.hasPremiumDiscoveryFilters()
+                        _uiState.value = _uiState.value.withPremiumDiscoveryLocked()
+                        savedDiscoverySearchesLoadedAt = 0L
+                        if (hadPremiumFilters) {
+                            loadAllPeople(resetPage = true, forceRefresh = true)
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    discoveryPremiumLoadedAt = System.currentTimeMillis()
+                    _uiState.value = _uiState.value.copy(
+                        savedDiscoverySearchError = error.message ?: "Could not load Premium state"
+                    )
+                }
+            isDiscoveryPremiumRequestInFlight = false
+        }
+    }
+
     fun loadPendingConnectionRequests(forceRefresh: Boolean = false) {
         if (!forceRefresh && isFresh(pendingConnectionRequestsLoadedAt)) {
             return
@@ -609,6 +708,8 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
             suggestionsError = null,
             sameCampusError = null,
             nearbyError = null,
+            savedDiscoverySearchError = null,
+            recentlyViewedProfilesError = null,
             isStreakAtRisk = false // Hide footer badge too
         )
     }
@@ -620,7 +721,10 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
             allPeopleError = null,
             suggestionsError = null,
             sameCampusError = null,
-            nearbyError = null
+            nearbyError = null,
+            savedDiscoverySearchError = null,
+            recentlyViewedProfilesError = null,
+            savedDiscoverySearchMessage = null
         )
     }
     
@@ -843,9 +947,9 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
 
     // ==================== Smart Matches ====================
     
-    fun setSmartMatchFilter(filter: SmartMatchFilter) {
+    fun setSmartMatchFilter(filter: SmartMatchFilter, forceRefresh: Boolean = false) {
         _uiState.value = _uiState.value.copy(smartMatchFilter = filter)
-        loadSmartMatches()
+        loadSmartMatches(forceRefresh = forceRefresh)
     }
     
     fun loadSmartMatches(forceRefresh: Boolean = false) {
@@ -947,6 +1051,51 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
         loadAllPeople(resetPage = true, forceRefresh = true)
     }
 
+    private fun requireDiscoveryPremium(): Boolean {
+        if (_uiState.value.isDiscoveryPremiumUnlocked) return true
+        _uiState.value = _uiState.value.copy(
+            savedDiscoverySearchMessage = "Premium required for advanced discovery. Turn on Premium to use this."
+        )
+        return false
+    }
+
+    fun setSkillLevelFilter(skillLevel: String?) {
+        if (!requireDiscoveryPremium()) return
+        _uiState.value = _uiState.value.copy(selectedSkillLevel = skillLevel)
+        loadAllPeople(resetPage = true, forceRefresh = true)
+    }
+
+    fun setIntentFilter(intent: String?) {
+        if (!requireDiscoveryPremium()) return
+        _uiState.value = _uiState.value.copy(selectedIntent = intent)
+        loadAllPeople(resetPage = true, forceRefresh = true)
+    }
+
+    fun setAvailabilityFilter(availability: String?) {
+        if (!requireDiscoveryPremium()) return
+        _uiState.value = _uiState.value.copy(selectedAvailability = availability)
+        loadAllPeople(resetPage = true, forceRefresh = true)
+    }
+
+    fun setVerifiedOnlyFilter(enabled: Boolean) {
+        if (!requireDiscoveryPremium()) return
+        _uiState.value = _uiState.value.copy(verifiedOnly = enabled)
+        loadAllPeople(resetPage = true, forceRefresh = true)
+    }
+
+    fun setDiscoveryRadius(radiusKm: Int?) {
+        if (!requireDiscoveryPremium()) return
+        _uiState.value = _uiState.value.copy(discoveryRadiusKm = radiusKm)
+        loadAllPeople(resetPage = true, forceRefresh = true)
+    }
+
+    fun setDiscoveryScope(scope: DiscoveryScope) {
+        if (scope == DiscoveryScope.GLOBAL && !requireDiscoveryPremium()) return
+        if (_uiState.value.discoveryScope == scope) return
+        _uiState.value = _uiState.value.copy(discoveryScope = scope)
+        loadAllPeople(resetPage = true, forceRefresh = true)
+    }
+
     fun setAllPeopleDisplayMode(mode: AllPeopleDisplayMode) {
         if (_uiState.value.allPeopleDisplayMode == mode) return
         _uiState.value = _uiState.value.copy(allPeopleDisplayMode = mode)
@@ -956,7 +1105,13 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(
             selectedCollege = null,
             selectedBranch = null,
-            selectedGraduationYear = null
+            selectedGraduationYear = null,
+            selectedSkillLevel = null,
+            selectedIntent = null,
+            selectedAvailability = null,
+            verifiedOnly = false,
+            discoveryRadiusKm = null,
+            discoveryScope = DiscoveryScope.LOCAL
         )
         loadAllPeople(resetPage = true, forceRefresh = true)
     }
@@ -1043,7 +1198,13 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
                 search != null -> 30
                 currentState.selectedCollege != null ||
                     currentState.selectedBranch != null ||
-                    currentState.selectedGraduationYear != null -> 32
+                    currentState.selectedGraduationYear != null ||
+                    currentState.selectedSkillLevel != null ||
+                    currentState.selectedIntent != null ||
+                    currentState.selectedAvailability != null ||
+                    currentState.verifiedOnly ||
+                    currentState.discoveryRadiusKm != null ||
+                    currentState.discoveryScope == DiscoveryScope.GLOBAL -> 32
                 else -> 40
             }
             ApiClient.getPeople(
@@ -1052,6 +1213,26 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
                 college = currentState.selectedCollege,
                 branch = currentState.selectedBranch,
                 graduationYear = currentState.selectedGraduationYear,
+                skillLevel = currentState.selectedSkillLevel.takeIf { currentState.isDiscoveryPremiumUnlocked },
+                intent = currentState.selectedIntent.takeIf { currentState.isDiscoveryPremiumUnlocked },
+                availability = currentState.selectedAvailability.takeIf { currentState.isDiscoveryPremiumUnlocked },
+                verifiedOnly = currentState.isDiscoveryPremiumUnlocked && currentState.verifiedOnly,
+                radiusKm = currentState.discoveryRadiusKm.takeIf {
+                    currentState.isDiscoveryPremiumUnlocked &&
+                        currentState.currentLat != null &&
+                        currentState.currentLng != null
+                },
+                lat = currentState.currentLat.takeIf {
+                    currentState.isDiscoveryPremiumUnlocked && currentState.discoveryRadiusKm != null
+                },
+                lng = currentState.currentLng.takeIf {
+                    currentState.isDiscoveryPremiumUnlocked && currentState.discoveryRadiusKm != null
+                },
+                scope = if (currentState.isDiscoveryPremiumUnlocked) {
+                    currentState.discoveryScope.name.lowercase(Locale.getDefault())
+                } else {
+                    null
+                },
                 page = page,
                 limit = limit,
                 cursor = cursor,
@@ -1179,10 +1360,22 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
             ApiClient.getPeopleSuggestions(context)
                 .onSuccess { response ->
                     suggestionsLoadedAt = System.currentTimeMillis()
-                    _uiState.value = _uiState.value.copy(
+                    val isPremium = response.quota?.isPremium ?: _uiState.value.isDiscoveryPremiumUnlocked
+                    val nextState = _uiState.value.copy(
                         suggestions = rankPeople(response.suggestions),
-                        isLoadingSuggestions = false
+                        isLoadingSuggestions = false,
+                        suggestionQuota = response.quota,
+                        canRewindSuggestionPass = response.canRewind,
+                        isDiscoveryPremiumUnlocked = isPremium
                     )
+                    _uiState.value = if (isPremium) {
+                        nextState
+                    } else {
+                        nextState.withPremiumDiscoveryLocked()
+                    }
+                    if (isPremium) {
+                        loadSavedDiscoverySearches()
+                    }
                 }
                 .onFailure { e ->
                     _uiState.value = _uiState.value.copy(
@@ -1194,7 +1387,210 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
             isSuggestionsRequestInFlight = false
         }
     }
-    
+
+    fun passSuggestion(userId: String) {
+        if (_uiState.value.suggestionPassInProgress.contains(userId)) return
+        val passedPerson = _uiState.value.suggestions.find { it.id == userId }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                suggestionPassInProgress = _uiState.value.suggestionPassInProgress + userId,
+                suggestions = _uiState.value.suggestions.filterNot { it.id == userId }
+            )
+
+            ApiClient.passDiscoverySuggestion(context, userId)
+                .onSuccess { response ->
+                    _uiState.value = _uiState.value.copy(
+                        canRewindSuggestionPass = response.canRewind,
+                        suggestionPassInProgress = _uiState.value.suggestionPassInProgress - userId
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        suggestions = passedPerson?.let { listOf(it) + _uiState.value.suggestions } ?: _uiState.value.suggestions,
+                        suggestionPassInProgress = _uiState.value.suggestionPassInProgress - userId,
+                        suggestionsError = error.message ?: "Could not pass suggestion"
+                    )
+                }
+        }
+    }
+
+    fun rewindSuggestionPass() {
+        if (_uiState.value.isRewindingSuggestionPass || !_uiState.value.canRewindSuggestionPass) return
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isRewindingSuggestionPass = true, suggestionsError = null)
+            ApiClient.rewindDiscoveryPass(context)
+                .onSuccess { response ->
+                    _uiState.value = _uiState.value.copy(
+                        isRewindingSuggestionPass = false,
+                        canRewindSuggestionPass = response.canRewind
+                    )
+                    if (response.rewound) {
+                        suggestionsLoadedAt = 0L
+                        loadSuggestions(forceRefresh = true)
+                    }
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isRewindingSuggestionPass = false,
+                        suggestionsError = error.message ?: "Could not rewind"
+                    )
+                }
+        }
+    }
+
+    fun loadSavedDiscoverySearches(forceRefresh: Boolean = false) {
+        if (!forceRefresh && isFresh(savedDiscoverySearchesLoadedAt)) return
+        if (isSavedDiscoverySearchesRequestInFlight) return
+        if (!_uiState.value.isDiscoveryPremiumUnlocked) return
+
+        viewModelScope.launch {
+            isSavedDiscoverySearchesRequestInFlight = true
+            _uiState.value = _uiState.value.copy(
+                isLoadingSavedDiscoverySearches = true,
+                savedDiscoverySearchError = null
+            )
+
+            ApiClient.getSavedDiscoverySearches(context)
+                .onSuccess { response ->
+                    savedDiscoverySearchesLoadedAt = System.currentTimeMillis()
+                    _uiState.value = _uiState.value.copy(
+                        savedDiscoverySearches = response.searches,
+                        isLoadingSavedDiscoverySearches = false,
+                        savedDiscoverySearchError = null,
+                        isDiscoveryPremiumUnlocked = true
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingSavedDiscoverySearches = false,
+                        savedDiscoverySearchError = error.message
+                    )
+                }
+
+            isSavedDiscoverySearchesRequestInFlight = false
+        }
+    }
+
+    fun saveCurrentDiscoverySearch() {
+        val state = _uiState.value
+        if (!state.isDiscoveryPremiumUnlocked) {
+            _uiState.value = state.copy(
+                savedDiscoverySearchMessage = "Premium required to save discovery searches"
+            )
+            return
+        }
+        if (state.isSavingDiscoverySearch) return
+        val filters = buildCurrentDiscoveryFilterMap(state)
+        if (filters.isEmpty()) {
+            _uiState.value = state.copy(savedDiscoverySearchMessage = "Add a search or filter first")
+            return
+        }
+
+        val name = buildSavedSearchName(state, filters)
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isSavingDiscoverySearch = true, savedDiscoverySearchError = null)
+            ApiClient.saveDiscoverySearch(context, name = name, filters = filters)
+                .onSuccess { response ->
+                    savedDiscoverySearchesLoadedAt = System.currentTimeMillis()
+                    _uiState.value = _uiState.value.copy(
+                        isSavingDiscoverySearch = false,
+                        savedDiscoverySearches = listOf(response.search) +
+                            _uiState.value.savedDiscoverySearches.filterNot { it.id == response.search.id },
+                        savedDiscoverySearchMessage = "Search saved"
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isSavingDiscoverySearch = false,
+                        savedDiscoverySearchError = error.message ?: "Could not save search"
+                    )
+                }
+        }
+    }
+
+    fun applySavedDiscoverySearch(search: SavedDiscoverySearch) {
+        val state = _uiState.value
+        if (!state.isDiscoveryPremiumUnlocked) {
+            _uiState.value = state.copy(
+                savedDiscoverySearchMessage = "Premium required to use saved discovery searches"
+            )
+            return
+        }
+        val filters = search.filters.mapValues { it.value.toString().trim('"') }
+        _uiState.value = _uiState.value.copy(
+            searchQuery = filters["search"].orEmpty(),
+            selectedCollege = filters["college"],
+            selectedBranch = filters["branch"],
+            selectedGraduationYear = filters["graduationYear"]?.toIntOrNull(),
+            selectedSkillLevel = filters["skillLevel"],
+            selectedIntent = filters["intent"],
+            selectedAvailability = filters["availability"],
+            verifiedOnly = filters["verifiedOnly"].toBoolean(),
+            discoveryRadiusKm = filters["radiusKm"]?.toIntOrNull(),
+            discoveryScope = if (filters["scope"] == "global") DiscoveryScope.GLOBAL else DiscoveryScope.LOCAL,
+            isFilterExpanded = false,
+            savedDiscoverySearchMessage = null
+        )
+        viewModelScope.launch {
+            ApiClient.updateSavedDiscoverySearch(
+                context,
+                search.id,
+                UpdateSavedDiscoverySearchRequest(markViewed = true)
+            )
+            loadSavedDiscoverySearches(forceRefresh = true)
+        }
+        loadAllPeople(resetPage = true, forceRefresh = true)
+    }
+
+    fun deleteSavedDiscoverySearch(searchId: String) {
+        viewModelScope.launch {
+            ApiClient.deleteSavedDiscoverySearch(context, searchId)
+                .onSuccess {
+                    _uiState.value = _uiState.value.copy(
+                        savedDiscoverySearches = _uiState.value.savedDiscoverySearches.filterNot { it.id == searchId }
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        savedDiscoverySearchError = error.message ?: "Could not delete search"
+                    )
+                }
+        }
+    }
+
+    fun loadRecentlyViewedProfiles(forceRefresh: Boolean = false) {
+        if (!forceRefresh && isFresh(recentlyViewedProfilesLoadedAt)) return
+        if (isRecentlyViewedProfilesRequestInFlight) return
+
+        viewModelScope.launch {
+            isRecentlyViewedProfilesRequestInFlight = true
+            _uiState.value = _uiState.value.copy(
+                isLoadingRecentlyViewedProfiles = true,
+                recentlyViewedProfilesError = null
+            )
+
+            ApiClient.getRecentViewedProfiles(context, page = 1, limit = 50)
+                .onSuccess { response ->
+                    recentlyViewedProfilesLoadedAt = System.currentTimeMillis()
+                    _uiState.value = _uiState.value.copy(
+                        recentlyViewedProfiles = response.profiles,
+                        isLoadingRecentlyViewedProfiles = false,
+                        recentlyViewedProfilesError = null
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingRecentlyViewedProfiles = false,
+                        recentlyViewedProfilesError = error.message ?: "Could not load recently viewed profiles"
+                    )
+                }
+
+            isRecentlyViewedProfilesRequestInFlight = false
+        }
+    }
+
     // ==================== Same Campus ====================
     
     fun loadSameCampus(forceRefresh: Boolean = false) {
@@ -1270,7 +1666,14 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
             delay(300) // Debounce
             _uiState.value = _uiState.value.copy(isSearchingColleges = true)
             
-            ApiClient.searchColleges(context, query, limit = 10)
+            val state = _uiState.value
+            ApiClient.searchColleges(
+                context = context,
+                query = query,
+                limit = 10,
+                lat = state.currentLat,
+                lng = state.currentLng
+            )
                 .onSuccess { response ->
                     _uiState.value = _uiState.value.copy(
                         collegeSuggestions = response.colleges,
@@ -1484,7 +1887,12 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
                 bannerImageUrl = null,
                 isOnline = false,
                 mutualConnections = 0,
-                connectionStatus = "pending_received"
+                connectionStatus = "pending_received",
+                isPremium = it.user.isPremium,
+                profileBoostActive = it.user.profileBoostActive,
+                profileBoostEndsAt = it.user.profileBoostEndsAt,
+                profileBoostPriority = it.user.profileBoostPriority,
+                discoveryPriority = it.user.discoveryPriority
             )
         }
         _uiState.value.smartMatches.find { it.user.id == userId }?.let { match ->
@@ -1503,7 +1911,12 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
                 bannerImageUrl = null,
                 isOnline = false,
                 mutualConnections = 0,
-                connectionStatus = "none"
+                connectionStatus = "none",
+                isPremium = match.user.isPremium,
+                profileBoostActive = match.user.profileBoostActive,
+                profileBoostEndsAt = match.user.profileBoostEndsAt,
+                profileBoostPriority = match.user.profileBoostPriority,
+                discoveryPriority = match.user.discoveryPriority
             )
         }
         _uiState.value.nearbyPeople.find { it.id == userId }?.let {
@@ -1778,8 +2191,47 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
             state.searchQuery.trim().lowercase(Locale.getDefault()),
             state.selectedCollege.orEmpty(),
             state.selectedBranch.orEmpty(),
-            state.selectedGraduationYear?.toString().orEmpty()
+            state.selectedGraduationYear?.toString().orEmpty(),
+            state.selectedSkillLevel.orEmpty(),
+            state.selectedIntent.orEmpty(),
+            state.selectedAvailability.orEmpty(),
+            state.verifiedOnly.toString(),
+            state.discoveryRadiusKm?.toString().orEmpty(),
+            state.discoveryScope.name,
+            state.currentLat?.let { String.format(Locale.US, "%.3f", it) }.orEmpty(),
+            state.currentLng?.let { String.format(Locale.US, "%.3f", it) }.orEmpty(),
+            state.isDiscoveryPremiumUnlocked.toString()
         ).joinToString("|")
+    }
+
+    private fun buildCurrentDiscoveryFilterMap(state: FindPeopleUiState): Map<String, String> {
+        return buildMap {
+            state.searchQuery.trim().takeIf { it.isNotBlank() }?.let { put("search", it) }
+            state.selectedCollege?.let { put("college", it) }
+            state.selectedBranch?.let { put("branch", it) }
+            state.selectedGraduationYear?.let { put("graduationYear", it.toString()) }
+            state.selectedSkillLevel?.let { put("skillLevel", it) }
+            state.selectedIntent?.let { put("intent", it) }
+            state.selectedAvailability?.let { put("availability", it) }
+            if (state.verifiedOnly) put("verifiedOnly", "true")
+            state.discoveryRadiusKm?.let {
+                put("radiusKm", it.toString())
+                state.currentLat?.let { lat -> put("lat", lat.toString()) }
+                state.currentLng?.let { lng -> put("lng", lng.toString()) }
+            }
+            if (state.discoveryScope == DiscoveryScope.GLOBAL) put("scope", "global")
+        }
+    }
+
+    private fun buildSavedSearchName(state: FindPeopleUiState, filters: Map<String, String>): String {
+        return when {
+            state.searchQuery.isNotBlank() -> state.searchQuery.trim()
+            state.selectedIntent != null -> state.selectedIntent
+            state.selectedSkillLevel != null -> "${state.selectedSkillLevel} builders"
+            state.selectedCollege != null -> state.selectedCollege
+            filters["scope"] == "global" -> "Global discovery"
+            else -> "Discovery search"
+        } ?: "Discovery search"
     }
 
     private fun buildNearbyKey(lat: Double, lng: Double, radius: Int): String {
@@ -1795,7 +2247,7 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
     }
 
     private fun rankSmartMatches(matches: List<SmartMatch>): List<SmartMatch> {
-        return FindPeopleRanker.rankSmartMatches(matches, rankingProfile)
+        return FindPeopleRanker.preserveBackendSmartMatchOrder(matches)
     }
 
     private fun rankPeople(people: List<PersonInfo>): List<PersonInfo> {

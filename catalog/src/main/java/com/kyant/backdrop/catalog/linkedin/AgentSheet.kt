@@ -1,7 +1,14 @@
 package com.kyant.backdrop.catalog.linkedin
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -41,11 +48,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -65,6 +74,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.catalog.chat.parseChatRichText
 import com.kyant.backdrop.catalog.ai.VormexAiChipAction
 import com.kyant.backdrop.catalog.ai.VormexAiChipRow
 import com.kyant.backdrop.catalog.ai.VormexAiGateway
@@ -80,6 +90,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -108,7 +119,7 @@ fun AgentSheetContent(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val displaySurface = uiState.sessionState?.currentSurface?.takeIf { it.isNotBlank() } ?: surface
-    val powerModeEligible = isPremiumUser == true || uiState.powerModeEligible || uiState.isPremium
+    val powerModeEligible = uiState.canUseAgent || uiState.powerModeEligible || uiState.isPremium || isPremiumUser == true
     var draft by rememberSaveable { mutableStateOf("") }
     var showGoalDialog by remember { mutableStateOf(false) }
     var selectedApproval by remember { mutableStateOf<AgentPendingAction?>(null) }
@@ -723,6 +734,7 @@ private fun HumanizedAgentTextSheet(
     isFullScreen: Boolean,
     accentColor: Color
 ) {
+    val context = LocalContext.current
     val appearance = currentVormexAppearance()
     val warmBackground = when {
         appearance.isGlassTheme -> appearance.sheetColor.copy(alpha = 0.92f)
@@ -748,6 +760,202 @@ private fun HumanizedAgentTextSheet(
     val userBubbleText = if (userBubble.luminance() > 0.45f) Color(0xFF1F1B17) else Color.White
     val listState = rememberLazyListState()
     val firstName = remember(userDisplayName) { humanFirstName(userDisplayName) }
+    var showAgentMenu by rememberSaveable { mutableStateOf(false) }
+    var isDictating by rememberSaveable { mutableStateOf(false) }
+    var keepDictating by rememberSaveable { mutableStateOf(false) }
+    var dictationStatus by rememberSaveable { mutableStateOf<String?>(null) }
+    var dictationPartial by rememberSaveable { mutableStateOf("") }
+    var lastCommittedDictation by rememberSaveable { mutableStateOf("") }
+    val latestDraft by rememberUpdatedState(draft)
+    val latestOnDraftChange by rememberUpdatedState(onDraftChange)
+    val speechAvailable = remember(context) { SpeechRecognizer.isRecognitionAvailable(context) }
+    val speechRecognizer = remember(context, speechAvailable) {
+        if (speechAvailable) SpeechRecognizer.createSpeechRecognizer(context) else null
+    }
+    val dictationHandler = remember { Handler(Looper.getMainLooper()) }
+    val recognitionIntent = remember {
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+    }
+
+    fun commitDictationTranscript(rawText: String) {
+        val transcript = rawText.trim()
+        if (transcript.isBlank() || transcript == lastCommittedDictation) return
+
+        val nextDraft = appendVoiceTranscript(latestDraft, transcript)
+        latestOnDraftChange(nextDraft)
+        lastCommittedDictation = transcript
+        dictationPartial = ""
+        dictationStatus = "Voice text added."
+    }
+
+    fun stopDictation() {
+        val recognizer = speechRecognizer ?: return
+        keepDictating = false
+        dictationHandler.removeCallbacksAndMessages(null)
+        runCatching {
+            recognizer.stopListening()
+            isDictating = false
+            dictationStatus = dictationPartial.takeIf { it.isNotBlank() } ?: "Processing speech..."
+        }.onFailure {
+            isDictating = false
+            dictationStatus = "Could not stop listening."
+        }
+    }
+
+    fun startDictationSession() {
+        val recognizer = speechRecognizer
+        if (!speechAvailable || recognizer == null) {
+            keepDictating = false
+            isDictating = false
+            dictationStatus = "Voice typing is not available on this device."
+            return
+        }
+
+        runCatching {
+            dictationPartial = ""
+            dictationStatus = "Listening..."
+            isDictating = true
+            recognizer.startListening(recognitionIntent)
+        }.onFailure {
+            keepDictating = false
+            isDictating = false
+            dictationStatus = "Could not start voice typing."
+        }
+    }
+
+    fun scheduleNextDictationSession(delayMs: Long = 300L) {
+        if (!keepDictating) return
+        dictationHandler.postDelayed({
+            if (keepDictating) {
+                startDictationSession()
+            }
+        }, delayMs)
+    }
+
+    fun startDictation() {
+        val recognizer = speechRecognizer
+        if (!speechAvailable || recognizer == null) {
+            dictationStatus = "Voice typing is not available on this device."
+            return
+        }
+
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!granted) {
+            dictationStatus = "Microphone permission is needed for voice typing."
+            return
+        }
+
+        keepDictating = true
+        lastCommittedDictation = ""
+        startDictationSession()
+    }
+
+    val dictationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startDictation()
+        } else {
+            isDictating = false
+            dictationStatus = "Microphone permission denied."
+        }
+    }
+
+    DisposableEffect(speechRecognizer) {
+        val recognizer = speechRecognizer
+        if (recognizer != null) {
+            recognizer.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {
+                    isDictating = true
+                    dictationStatus = "Listening..."
+                }
+
+                override fun onBeginningOfSpeech() {
+                    isDictating = true
+                    dictationStatus = "Listening..."
+                }
+
+                override fun onRmsChanged(rmsdB: Float) = Unit
+                override fun onBufferReceived(buffer: ByteArray?) = Unit
+
+                override fun onEndOfSpeech() {
+                    isDictating = keepDictating
+                    dictationStatus = dictationPartial.takeIf { it.isNotBlank() } ?: "Processing segment..."
+                }
+
+                override fun onError(error: Int) {
+                    if (dictationPartial.isNotBlank()) {
+                        commitDictationTranscript(dictationPartial)
+                    }
+
+                    val canContinue = keepDictating && isRecoverableSpeechRecognizerError(error)
+                    if (canContinue) {
+                        isDictating = true
+                        dictationStatus = "Listening..."
+                        scheduleNextDictationSession(
+                            delayMs = if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 700L else 300L
+                        )
+                    } else {
+                        keepDictating = false
+                        isDictating = false
+                        dictationStatus = speechRecognizerErrorMessage(error)
+                    }
+                }
+
+                override fun onResults(results: Bundle?) {
+                    val transcript = results
+                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()
+                        .orEmpty()
+                    commitDictationTranscript(transcript)
+
+                    if (keepDictating) {
+                        isDictating = true
+                        dictationStatus = if (transcript.isBlank()) "Listening..." else "Voice text added. Keep speaking..."
+                        scheduleNextDictationSession()
+                    } else {
+                        isDictating = false
+                    }
+
+                    if (transcript.isBlank() && !keepDictating) {
+                        dictationStatus = "I did not catch that. Try again."
+                    }
+                }
+
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val partial = partialResults
+                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()
+                        .orEmpty()
+                        .trim()
+                    if (partial.isNotBlank()) {
+                        dictationPartial = partial
+                        dictationStatus = partial
+                    }
+                }
+
+                override fun onEvent(eventType: Int, params: Bundle?) = Unit
+            })
+        }
+
+        onDispose {
+            keepDictating = false
+            dictationHandler.removeCallbacksAndMessages(null)
+            recognizer?.destroy()
+        }
+    }
 
     fun sendPrompt(prompt: String) {
         val text = prompt.trim()
@@ -788,14 +996,47 @@ private fun HumanizedAgentTextSheet(
     ) {
         HumanAgentHeader(
             title = headerTitle,
-            status = if (uiState.autoRunEnabled && powerModeEligible) "Power mode" else "Always-on",
+            status = when {
+                uiState.autoRunEnabled && powerModeEligible -> "Power mode"
+                powerModeEligible -> "Approval mode"
+                else -> "Free assistant"
+            },
             showPower = uiState.autoRunEnabled && powerModeEligible,
             ink = ink,
             muted = muted,
             line = line,
             coral = coral,
-            onDismiss = onDismiss
+            onDismiss = onDismiss,
+            onMenuClick = { showAgentMenu = !showAgentMenu }
         )
+
+        if (showAgentMenu) {
+            HumanAgentMenu(
+                canUseAgent = powerModeEligible,
+                powerModeEnabled = uiState.autoRunEnabled && powerModeEligible,
+                ink = ink,
+                muted = muted,
+                line = line,
+                card = card,
+                coral = coral,
+                onNewChat = {
+                    showAgentMenu = false
+                    viewModel.clearConversation()
+                },
+                onRefreshAccess = {
+                    showAgentMenu = false
+                    viewModel.refreshAiEntitlements(silent = false)
+                },
+                onPowerMode = {
+                    showAgentMenu = false
+                    if (powerModeEligible) {
+                        viewModel.setPowerModeEnabled(!uiState.autoRunEnabled, powerModeEligible)
+                    } else {
+                        viewModel.showPremiumWall("Power Mode")
+                    }
+                }
+            )
+        }
 
         LazyColumn(
             state = listState,
@@ -813,7 +1054,9 @@ private fun HumanizedAgentTextSheet(
                         line = line,
                         card = card,
                         coral = coral,
-                        onPrompt = ::sendPrompt
+                        canUseAgent = powerModeEligible,
+                        onPrompt = ::sendPrompt,
+                        onLockedPrompt = viewModel::showPremiumWall
                     )
                 }
             } else {
@@ -902,7 +1145,26 @@ private fun HumanizedAgentTextSheet(
             line = line,
             card = field,
             coral = coral,
+            isVoiceListening = isDictating,
+            voiceStatus = dictationStatus,
+            voicePartial = dictationPartial,
             onDraftChange = onDraftChange,
+            onVoiceToggle = {
+                if (isDictating) {
+                    stopDictation()
+                } else {
+                    val granted = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (granted) {
+                        startDictation()
+                    } else {
+                        dictationPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
+            },
             onSubmit = { sendPrompt(draft) }
         )
     }
@@ -917,7 +1179,8 @@ private fun HumanAgentHeader(
     muted: Color,
     line: Color,
     coral: Color,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onMenuClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -1003,17 +1266,201 @@ private fun HumanAgentHeader(
             }
         }
 
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onMenuClick),
+            contentAlignment = Alignment.Center
+        ) {
+            BasicText(
+                text = "...",
+                style = TextStyle(
+                    color = ink,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = AgentBodyFontFamily
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun HumanAgentMenu(
+    canUseAgent: Boolean,
+    powerModeEnabled: Boolean,
+    ink: Color,
+    muted: Color,
+    line: Color,
+    card: Color,
+    coral: Color,
+    onNewChat: () -> Unit,
+    onRefreshAccess: () -> Unit,
+    onPowerMode: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(card)
+            .border(1.dp, line, RoundedCornerShape(12.dp))
+            .padding(vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        HumanAgentMenuItem(
+            title = "New chat",
+            subtitle = "Clear this Vormex AI conversation",
+            ink = ink,
+            muted = muted,
+            onClick = onNewChat
+        )
+        HumanAgentMenuItem(
+            title = "Refresh access",
+            subtitle = "Reload Free, Premium, or Creator Pro status",
+            ink = ink,
+            muted = muted,
+            onClick = onRefreshAccess
+        )
+        HumanAgentMenuItem(
+            title = when {
+                powerModeEnabled -> "Turn off Power Mode"
+                canUseAgent -> "Turn on Power Mode"
+                else -> "Unlock Power Mode"
+            },
+            subtitle = if (canUseAgent) {
+                "Premium agent actions with approval controls"
+            } else {
+                "Premium and Creator Pro action agent"
+            },
+            ink = if (canUseAgent) ink else coral,
+            muted = muted,
+            onClick = onPowerMode
+        )
+    }
+}
+
+@Composable
+private fun HumanAgentMenuItem(
+    title: String,
+    subtitle: String,
+    ink: Color,
+    muted: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            BasicText(
+                text = title,
+                style = TextStyle(
+                    color = ink,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = AgentBodyFontFamily
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            BasicText(
+                text = subtitle,
+                style = TextStyle(
+                    color = muted,
+                    fontSize = 11.sp,
+                    fontFamily = AgentBodyFontFamily
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
         BasicText(
-            text = "...",
+            text = ">",
             style = TextStyle(
-                color = ink,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
+                color = muted,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
                 fontFamily = AgentBodyFontFamily
             )
         )
     }
 }
+
+private enum class VormexPromptTier {
+    Free,
+    Premium
+}
+
+private data class VormexPromptCard(
+    val icon: String,
+    val title: String,
+    val subtitle: String,
+    val prompt: String,
+    val tier: VormexPromptTier
+)
+
+private val vormexIntroPromptCards = listOf(
+    VormexPromptCard(
+        icon = "profile",
+        title = "Improve my profile",
+        subtitle = "Bio, headline, skills",
+        prompt = "Review my Vormex profile and suggest improvements I can make today",
+        tier = VormexPromptTier.Free
+    ),
+    VormexPromptCard(
+        icon = "grow",
+        title = "Help me grow this week",
+        subtitle = "3 safe next steps",
+        prompt = "Help me grow my network this week with a safe 3-step plan",
+        tier = VormexPromptTier.Free
+    ),
+    VormexPromptCard(
+        icon = "people",
+        title = "Find AI people from my campus",
+        subtitle = "Agent search + actions",
+        prompt = "Find AI people from my campus",
+        tier = VormexPromptTier.Premium
+    ),
+    VormexPromptCard(
+        icon = "bell",
+        title = "Catch me up on notifications",
+        subtitle = "Read app activity",
+        prompt = "Catch me up on notifications",
+        tier = VormexPromptTier.Premium
+    )
+)
+
+private data class VormexPromptChip(
+    val label: String,
+    val prompt: String,
+    val tier: VormexPromptTier
+)
+
+private val vormexIntroPromptChips = listOf(
+    VormexPromptChip(
+        label = "Draft a DM",
+        prompt = "Draft a warm networking DM I can edit before sending",
+        tier = VormexPromptTier.Free
+    ),
+    VormexPromptChip(
+        label = "Open my chats",
+        prompt = "Open my chats",
+        tier = VormexPromptTier.Premium
+    ),
+    VormexPromptChip(
+        label = "Who viewed me?",
+        prompt = "Who viewed me?",
+        tier = VormexPromptTier.Premium
+    )
+)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -1024,7 +1471,9 @@ private fun HumanAgentIntro(
     line: Color,
     card: Color,
     coral: Color,
-    onPrompt: (String) -> Unit
+    canUseAgent: Boolean,
+    onPrompt: (String) -> Unit,
+    onLockedPrompt: (String) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -1066,7 +1515,11 @@ private fun HumanAgentIntro(
                 )
             )
             BasicText(
-                text = "Ask in plain English. I can find people, summarize your inbox, suggest groups, or help you grow your network.",
+                text = if (canUseAgent) {
+                    "Ask in plain English. Power Mode can search, navigate, and prepare actions with approval."
+                } else {
+                    "Free assistant can plan, draft, review, and guide safely. Power Mode unlocks app actions."
+                },
                 style = TextStyle(
                     color = muted,
                     fontSize = 13.sp,
@@ -1077,57 +1530,34 @@ private fun HumanAgentIntro(
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                HumanTaskCard(
-                    modifier = Modifier.weight(1f),
-                    icon = "people",
-                    title = "Find AI people from my campus",
-                    subtitle = "Search by skills + college",
-                    ink = ink,
-                    muted = muted,
-                    line = line,
-                    card = card,
-                    coral = coral,
-                    onClick = { onPrompt("Find AI people from my campus") }
-                )
-                HumanTaskCard(
-                    modifier = Modifier.weight(1f),
-                    icon = "bell",
-                    title = "Catch me up on notifications",
-                    subtitle = "Summarise the last 24h",
-                    ink = ink,
-                    muted = muted,
-                    line = line,
-                    card = card,
-                    coral = coral,
-                    onClick = { onPrompt("Catch me up on notifications") }
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                HumanTaskCard(
-                    modifier = Modifier.weight(1f),
-                    icon = "groups",
-                    title = "Suggest groups I'd like",
-                    subtitle = "Based on your interests",
-                    ink = ink,
-                    muted = muted,
-                    line = line,
-                    card = card,
-                    coral = coral,
-                    onClick = { onPrompt("Suggest public groups for me") }
-                )
-                HumanTaskCard(
-                    modifier = Modifier.weight(1f),
-                    icon = "grow",
-                    title = "Help me grow this week",
-                    subtitle = "3-step plan from Growth Hub",
-                    ink = ink,
-                    muted = muted,
-                    line = line,
-                    card = card,
-                    coral = coral,
-                    onClick = { onPrompt("Help me grow this week") }
-                )
+            vormexIntroPromptCards.chunked(2).forEach { rowCards ->
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    rowCards.forEach { promptCard ->
+                        val locked = promptCard.tier == VormexPromptTier.Premium && !canUseAgent
+                        HumanTaskCard(
+                            modifier = Modifier.weight(1f),
+                            icon = promptCard.icon,
+                            title = promptCard.title,
+                            subtitle = promptCard.subtitle,
+                            locked = locked,
+                            ink = ink,
+                            muted = muted,
+                            line = line,
+                            card = card,
+                            coral = coral,
+                            onClick = {
+                                if (locked) {
+                                    onLockedPrompt(promptCard.title)
+                                } else {
+                                    onPrompt(promptCard.prompt)
+                                }
+                            }
+                        )
+                    }
+                    if (rowCards.size == 1) {
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
             }
         }
 
@@ -1135,9 +1565,22 @@ private fun HumanAgentIntro(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            HumanPromptChip("Find React devs", ink, line, card) { onPrompt("Find React developers") }
-            HumanPromptChip("Open my chats", ink, line, card) { onPrompt("Open my chats") }
-            HumanPromptChip("Who viewed me?", ink, line, card) { onPrompt("Who viewed me?") }
+            vormexIntroPromptChips.forEach { chip ->
+                val locked = chip.tier == VormexPromptTier.Premium && !canUseAgent
+                HumanPromptChip(
+                    text = chip.label,
+                    locked = locked,
+                    ink = ink,
+                    line = line,
+                    card = card
+                ) {
+                    if (locked) {
+                        onLockedPrompt(chip.label)
+                    } else {
+                        onPrompt(chip.prompt)
+                    }
+                }
+            }
         }
     }
 }
@@ -1148,6 +1591,7 @@ private fun HumanTaskCard(
     icon: String,
     title: String,
     subtitle: String,
+    locked: Boolean = false,
     ink: Color,
     muted: Color,
     line: Color,
@@ -1159,13 +1603,26 @@ private fun HumanTaskCard(
         modifier = modifier
             .height(98.dp)
             .clip(RoundedCornerShape(10.dp))
-            .background(card)
+            .background(if (locked) card.copy(alpha = 0.62f) else card)
             .border(1.dp, line, RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
             .padding(10.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        HumanTinyIcon(icon = icon, coral = coral)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HumanTinyIcon(icon = icon, coral = coral)
+            if (locked) {
+                HumanTinyPill(
+                    text = "LOCK",
+                    textColor = muted,
+                    background = muted.copy(alpha = 0.12f)
+                )
+            }
+        }
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             BasicText(
                 text = title,
@@ -1200,6 +1657,7 @@ private fun HumanTinyIcon(icon: String, coral: Color) {
         "bell" -> "n"
         "groups" -> "g"
         "grow" -> "up"
+        "profile" -> "me"
         else -> "+"
     }
     Box(
@@ -1224,6 +1682,7 @@ private fun HumanTinyIcon(icon: String, coral: Color) {
 @Composable
 private fun HumanPromptChip(
     text: String,
+    locked: Boolean = false,
     ink: Color,
     line: Color,
     card: Color,
@@ -1232,13 +1691,13 @@ private fun HumanPromptChip(
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(card)
+            .background(if (locked) card.copy(alpha = 0.62f) else card)
             .border(1.dp, line, RoundedCornerShape(999.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 11.dp, vertical = 7.dp)
     ) {
         BasicText(
-            text = text,
+            text = if (locked) "LOCK $text" else text,
             style = TextStyle(
                 color = ink,
                 fontSize = 11.sp,
@@ -1309,8 +1768,11 @@ private fun HumanAgentMessageBubble(
                     .background(userBubble)
                     .padding(horizontal = 13.dp, vertical = 11.dp)
             ) {
+                val formattedMessageContent = remember(message.content, userBubbleText) {
+                    parseChatRichText(message.content, userBubbleText)
+                }
                 BasicText(
-                    text = message.content,
+                    text = formattedMessageContent,
                     style = TextStyle(
                         color = userBubbleText,
                         fontSize = 13.sp,
@@ -1335,8 +1797,11 @@ private fun HumanAgentMessageBubble(
                     textColor = muted,
                     background = muted.copy(alpha = 0.10f)
                 )
+                val formattedMessageContent = remember(message.content, ink) {
+                    parseChatRichText(message.content, ink)
+                }
                 BasicText(
-                    text = message.content,
+                    text = formattedMessageContent,
                     style = TextStyle(
                         color = ink,
                         fontSize = 13.sp,
@@ -1737,10 +2202,21 @@ private fun HumanComposer(
     line: Color,
     card: Color,
     coral: Color,
+    isVoiceListening: Boolean = false,
+    voiceStatus: String? = null,
+    voicePartial: String = "",
     onDraftChange: (String) -> Unit,
+    onVoiceToggle: () -> Unit = {},
     onSubmit: () -> Unit
 ) {
-    Row(
+    val voiceStatusText = when {
+        isVoiceListening && voicePartial.isNotBlank() -> voicePartial
+        !voiceStatus.isNullOrBlank() -> voiceStatus
+        isVoiceListening -> "Listening..."
+        else -> null
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
@@ -1749,63 +2225,87 @@ private fun HumanComposer(
             .background(card)
             .border(1.dp, line, RoundedCornerShape(22.dp))
             .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        BasicText(
-            text = "+",
-            style = TextStyle(
-                color = ink.copy(alpha = 0.74f),
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Light,
-                fontFamily = AgentBodyFontFamily
-            )
-        )
-        Box(modifier = Modifier.weight(1f)) {
-            BasicTextField(
-                value = draft,
-                onValueChange = onDraftChange,
-                singleLine = false,
-                maxLines = 4,
-                textStyle = TextStyle(
-                    color = ink,
-                    fontSize = 13.sp,
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(if (isVoiceListening) coral else muted.copy(alpha = 0.12f))
+                    .clickable(enabled = !isSending, onClick = onVoiceToggle),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(id = com.kyant.backdrop.catalog.R.drawable.ic_mic),
+                    contentDescription = if (isVoiceListening) "Stop voice typing" else "Start voice typing",
+                    tint = if (isVoiceListening) Color.White else ink.copy(alpha = 0.78f),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Box(modifier = Modifier.weight(1f)) {
+                BasicTextField(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    singleLine = false,
+                    maxLines = 4,
+                    textStyle = TextStyle(
+                        color = ink,
+                        fontSize = 13.sp,
+                        fontFamily = AgentBodyFontFamily
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                    decorationBox = { innerTextField ->
+                        if (draft.isBlank()) {
+                            BasicText(
+                                text = placeholder,
+                                style = TextStyle(
+                                    color = muted.copy(alpha = 0.7f),
+                                    fontSize = 13.sp,
+                                    fontFamily = AgentBodyFontFamily
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        innerTextField()
+                    }
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(if (draft.isBlank()) Color.Transparent else coral)
+                    .clickable(enabled = draft.isNotBlank() && !isSending, onClick = onSubmit),
+                contentAlignment = Alignment.Center
+            ) {
+                BasicText(
+                    text = if (isSending) "..." else if (draft.isBlank()) "" else ">",
+                    style = TextStyle(
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = AgentBodyFontFamily
+                    )
+                )
+            }
+        }
+
+        if (!voiceStatusText.isNullOrBlank()) {
+            BasicText(
+                text = voiceStatusText,
+                style = TextStyle(
+                    color = if (isVoiceListening) coral else muted,
+                    fontSize = 11.sp,
                     fontFamily = AgentBodyFontFamily
                 ),
-                modifier = Modifier.fillMaxWidth(),
-                decorationBox = { innerTextField ->
-                    if (draft.isBlank()) {
-                        BasicText(
-                            text = placeholder,
-                            style = TextStyle(
-                                color = muted.copy(alpha = 0.7f),
-                                fontSize = 13.sp,
-                                fontFamily = AgentBodyFontFamily
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    innerTextField()
-                }
-            )
-        }
-        Box(
-            modifier = Modifier
-                .size(30.dp)
-                .clip(CircleShape)
-                .background(if (draft.isBlank()) Color.Transparent else coral)
-                .clickable(enabled = draft.isNotBlank() && !isSending, onClick = onSubmit),
-            contentAlignment = Alignment.Center
-        ) {
-            BasicText(
-                text = if (isSending) "..." else if (draft.isBlank()) "" else ">",
-                style = TextStyle(
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = AgentBodyFontFamily
-                )
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -1929,8 +2429,11 @@ private fun AgentMessageBubble(
                 )
                 .padding(horizontal = 14.dp, vertical = 12.dp)
         ) {
+            val formattedMessageContent = remember(message.content, contentColor) {
+                parseChatRichText(message.content, contentColor)
+            }
             BasicText(
-                text = message.content,
+                text = formattedMessageContent,
                 style = TextStyle(
                     color = contentColor,
                     fontSize = 14.sp,
@@ -2042,6 +2545,39 @@ private fun pendingApproveLabel(action: AgentPendingAction): String {
         "profile_update_summary" -> "Update"
         "connections_accept_request" -> "Accept"
         else -> "Approve"
+    }
+}
+
+private fun appendVoiceTranscript(currentDraft: String, transcript: String): String {
+    val spokenText = transcript.trim()
+    if (spokenText.isBlank()) return currentDraft
+
+    val trimmedDraft = currentDraft.trimEnd()
+    if (trimmedDraft.isBlank()) return spokenText
+
+    return "$trimmedDraft $spokenText"
+}
+
+private fun speechRecognizerErrorMessage(error: Int): String {
+    return when (error) {
+        SpeechRecognizer.ERROR_AUDIO -> "Audio input failed. Try again."
+        SpeechRecognizer.ERROR_CLIENT -> "Voice typing stopped."
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is needed."
+        SpeechRecognizer.ERROR_NETWORK,
+        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Voice typing needs a better connection."
+        SpeechRecognizer.ERROR_NO_MATCH -> "I did not catch that. Try again."
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Voice typing is busy. Try again."
+        SpeechRecognizer.ERROR_SERVER -> "Voice typing is unavailable right now."
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech heard. Try again."
+        else -> "Voice typing stopped."
+    }
+}
+
+private fun isRecoverableSpeechRecognizerError(error: Int): Boolean {
+    return when (error) {
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS,
+        SpeechRecognizer.ERROR_CLIENT -> false
+        else -> true
     }
 }
 

@@ -14,14 +14,37 @@ val releaseKeyAlias = secret("VORMEX_RELEASE_KEY_ALIAS")
 val releaseKeyPassword = secret("VORMEX_RELEASE_KEY_PASSWORD")
 val releaseApiBaseUrl = secret("VORMEX_RELEASE_API_BASE_URL").orEmpty()
 val releaseSocketBaseUrl = secret("VORMEX_RELEASE_SOCKET_BASE_URL").orEmpty()
-val googleWebClientId = secret("VORMEX_GOOGLE_WEB_CLIENT_ID")
+// Credential Manager asks for the server client ID: this is the OAuth client
+// whose audience the backend verifies. The Android OAuth client must still be
+// registered in the same Google project for com.vormex.android and the app's
+// signing fingerprints, but it is not passed as the ID-token audience.
+val googleServerClientId = secret("VORMEX_GOOGLE_SERVER_CLIENT_ID")
+    ?: secret("VORMEX_GOOGLE_WEB_CLIENT_ID")
+    ?: secret("GOOGLE_CLIENT_ID_WEB")
     ?: "562328294412-3qt2hj14q8c43nhjimqevhdopecvp04b.apps.googleusercontent.com"
+val googleWebClientId = googleServerClientId
+val googleAndroidClientId = secret("VORMEX_GOOGLE_ANDROID_CLIENT_ID")
+    ?: secret("GOOGLE_CLIENT_ID_ANDROID")
+    ?: "562328294412-sfil52dp4f7mapttri74hs9t445ierpd.apps.googleusercontent.com"
 // Physical devices and emulators can reach the host machine through adb reverse on 127.0.0.1.
 // If you prefer the emulator-only host bridge, override with VORMEX_DEBUG_* = http://10.0.2.2:5000.
 val localDebugApiBaseUrl = "http://127.0.0.1:5000/api"
 val localDebugSocketBaseUrl = "http://127.0.0.1:5000"
 val debugApiBaseUrl = secret("VORMEX_DEBUG_API_BASE_URL") ?: localDebugApiBaseUrl
 val debugSocketBaseUrl = secret("VORMEX_DEBUG_SOCKET_BASE_URL") ?: localDebugSocketBaseUrl
+val adMobApplicationId = secret("VORMEX_ADMOB_APPLICATION_ID")
+    ?: "ca-app-pub-3940256099942544~3347511713"
+val adMobNativeFeedAdUnitId = secret("VORMEX_ADMOB_NATIVE_FEED_AD_UNIT_ID")
+    ?: "ca-app-pub-3940256099942544/2247696110"
+val adMobNativeReelsAdUnitId = secret("VORMEX_ADMOB_NATIVE_REELS_AD_UNIT_ID")
+    ?: "ca-app-pub-3940256099942544/2247696110"
+val adsEnabled = secret("VORMEX_ADS_ENABLED")?.toBooleanStrictOrNull() ?: true
+val debugAdMobApplicationId = "ca-app-pub-3940256099942544~3347511713"
+val debugAdMobNativeAdUnitId = "ca-app-pub-3940256099942544/2247696110"
+val debugUseRealAds = secret("VORMEX_DEBUG_USE_REAL_ADS")?.toBooleanStrictOrNull() ?: false
+val debugEffectiveAdMobApplicationId = if (debugUseRealAds) adMobApplicationId else debugAdMobApplicationId
+val debugEffectiveNativeFeedAdUnitId = if (debugUseRealAds) adMobNativeFeedAdUnitId else debugAdMobNativeAdUnitId
+val debugEffectiveNativeReelsAdUnitId = if (debugUseRealAds) adMobNativeReelsAdUnitId else debugAdMobNativeAdUnitId
 val hasReleaseSigning = listOf(
     releaseStoreFilePath,
     releaseStorePassword,
@@ -56,16 +79,25 @@ android {
         androidResources.localeFilters += arrayOf("en")
         buildConfigField("String", "API_BASE_URL", "\"$releaseApiBaseUrl\"")
         buildConfigField("String", "SOCKET_BASE_URL", "\"$releaseSocketBaseUrl\"")
+        buildConfigField("String", "GOOGLE_SERVER_CLIENT_ID", "\"$googleServerClientId\"")
         buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
+        buildConfigField("String", "GOOGLE_ANDROID_CLIENT_ID", "\"$googleAndroidClientId\"")
+        buildConfigField("String", "ADMOB_NATIVE_FEED_AD_UNIT_ID", "\"$adMobNativeFeedAdUnitId\"")
+        buildConfigField("String", "ADMOB_NATIVE_REELS_AD_UNIT_ID", "\"$adMobNativeReelsAdUnitId\"")
+        buildConfigField("Boolean", "ADS_ENABLED", adsEnabled.toString())
         // Release must not allow HTTP; debug needs cleartext for local dev (e.g. adb reverse to localhost).
         manifestPlaceholders["usesCleartextTraffic"] = "false"
+        manifestPlaceholders["adMobApplicationId"] = adMobApplicationId
     }
 
     buildTypes {
         debug {
             buildConfigField("String", "API_BASE_URL", "\"$debugApiBaseUrl\"")
             buildConfigField("String", "SOCKET_BASE_URL", "\"$debugSocketBaseUrl\"")
+            buildConfigField("String", "ADMOB_NATIVE_FEED_AD_UNIT_ID", "\"$debugEffectiveNativeFeedAdUnitId\"")
+            buildConfigField("String", "ADMOB_NATIVE_REELS_AD_UNIT_ID", "\"$debugEffectiveNativeReelsAdUnitId\"")
             manifestPlaceholders["usesCleartextTraffic"] = "true"
+            manifestPlaceholders["adMobApplicationId"] = debugEffectiveAdMobApplicationId
         }
         release {
             isMinifyEnabled = true
@@ -136,7 +168,6 @@ dependencies {
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
-    implementation(libs.androidx.splashscreen)
     implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
@@ -177,7 +208,13 @@ dependencies {
     
     // Google Play Services Location
     implementation(libs.google.play.services.location)
-    implementation(libs.google.play.billing)
+
+    // Ads
+    implementation(libs.google.play.services.ads)
+    implementation(libs.google.user.messaging.platform)
+
+    // Payments
+    implementation(libs.razorpay.checkout)
 
     // Free/open map rendering for Nearby
     implementation(libs.osmdroid.android)

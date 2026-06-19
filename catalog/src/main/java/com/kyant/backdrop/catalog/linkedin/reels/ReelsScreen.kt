@@ -8,6 +8,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
+import android.util.Log
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
@@ -48,7 +49,6 @@ import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.foundation.overscroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Favorite
@@ -97,13 +97,20 @@ import com.airbnb.lottie.compose.LottieConstants
 import com.airbnb.lottie.compose.animateLottieCompositionAsState
 import com.airbnb.lottie.compose.rememberLottieComposition
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.catalog.BuildConfig
 import com.kyant.backdrop.catalog.R
+import com.kyant.backdrop.catalog.ads.ManagedReelsAdPage
+import com.kyant.backdrop.catalog.ads.VormexAdsManager
+import com.kyant.backdrop.catalog.ads.VormexNativeAdCache
+import com.kyant.backdrop.catalog.ads.VormexNativeReelsAdPage
 import com.kyant.backdrop.catalog.linkedin.CommentIcon
 import com.kyant.backdrop.catalog.linkedin.SaveLottieEffect
 import com.kyant.backdrop.catalog.linkedin.VerificationBadge
 import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.linkedin.posts.formatTimeAgo
+import com.kyant.backdrop.catalog.network.models.ManagedAdPlacement
 import com.kyant.backdrop.catalog.network.models.Reel
 import com.kyant.backdrop.catalog.network.models.ReelAuthor
 import com.kyant.backdrop.catalog.network.models.ReelComment
@@ -116,8 +123,6 @@ import com.kyant.backdrop.effects.vibrancy
 import com.kyant.shapes.RoundedRectangle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-
-private const val REELS_LOAD_MORE_THRESHOLD_PAGES = 5
 
 /**
  * Reels Preview Section for Home Feed
@@ -454,6 +459,7 @@ private fun ExploreMoreCard(
 @Composable
 fun ReelsFeedScreen(
     reels: List<Reel>,
+    managedAdPlacements: List<ManagedAdPlacement> = emptyList(),
     initialIndex: Int = 0,
     onDismiss: () -> Unit,
     onLike: (String) -> Unit = {},
@@ -463,6 +469,7 @@ fun ReelsFeedScreen(
     onProfileClick: (String) -> Unit = {},
     onTrackView: (String, Long, Boolean) -> Unit = { _, _, _ -> },
     onReelChanged: (Int) -> Unit = {},
+    onFirstFrameRendered: (String) -> Unit = {},
     playerForIndex: (Int) -> ExoPlayer? = { null },
     onPlaybackError: (Int) -> Boolean = { false },
     onRetryPlayback: (Int) -> Unit = {},
@@ -470,15 +477,123 @@ fun ReelsFeedScreen(
     onResumePlayback: (Int) -> Unit = {},
     onReleasePlayback: () -> Unit = {},
     onLoadMore: () -> Unit = {},
+    onManagedAdImpression: (ManagedAdPlacement) -> Unit = {},
+    onManagedAdClick: (ManagedAdPlacement) -> Unit = {},
     isDraftPreview: Boolean = false,
     isPublishingDraft: Boolean = false,
     onPublishDraftPreview: (String) -> Unit = {},
-    onCreateClick: () -> Unit = {}
+    onCreateClick: () -> Unit = {},
+    showNativeAds: Boolean = false
 ) {
+    val adDebugTag = "ReelsAds"
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val hostActivity = remember(context) { context.findActivity() }
     val openProgress = remember { Animatable(0f) }
+    val canRequestNativeAds by VormexAdsManager.canRequestAds.collectAsState()
+    var nativeAdSlotsVersion by remember { mutableIntStateOf(0) }
+    var adInsertionAnchorReelIndex by remember(initialIndex) { mutableIntStateOf(initialIndex.coerceAtLeast(0)) }
+    val includeNativeAdFallback =
+        BuildConfig.ADS_ENABLED && canRequestNativeAds && showNativeAds && !isDraftPreview
+    val activeManagedAdPlacements = if (BuildConfig.ADS_ENABLED && !isDraftPreview) {
+        managedAdPlacements
+    } else {
+        emptyList()
+    }
+    val includeAdSlots = includeNativeAdFallback || activeManagedAdPlacements.isNotEmpty()
+    val nativeSequencesForFeed = remember(reels.size, includeNativeAdFallback, activeManagedAdPlacements) {
+        reelsNativeAdSequencesToPreload(
+            reelCount = reels.size,
+            includeNativeAds = includeNativeAdFallback,
+            managedAdPlacements = activeManagedAdPlacements
+        )
+    }
+    val readyNativeAdSequences = remember(nativeSequencesForFeed, nativeAdSlotsVersion) {
+        nativeSequencesForFeed
+            .filter { sequence -> VormexNativeAdCache.cachedAd("reels_native_$sequence") != null }
+            .toSet()
+    }
+    val skippedNativeAdSequences = remember(nativeSequencesForFeed, readyNativeAdSequences, adInsertionAnchorReelIndex) {
+        nativeSequencesForFeed.filter { sequence ->
+            val slotAfterReelCount = ReelsFirstNativeAdAfterItems + (sequence * ReelsNativeAdIntervalItems)
+            slotAfterReelCount < adInsertionAnchorReelIndex + 2 && sequence !in readyNativeAdSequences
+        }
+    }
+    val feedPages = remember(
+        reels,
+        includeNativeAdFallback,
+        activeManagedAdPlacements,
+        readyNativeAdSequences,
+        adInsertionAnchorReelIndex
+    ) {
+        buildReelsFeedPages(
+            reels = reels,
+            includeNativeAds = includeNativeAdFallback,
+            managedAdPlacements = activeManagedAdPlacements,
+            readyNativeAdSequences = readyNativeAdSequences,
+            earliestNativeAdAfterReelCount = adInsertionAnchorReelIndex + 2
+        )
+    }
+
+    LaunchedEffect(
+        BuildConfig.ADS_ENABLED,
+        canRequestNativeAds,
+        showNativeAds,
+        isDraftPreview,
+        reels.size,
+        activeManagedAdPlacements.size,
+        nativeSequencesForFeed,
+        adInsertionAnchorReelIndex
+    ) {
+        val nativeAdPages = feedPages.count { it is ReelsFeedPage.NativeAdItem }
+        val managedAdPages = feedPages.count { it is ReelsFeedPage.ManagedAdItem }
+        val nativeSequencesToPreload = nativeSequencesForFeed.filter { sequence ->
+            val slotAfterReelCount = ReelsFirstNativeAdAfterItems + (sequence * ReelsNativeAdIntervalItems)
+            slotAfterReelCount <= adInsertionAnchorReelIndex + 5
+        }
+        Log.d(
+            adDebugTag,
+            "state enabled=${BuildConfig.ADS_ENABLED}, canRequest=$canRequestNativeAds, showNative=$showNativeAds, draft=$isDraftPreview, reels=${reels.size}, nativePages=$nativeAdPages, managedPages=$managedAdPages, preloadNative=$nativeSequencesToPreload, unit=${BuildConfig.ADMOB_NATIVE_REELS_AD_UNIT_ID.take(24)}..."
+        )
+        nativeSequencesToPreload.forEach { sequence ->
+            val slotKey = "reels_native_$sequence"
+            ReelsTelemetry.nativeAd(context, action = "native_ad_requested", slotKey = slotKey)
+            VormexNativeAdCache.load(
+                context = context,
+                slotKey = slotKey,
+                adUnitId = BuildConfig.ADMOB_NATIVE_REELS_AD_UNIT_ID,
+                onLoaded = {
+                    Log.d(adDebugTag, "preloaded native reels ad sequence=$sequence")
+                    ReelsTelemetry.nativeAd(context, action = "native_ad_filled", slotKey = slotKey)
+                    nativeAdSlotsVersion++
+                },
+                onFailed = { reason ->
+                    Log.w(adDebugTag, "native reels ad sequence=$sequence failed: $reason")
+                    val action = if (reason.contains("no fill", ignoreCase = true)) {
+                        "native_ad_no_fill"
+                    } else {
+                        "native_ad_load_failed"
+                    }
+                    ReelsTelemetry.nativeAd(context, action = action, slotKey = slotKey, reason = reason)
+                }
+            )
+        }
+    }
+    LaunchedEffect(skippedNativeAdSequences) {
+        skippedNativeAdSequences.forEach { sequence ->
+            ReelsTelemetry.nativeAd(
+                context,
+                action = "ad_slot_skipped",
+                slotKey = "reels_native_$sequence",
+                reason = "not_ready_before_anchor"
+            )
+        }
+    }
+    val initialPage = remember(initialIndex, feedPages) {
+        feedPages.indexOfFirst { page ->
+            page is ReelsFeedPage.ReelItem && page.reelIndex == initialIndex.coerceIn(0, (reels.size - 1).coerceAtLeast(0))
+        }.takeIf { it >= 0 } ?: 0
+    }
 
     DisposableEffect(hostActivity) {
         hostActivity?.let { activity ->
@@ -506,33 +621,55 @@ fun ReelsFeedScreen(
     }
 
     val pagerState = rememberPagerState(
-        initialPage = initialIndex,
-        pageCount = { reels.size }
+        initialPage = initialPage,
+        pageCount = { feedPages.size }
     )
     
     // Track current visible reel for autoplay
     val currentPage by remember { derivedStateOf { pagerState.currentPage } }
+    val currentReelIndex = (feedPages.getOrNull(currentPage) as? ReelsFeedPage.ReelItem)?.reelIndex
+    val isCurrentPageNativeAd = feedPages.getOrNull(currentPage).let { page ->
+        page is ReelsFeedPage.NativeAdItem || page is ReelsFeedPage.ManagedAdItem
+    }
     
-    LaunchedEffect(currentPage) {
-        onReelChanged(currentPage)
+    LaunchedEffect(currentPage, reels.size, feedPages.size, includeAdSlots) {
+        val reelIndex = currentReelIndex
+        if (reelIndex != null) {
+            adInsertionAnchorReelIndex = reelIndex
+            onReelChanged(reelIndex)
+            onResumePlayback(reelIndex)
+            if (shouldPrefetchMoreReels(reelIndex, reels.size)) {
+                onLoadMore()
+            }
+        } else {
+            onPausePlayback(false)
+        }
 
-        // Load more when near the end
-        if (currentPage >= reels.size - REELS_LOAD_MORE_THRESHOLD_PAGES) {
+        if (ReelsNativeAdPagingPolicy.shouldLoadMoreForPage(currentPage, feedPages.size)) {
             onLoadMore()
         }
     }
 
-    LaunchedEffect(reels) {
+    LaunchedEffect(reels, includeAdSlots, currentPage) {
         if (reels.isNotEmpty()) {
-            onResumePlayback(currentPage.coerceIn(0, reels.lastIndex))
+            (feedPages.getOrNull(currentPage) as? ReelsFeedPage.ReelItem)
+                ?.reelIndex
+                ?.let { onResumePlayback(it.coerceIn(0, reels.lastIndex)) }
         }
     }
 
-    DisposableEffect(lifecycleOwner, currentPage) {
+    DisposableEffect(lifecycleOwner, currentPage, reels.size, includeAdSlots) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> onPausePlayback(false)
-                Lifecycle.Event.ON_RESUME -> onResumePlayback(currentPage)
+                Lifecycle.Event.ON_RESUME -> {
+                    val reelIndex = (feedPages.getOrNull(currentPage) as? ReelsFeedPage.ReelItem)?.reelIndex
+                    if (reelIndex != null) {
+                        onResumePlayback(reelIndex)
+                    } else {
+                        onPausePlayback(false)
+                    }
+                }
                 Lifecycle.Event.ON_STOP -> onPausePlayback(true)
                 else -> {}
             }
@@ -568,96 +705,100 @@ fun ReelsFeedScreen(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),
             beyondViewportPageCount = 1,
-            key = { index -> reels[index].id },
+            key = { index -> feedPages[index].pageKey },
             pageSize = PageSize.Fill,
             pageSpacing = 0.dp
         ) { page ->
-            val reel = reels[page]
-            val isActive = page == currentPage
-            val player = if (isActive) playerForIndex(page) else null
+            when (val feedPage = feedPages[page]) {
+                is ReelsFeedPage.ReelItem -> {
+                    val reel = feedPage.reel
+                    val reelIndex = feedPage.reelIndex
+                    val isActive = page == currentPage
+                    val player = if (isActive) playerForIndex(reelIndex) else null
 
-            ReelCard(
-                pageIndex = page,
-                reel = reel,
-                player = player,
-                isActive = isActive,
-                onLike = { onLike(reel.id) },
-                onSave = { onSave(reel.id) },
-                onComment = { onComment(reel.id) },
-                onShare = { onShare(reel.id) },
-                onProfileClick = { onProfileClick(reel.author.id) },
-                onPlaybackError = { onPlaybackError(page) },
-                onRetryPlayback = { onRetryPlayback(page) },
-                onTrackView = { watchTime, completed ->
-                    onTrackView(reel.id, watchTime, completed)
+                    ReelCard(
+                        pageIndex = reelIndex,
+                        reel = reel,
+                        player = player,
+                        isActive = isActive,
+                        onLike = { onLike(reel.id) },
+                        onSave = { onSave(reel.id) },
+                        onComment = { onComment(reel.id) },
+                        onShare = { onShare(reel.id) },
+                        onProfileClick = { onProfileClick(reel.author.id) },
+                        onPlaybackError = { onPlaybackError(reelIndex) },
+                        onRetryPlayback = { onRetryPlayback(reelIndex) },
+                        onTrackView = { watchTime, completed ->
+                            onTrackView(reel.id, watchTime, completed)
+                        },
+                        onFirstFrameRendered = { onFirstFrameRendered(reel.id) }
+                    )
                 }
-            )
-        }
-
-        Box(
-            modifier = Modifier
-                .statusBarsPadding()
-                .padding(16.dp)
-                .size(44.dp)
-                .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.34f))
-                .clickable(onClick = onDismiss)
-                .align(Alignment.TopStart),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                contentDescription = "Back",
-                tint = Color.White,
-                modifier = Modifier.size(23.dp)
-            )
-        }
-
-        val currentReelForActions = reels.getOrNull(currentPage)
-        if (isDraftPreview && currentReelForActions != null) {
-            val canPublish = !isPublishingDraft
-            Row(
-                modifier = Modifier
-                    .statusBarsPadding()
-                    .padding(16.dp)
-                    .height(44.dp)
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(if (canPublish) Color(0xFF0095F6) else Color.White.copy(alpha = 0.18f))
-                    .clickable(enabled = canPublish) {
-                        onPublishDraftPreview(currentReelForActions.id)
+                is ReelsFeedPage.NativeAdItem -> {
+                    LaunchedEffect(feedPage.slotKey) {
+                        ReelsTelemetry.nativeAd(context, action = "native_ad_shown", slotKey = feedPage.slotKey)
                     }
-                    .padding(horizontal = 14.dp)
-                    .align(Alignment.TopEnd),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.UploadFile,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(19.dp)
-                )
-                BasicText(
-                    if (isPublishingDraft) "Publishing" else "Publish",
-                    style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold)
-                )
+                    VormexNativeReelsAdPage(
+                        slotKey = feedPage.slotKey,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                is ReelsFeedPage.ManagedAdItem -> {
+                    ManagedReelsAdPage(
+                        ad = feedPage.ad,
+                        modifier = Modifier.fillMaxSize(),
+                        onImpression = onManagedAdImpression,
+                        onClick = onManagedAdClick
+                    )
+                }
             }
-        } else {
-            Box(
-                modifier = Modifier
-                    .statusBarsPadding()
-                    .padding(16.dp)
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.18f))
-                    .clickable { onCreateClick() }
-                    .align(Alignment.TopEnd),
-                contentAlignment = Alignment.Center
-            ) {
-                BasicText(
-                    "+",
-                    style = TextStyle(Color.White, 26.sp, FontWeight.Bold)
-                )
+        }
+
+        if (!isCurrentPageNativeAd) {
+            val currentReelForActions = currentReelIndex?.let { reels.getOrNull(it) }
+            if (isDraftPreview && currentReelForActions != null) {
+                val canPublish = !isPublishingDraft
+                Row(
+                    modifier = Modifier
+                        .statusBarsPadding()
+                        .padding(16.dp)
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(if (canPublish) Color(0xFF0095F6) else Color.White.copy(alpha = 0.18f))
+                        .clickable(enabled = canPublish) {
+                            onPublishDraftPreview(currentReelForActions.id)
+                        }
+                        .padding(horizontal = 14.dp)
+                        .align(Alignment.TopEnd),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.UploadFile,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(19.dp)
+                    )
+                    BasicText(
+                        if (isPublishingDraft) "Publishing" else "Publish",
+                        style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold)
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .statusBarsPadding()
+                        .padding(16.dp)
+                        .size(44.dp)
+                        .clickable { onCreateClick() }
+                        .align(Alignment.TopEnd),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        "+",
+                        style = TextStyle(Color.White, 26.sp, FontWeight.Bold)
+                    )
+                }
             }
         }
     }
@@ -680,7 +821,8 @@ private fun ReelCard(
     onProfileClick: () -> Unit,
     onPlaybackError: () -> Boolean,
     onRetryPlayback: () -> Unit,
-    onTrackView: (Long, Boolean) -> Unit
+    onTrackView: (Long, Boolean) -> Unit,
+    onFirstFrameRendered: () -> Unit
 ) {
     val context = LocalContext.current
     val networkAvailable by rememberNetworkAvailable()
@@ -779,6 +921,9 @@ private fun ReelCard(
                 }
 
                 override fun onRenderedFirstFrame() {
+                    if (!hasRenderedFirstFrame) {
+                        onFirstFrameRendered()
+                    }
                     hasRenderedFirstFrame = true
                     isLoading = false
                     playbackErrorMessage = null
@@ -786,7 +931,11 @@ private fun ReelCard(
 
                 override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                     hasRenderedFirstFrame = false
-                    if (onPlaybackError()) {
+                    if (error.hasHttpResponseCode(404) || error.hasHttpResponseCode(410)) {
+                        waitingForNetwork = false
+                        playbackErrorMessage = "Reel unavailable"
+                        isLoading = false
+                    } else if (onPlaybackError()) {
                         isLoading = true
                         playbackErrorMessage = null
                         waitingForNetwork = false
@@ -1043,6 +1192,7 @@ private fun ReelCard(
                         )
                         VerificationBadge(
                             verified = reel.author.hasVerificationBadge(),
+                            badgeStyle = reel.author.verificationBadgeStyle(),
                             size = VerificationBadgeSize.Small
                         )
                     }
@@ -1269,6 +1419,16 @@ private fun Context.isNetworkAvailable(): Boolean {
     val activeNetwork = connectivityManager.activeNetwork ?: return false
     val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
     return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+}
+
+private fun Throwable.hasHttpResponseCode(code: Int): Boolean {
+    var current: Throwable? = this
+    while (current != null) {
+        val httpError = current as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
+        if (httpError?.responseCode == code) return true
+        current = current.cause
+    }
+    return false
 }
 
 /**
@@ -1844,6 +2004,7 @@ private fun ReelCommentThreadItem(
                     )
                     VerificationBadge(
                         verified = comment.author.hasVerificationBadge(),
+                        badgeStyle = comment.author.verificationBadgeStyle(),
                         size = VerificationBadgeSize.Micro
                     )
                 }
@@ -1947,6 +2108,7 @@ private fun ReelCommentThreadItem(
                                     )
                                     VerificationBadge(
                                         verified = reply.author.hasVerificationBadge(),
+                                        badgeStyle = reply.author.verificationBadgeStyle(),
                                         size = VerificationBadgeSize.Micro
                                     )
                                 }

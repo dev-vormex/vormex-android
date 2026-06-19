@@ -1,92 +1,103 @@
 package com.kyant.backdrop.catalog.payments
 
-import com.android.billingclient.api.BillingClient
+import com.kyant.backdrop.catalog.network.models.PremiumPlanOption
+import com.razorpay.Checkout
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PremiumCheckoutPayloadsTest {
     @Test
-    fun `premiumBillingCycleForBasePlan maps monthly and yearly prepaid base plans`() {
-        assertEquals("monthly", premiumBillingCycleForBasePlan("premium-monthly-prepaid"))
-        assertEquals("yearly", premiumBillingCycleForBasePlan("premium-yearly-prepaid"))
-        assertNull(premiumBillingCycleForBasePlan("premium-weekly-prepaid"))
+    fun `normalizePremiumCheckoutBillingCycle maps yearly aliases and defaults to monthly`() {
+        assertEquals("yearly", normalizePremiumCheckoutBillingCycle("yearly"))
+        assertEquals("yearly", normalizePremiumCheckoutBillingCycle("annual"))
+        assertEquals("yearly", normalizePremiumCheckoutBillingCycle(" Annually "))
+        assertEquals("monthly", normalizePremiumCheckoutBillingCycle("monthly"))
+        assertEquals("monthly", normalizePremiumCheckoutBillingCycle("weekly"))
+        assertEquals("monthly", normalizePremiumCheckoutBillingCycle(null))
     }
 
     @Test
-    fun `selectPremiumPlayOffer picks the requested billing cycle`() {
-        val offers = listOf(
-            premiumOffer("monthly", PREMIUM_PLAY_MONTHLY_BASE_PLAN_ID, "$1.99"),
-            premiumOffer("yearly", PREMIUM_PLAY_YEARLY_BASE_PLAN_ID, "$9.99")
+    fun `selectPremiumCheckoutPlanOption picks the requested billing cycle`() {
+        val options = listOf(
+            premiumPlan("monthly", "INR 99"),
+            premiumPlan("yearly", "INR 999")
         )
 
-        assertEquals(PREMIUM_PLAY_MONTHLY_BASE_PLAN_ID, selectPremiumPlayOffer(offers, "monthly")?.basePlanId)
-        assertEquals(PREMIUM_PLAY_YEARLY_BASE_PLAN_ID, selectPremiumPlayOffer(offers, "yearly")?.basePlanId)
+        assertEquals("monthly", selectPremiumCheckoutPlanOption(options, "monthly")?.billingCycle)
+        assertEquals("yearly", selectPremiumCheckoutPlanOption(options, "yearly")?.billingCycle)
     }
 
     @Test
-    fun `selectPremiumPlayOffer falls back to monthly when requested cycle is missing`() {
-        val offers = listOf(
-            premiumOffer("monthly", PREMIUM_PLAY_MONTHLY_BASE_PLAN_ID, "$1.99"),
-            premiumOffer("yearly", PREMIUM_PLAY_YEARLY_BASE_PLAN_ID, "$9.99")
+    fun `selectPremiumCheckoutPlanOption falls back to monthly when requested cycle is missing`() {
+        val options = listOf(
+            premiumPlan("monthly", "INR 99"),
+            premiumPlan("yearly", "INR 999")
         )
 
-        assertEquals(PREMIUM_PLAY_MONTHLY_BASE_PLAN_ID, selectPremiumPlayOffer(offers, "weekly")?.basePlanId)
+        assertEquals("monthly", selectPremiumCheckoutPlanOption(options, "weekly")?.billingCycle)
     }
 
     @Test
-    fun `googlePlayObfuscatedAccountId is deterministic and non raw`() {
-        val first = googlePlayObfuscatedAccountId("user_123")
-        val second = googlePlayObfuscatedAccountId("user_123")
-        val other = googlePlayObfuscatedAccountId("user_456")
-
-        assertEquals(first, second)
-        assertNotEquals(first, other)
-        assertEquals(64, first.length)
-        assertTrue(first.all { it in '0'..'9' || it in 'a'..'f' })
-        assertNotEquals("user_123", first)
-    }
-
-    @Test
-    fun `resolvePremiumPlayBillingErrorMessage stays quiet when the user cancels`() {
+    fun `buildPremiumVerifyRequestOrNull requires all Razorpay verification fields`() {
         assertNull(
-            resolvePremiumPlayBillingErrorMessage(
-                responseCode = BillingClient.BillingResponseCode.USER_CANCELED,
-                debugMessage = "User closed purchase sheet"
+            buildPremiumVerifyRequestOrNull(
+                razorpayOrderId = "order_123",
+                razorpayPaymentId = "pay_123",
+                razorpaySignature = null
+            )
+        )
+
+        val request = buildPremiumVerifyRequestOrNull(
+            razorpayOrderId = " order_123 ",
+            razorpayPaymentId = " pay_123 ",
+            razorpaySignature = " sig_123 "
+        )
+
+        assertNotNull(request)
+        assertEquals("order_123", request?.razorpayOrderId)
+        assertEquals("pay_123", request?.razorpayPaymentId)
+        assertEquals("sig_123", request?.razorpaySignature)
+    }
+
+    @Test
+    fun `resolveRazorpayCheckoutErrorMessage stays quiet when the user cancels`() {
+        assertNull(
+            resolveRazorpayCheckoutErrorMessage(
+                code = Checkout.PAYMENT_CANCELED,
+                response = "User closed checkout"
             )
         )
     }
 
     @Test
-    fun `resolvePremiumPlayBillingErrorMessage explains pending setup and failures`() {
+    fun `resolveRazorpayCheckoutErrorMessage explains gateway startup and network failures`() {
         assertEquals(
-            "Google Play billing is temporarily unavailable. Please try again.",
-            resolvePremiumPlayBillingErrorMessage(BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE)
+            "Razorpay checkout could not reach the network. Please check your connection and try again.",
+            resolveRazorpayCheckoutErrorMessage(Checkout.NETWORK_ERROR)
         )
         assertEquals(
-            "Vormex Premium is not available in Google Play yet.",
-            resolvePremiumPlayBillingErrorMessage(BillingClient.BillingResponseCode.ITEM_UNAVAILABLE)
+            "Premium checkout could not be started. Please try again.",
+            resolveRazorpayCheckoutErrorMessage(Checkout.INVALID_OPTIONS)
         )
         assertEquals(
-            "Premium purchase could not be completed. Please try again.",
-            resolvePremiumPlayBillingErrorMessage(responseCode = 999, debugMessage = " ")
+            "Premium payment could not be completed. Please try again.",
+            resolveRazorpayCheckoutErrorMessage(code = 999, response = " ")
         )
     }
 
-    private fun premiumOffer(
+    private fun premiumPlan(
         billingCycle: String,
-        basePlanId: String,
-        formattedPrice: String
-    ): PremiumPlayPlanOffer {
-        return PremiumPlayPlanOffer(
+        displayAmount: String
+    ): PremiumPlanOption {
+        return PremiumPlanOption(
             billingCycle = billingCycle,
-            basePlanId = basePlanId,
-            offerToken = "offer-token-$billingCycle",
-            formattedPrice = formattedPrice,
-            priceAmountMicros = 1_990_000,
-            priceCurrencyCode = "USD"
+            amountMinor = if (billingCycle == "yearly") 99900 else 9900,
+            currency = "INR",
+            displayAmount = displayAmount,
+            durationDays = if (billingCycle == "yearly") 365 else 31,
+            label = billingCycle.replaceFirstChar { it.uppercase() }
         )
     }
 }

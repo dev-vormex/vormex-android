@@ -134,7 +134,7 @@ fun CommentIcon(
     }
 }
 
-// Header notification bell icon
+// Header notification icon
 @Composable
 fun NotificationBellIcon(
     color: Color,
@@ -143,31 +143,16 @@ fun NotificationBellIcon(
 ) {
     Canvas(modifier = modifier.size(size)) {
         val s = size.toPx()
-        val strokeWidth = s / 13f
+        val strokeWidth = s / 12.5f
 
         val bellPath = Path().apply {
-            moveTo(s * 0.3f, s * 0.7f)
-            cubicTo(
-                s * 0.3f, s * 0.5f,
-                s * 0.34f, s * 0.36f,
-                s * 0.43f, s * 0.28f
-            )
-            cubicTo(
-                s * 0.46f, s * 0.22f,
-                s * 0.54f, s * 0.22f,
-                s * 0.57f, s * 0.28f
-            )
-            cubicTo(
-                s * 0.66f, s * 0.36f,
-                s * 0.7f, s * 0.5f,
-                s * 0.7f, s * 0.7f
-            )
-            lineTo(s * 0.78f, s * 0.7f)
-            quadraticTo(s * 0.83f, s * 0.7f, s * 0.83f, s * 0.76f)
-            quadraticTo(s * 0.83f, s * 0.82f, s * 0.78f, s * 0.82f)
-            lineTo(s * 0.22f, s * 0.82f)
-            quadraticTo(s * 0.17f, s * 0.82f, s * 0.17f, s * 0.76f)
-            quadraticTo(s * 0.17f, s * 0.7f, s * 0.22f, s * 0.7f)
+            moveTo(s * 0.28f, s * 0.66f)
+            lineTo(s * 0.28f, s * 0.48f)
+            cubicTo(s * 0.28f, s * 0.32f, s * 0.38f, s * 0.22f, s * 0.5f, s * 0.22f)
+            cubicTo(s * 0.62f, s * 0.22f, s * 0.72f, s * 0.32f, s * 0.72f, s * 0.48f)
+            lineTo(s * 0.72f, s * 0.66f)
+            lineTo(s * 0.84f, s * 0.8f)
+            lineTo(s * 0.16f, s * 0.8f)
             close()
         }
 
@@ -180,23 +165,37 @@ fun NotificationBellIcon(
         drawLine(
             color = color,
             start = Offset(s * 0.5f, s * 0.14f),
-            end = Offset(s * 0.5f, s * 0.22f),
+            end = Offset(s * 0.5f, s * 0.2f),
             strokeWidth = strokeWidth,
             cap = StrokeCap.Round
-        )
-
-        drawCircle(
-            color = color,
-            radius = s * 0.04f,
-            center = Offset(s * 0.5f, s * 0.68f)
         )
 
         drawLine(
             color = color,
-            start = Offset(s * 0.4f, s * 0.89f),
-            end = Offset(s * 0.6f, s * 0.89f),
+            start = Offset(s * 0.38f, s * 0.9f),
+            end = Offset(s * 0.62f, s * 0.9f),
             strokeWidth = strokeWidth,
             cap = StrokeCap.Round
+        )
+
+        val leftRing = Path().apply {
+            moveTo(s * 0.19f, s * 0.33f)
+            cubicTo(s * 0.12f, s * 0.42f, s * 0.11f, s * 0.55f, s * 0.16f, s * 0.66f)
+        }
+        drawPath(
+            path = leftRing,
+            color = color,
+            style = Stroke(strokeWidth * 0.8f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+
+        val rightRing = Path().apply {
+            moveTo(s * 0.81f, s * 0.33f)
+            cubicTo(s * 0.88f, s * 0.42f, s * 0.89f, s * 0.55f, s * 0.84f, s * 0.66f)
+        }
+        drawPath(
+            path = rightRing,
+            color = color,
+            style = Stroke(strokeWidth * 0.8f, cap = StrokeCap.Round, join = StrokeJoin.Round)
         )
     }
 }

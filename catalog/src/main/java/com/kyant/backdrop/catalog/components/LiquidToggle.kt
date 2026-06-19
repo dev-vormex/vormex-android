@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceIn
@@ -58,7 +59,12 @@ fun LiquidToggle(
     accentColor: Color? = null,
     trackColor: Color? = null,
     thumbColor: Color? = null,
-    thumbBorderColor: Color? = null
+    thumbBorderColor: Color? = null,
+    trackWidth: Dp = 64.dp,
+    trackHeight: Dp = 28.dp,
+    thumbWidth: Dp = 40.dp,
+    thumbHeight: Dp = 24.dp,
+    trackPadding: Dp = 2.dp
 ) {
     val appearance = currentVormexAppearance()
     val shouldUseGlass = useGlassEffects ?: appearance.isGlassTheme
@@ -76,7 +82,9 @@ fun LiquidToggle(
 
     val density = LocalDensity.current
     val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
-    val dragWidth = with(density) { 20f.dp.toPx() }
+    val dragWidth = with(density) {
+        (trackWidth.toPx() - thumbWidth.toPx() - (trackPadding.toPx() * 2f)).coerceAtLeast(0f)
+    }
     val animationScope = rememberCoroutineScope()
     var didDrag by remember { mutableStateOf(false) }
     var fraction by remember { mutableFloatStateOf(if (selected()) 1f else 0f) }
@@ -141,7 +149,7 @@ fun LiquidToggle(
                     val fraction = dampedDragAnimation.value
                     drawRect(lerp(resolvedTrackColor, resolvedAccentColor, fraction))
                 }
-                .size(64f.dp, 28f.dp)
+                .size(trackWidth, trackHeight)
         )
 
         val thumbSurfaceModifier = if (shouldUseGlass) {
@@ -212,7 +220,7 @@ fun LiquidToggle(
             Modifier
                 .graphicsLayer {
                     val fraction = dampedDragAnimation.value
-                    val padding = 2f.dp.toPx()
+                    val padding = trackPadding.toPx()
                     translationX =
                         if (isLtr) lerp(padding, padding + dragWidth, fraction)
                         else lerp(-padding, -(padding + dragWidth), fraction)
@@ -222,7 +230,7 @@ fun LiquidToggle(
                 }
                 .then(dampedDragAnimation.modifier)
                 .then(thumbSurfaceModifier)
-                .size(40f.dp, 24f.dp)
+                .size(thumbWidth, thumbHeight)
         )
     }
 }

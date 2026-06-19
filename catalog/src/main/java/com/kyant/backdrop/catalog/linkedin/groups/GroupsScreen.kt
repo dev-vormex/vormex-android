@@ -1,10 +1,13 @@
 package com.kyant.backdrop.catalog.linkedin.groups
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -119,6 +122,8 @@ fun GroupsScreen(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
+    openCreateRequestKey: Int = 0,
+    onMessageShortcutChanged: () -> Unit = {},
     onNavigateToGroupDetail: (String) -> Unit = {},
     onNavigateToGroupChat: (String) -> Unit = {},
     onNavigateBack: () -> Unit = {}
@@ -130,6 +135,12 @@ fun GroupsScreen(
     LaunchedEffect(Unit) {
         viewModel.loadMyGroups()
         viewModel.loadCategories()
+    }
+
+    LaunchedEffect(openCreateRequestKey) {
+        if (openCreateRequestKey > 0) {
+            viewModel.showCreateModal(true)
+        }
     }
     
     Box(Modifier.fillMaxSize()) {
@@ -266,6 +277,183 @@ fun GroupsScreen(
                     viewModel.createGroup(name, description, privacy, category, rules)
                 }
             )
+        }
+
+        AnimatedVisibility(
+            visible = uiState.messageShortcutPromptGroup != null,
+            enter = slideInVertically(
+                animationSpec = tween(durationMillis = 650),
+                initialOffsetY = { -it - 32 }
+            ) + fadeIn(animationSpec = tween(durationMillis = 450)),
+            exit = slideOutVertically(
+                animationSpec = tween(durationMillis = 360),
+                targetOffsetY = { -it - 32 }
+            ) + fadeOut(animationSpec = tween(durationMillis = 240)),
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            uiState.messageShortcutPromptGroup?.let { group ->
+                MessageShortcutPromptCard(
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    group = group,
+                    isUpdating = group.id in uiState.updatingMessageShortcutIds,
+                    onAdd = {
+                        viewModel.setGroupMessageShortcut(group, true, onUpdated = onMessageShortcutChanged)
+                    },
+                    onDismiss = { viewModel.dismissMessageShortcutPrompt() }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageShortcutPromptCard(
+    contentColor: Color,
+    accentColor: Color,
+    group: Group,
+    isUpdating: Boolean,
+    onAdd: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val imageUrl = group.iconImage ?: group.coverImage
+    val initial = group.name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "G"
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 12.dp)
+            .groupSurface(
+                contentColor = contentColor,
+                cornerRadius = 18.dp,
+                containerColor = if (contentColor == Color.White) {
+                    Color(0xFF181C22).copy(alpha = 0.96f)
+                } else {
+                    Color.White.copy(alpha = 0.96f)
+                },
+                outlineColor = accentColor.copy(alpha = 0.24f)
+            )
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(accentColor.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (!imageUrl.isNullOrBlank()) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(imageUrl)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    BasicText(
+                        initial,
+                        style = TextStyle(
+                            color = accentColor,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                BasicText(
+                    group.name,
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        when (group.privacy) {
+                            "PUBLIC" -> Icons.Default.Public
+                            "PRIVATE" -> Icons.Default.Lock
+                            else -> Icons.Default.VisibilityOff
+                        },
+                        contentDescription = null,
+                        tint = contentColor.copy(alpha = 0.56f),
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    BasicText(
+                        "${group.privacy.lowercase().replaceFirstChar { it.uppercase() }} · ${group.memberCount} members",
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.58f),
+                            fontSize = 12.sp
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(accentColor)
+                    .clickable(enabled = !isUpdating, onClick = onAdd)
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isUpdating) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    BasicText(
+                        "Add to Messages",
+                        style = TextStyle(
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(contentColor.copy(alpha = 0.09f))
+                    .clickable(enabled = !isUpdating, onClick = onDismiss)
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                BasicText(
+                    "Not now",
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.74f),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+            }
         }
     }
 }

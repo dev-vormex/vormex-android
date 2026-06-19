@@ -4,6 +4,9 @@ import android.content.Context
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -19,6 +22,7 @@ import com.kyant.backdrop.catalog.network.models.AgentSessionState
 import com.kyant.backdrop.catalog.network.models.AgentTurnResponse
 import com.kyant.backdrop.catalog.network.models.AgentUiIntent
 import com.kyant.backdrop.catalog.network.models.AgentVoiceTurnResponse
+import com.kyant.backdrop.catalog.network.models.AssistantChatHistoryItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,6 +34,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
 import java.io.File
+import java.util.Locale
 
 data class AgentMessage(
     val role: String,
@@ -44,17 +49,24 @@ data class AgentUiState(
     val isVoiceSessionConnecting: Boolean = false,
     val isRecordingVoice: Boolean = false,
     val isPlayingAudio: Boolean = false,
+    val isSpeakingAssistant: Boolean = false,
     val isVoiceListening: Boolean = false,
     val isVoiceThinking: Boolean = false,
     val liveUserTranscript: String = "",
     val liveAssistantTranscript: String = "",
     val isRefreshingMeta: Boolean = false,
+    val isLoadingEntitlements: Boolean = false,
     val isSavingGoal: Boolean = false,
     val isResolvingApproval: Boolean = false,
     val autoRunEnabled: Boolean = false,
     val autonomyMode: String = "approval",
+    val aiTier: String = "free",
+    val canUseAgent: Boolean = false,
     val powerModeEligible: Boolean = false,
     val isPremium: Boolean = false,
+    val assistantDailyLimit: Int? = null,
+    val assistantDailyRemaining: Int? = null,
+    val powerCreditsBalance: Int = 0,
     val socketConnected: Boolean = false,
     val error: String? = null,
     val liveStatus: String? = null,
@@ -79,18 +91,23 @@ class AgentViewModel(
     private var voiceRecordingFile: File? = null
     private var mediaPlayer: MediaPlayer? = null
     private var responsePulsePlayer: MediaPlayer? = null
+    private var assistantTts: TextToSpeech? = null
+    private var assistantTtsReady = false
+    private var currentAssistantSpeechId: String? = null
     private val realtimeVoiceManager = AgentRealtimeVoiceManager()
     private var shouldStartRealtimeCapture = false
     private var shouldStartRealtimeCaptureAfterPrompt = false
     private var lastSyncedSurfaceKey: String? = null
     private var pendingNavigationTarget: String? = null
     private var pendingRealtimePrompt: String? = null
+    private var entitlementsLoaded = false
     private val inlineResultsJson = Json {
         ignoreUnknownKeys = true
         isLenient = true
     }
 
     init {
+        initializeAssistantTts()
         observeSocket()
         viewModelScope.launch {
             val storedAutoRun = AgentApiService.getStoredAutoRunEnabled(applicationContext)
@@ -101,28 +118,249 @@ class AgentViewModel(
                     autonomyMode = storedAutonomyMode
                 )
             }
+            loadAiEntitlements(silent = true)
             connectSocketIfPossible(null)
-            refreshPendingActions(silent = true)
-            refreshGoals(silent = true)
         }
+    }
+
+    private fun initializeAssistantTts() {
+        assistantTts = TextToSpeech(applicationContext) { status ->
+            val engine = assistantTts
+            if (status == TextToSpeech.SUCCESS && engine != null) {
+                configureAssistantTts(engine)
+                assistantTtsReady = true
+            } else {
+                assistantTtsReady = false
+            }
+        }
+    }
+
+    private fun configureAssistantTts(engine: TextToSpeech) {
+        runCatching {
+            engine.language = Locale.US
+            selectFeminineTtsVoice(engine)?.let { voice ->
+                engine.voice = voice
+            }
+            engine.setPitch(1.08f)
+            engine.setSpeechRate(0.96f)
+            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                private fun markSpeechError(utteranceId: String?) {
+                    if (utteranceId == currentAssistantSpeechId) {
+                        _uiState.update {
+                            it.copy(
+                                isPlayingAudio = false,
+                                isSpeakingAssistant = false,
+                                liveStatus = "Voice playback failed."
+                            )
+                        }
+                    }
+                }
+
+                override fun onStart(utteranceId: String?) {
+                    if (utteranceId == currentAssistantSpeechId) {
+                        _uiState.update {
+                            it.copy(
+                                isPlayingAudio = true,
+                                isSpeakingAssistant = true,
+                                liveStatus = "Speaking reply..."
+                            )
+                        }
+                    }
+                }
+
+                override fun onDone(utteranceId: String?) {
+                    if (utteranceId == currentAssistantSpeechId) {
+                        _uiState.update {
+                            it.copy(
+                                isPlayingAudio = false,
+                                isSpeakingAssistant = false
+                            )
+                        }
+                    }
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    markSpeechError(utteranceId)
+                }
+
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    markSpeechError(utteranceId)
+                }
+            })
+        }
+    }
+
+    private fun selectFeminineTtsVoice(engine: TextToSpeech): Voice? {
+        val voices = engine.voices ?: return null
+        val deviceLocale = Locale.getDefault()
+
+        return voices
+            .filter { voice ->
+                val language = voice.locale?.language
+                language == deviceLocale.language || language == Locale.US.language
+            }
+            .maxByOrNull { voice ->
+                val name = voice.name.lowercase(Locale.US)
+                var score = 0
+                if (voice.locale?.language == deviceLocale.language) score += 24
+                if (voice.locale?.country == deviceLocale.country) score += 8
+                if (voice.locale?.language == Locale.US.language) score += 12
+                if ("female" in name || "#female" in name) score += 120
+                if ("woman" in name || "feminine" in name) score += 100
+                if ("shimmer" in name) score += 80
+                if ("sfg" in name || "female_1" in name || "female-1" in name) score += 60
+                if (!voice.isNetworkConnectionRequired) score += 8
+                score + voice.quality
+            }
+    }
+
+    private fun shouldSpeakAssistantReplies(): Boolean {
+        val state = _uiState.value
+        return state.canUseAgent || state.isPremium || state.aiTier == "premium" || state.aiTier == "creator_pro"
+    }
+
+    private fun speakAssistantReplyIfPremium(text: String) {
+        val spokenText = text.trim().take(3_800)
+        if (spokenText.isBlank() || !shouldSpeakAssistantReplies()) return
+
+        val engine = assistantTts
+        if (!assistantTtsReady || engine == null) {
+            _uiState.update { it.copy(liveStatus = "Voice is getting ready.") }
+            return
+        }
+
+        stopAssistantSpeech()
+        val utteranceId = "vormex_ai_reply_${System.currentTimeMillis()}"
+        currentAssistantSpeechId = utteranceId
+        val result = engine.speak(spokenText, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        if (result == TextToSpeech.ERROR) {
+            _uiState.update {
+                it.copy(
+                    isPlayingAudio = false,
+                    isSpeakingAssistant = false,
+                    liveStatus = "Voice playback failed."
+                )
+            }
+        }
+    }
+
+    fun stopAssistantSpeech() {
+        currentAssistantSpeechId = null
+        runCatching { assistantTts?.stop() }
+        _uiState.update {
+            it.copy(
+                isPlayingAudio = false,
+                isSpeakingAssistant = false
+            )
+        }
+    }
+
+    fun refreshAiEntitlements(silent: Boolean = false) {
+        viewModelScope.launch {
+            loadAiEntitlements(silent = silent)
+        }
+    }
+
+    private suspend fun loadAiEntitlements(silent: Boolean = false): Boolean {
+        if (_uiState.value.isLoadingEntitlements) {
+            return entitlementsLoaded
+        }
+
+        if (!silent) {
+            _uiState.update { it.copy(isLoadingEntitlements = true, error = null) }
+        } else {
+            _uiState.update { it.copy(isLoadingEntitlements = true) }
+        }
+
+        return AgentApiService.getAiEntitlements(applicationContext).fold(
+            onSuccess = { entitlements ->
+                entitlementsLoaded = true
+                val canUseAgent = entitlements.canUseAgent
+                val shouldDowngradeAutonomy = !canUseAgent && _uiState.value.autonomyMode == "power"
+                if (shouldDowngradeAutonomy) {
+                    AgentApiService.setStoredAutonomyMode(applicationContext, "approval")
+                }
+                _uiState.update { state ->
+                    val nextAutonomyMode = if (canUseAgent) state.autonomyMode else "approval"
+                    val nextAutoRun = canUseAgent && nextAutonomyMode == "power"
+                    state.copy(
+                        isLoadingEntitlements = false,
+                        aiTier = entitlements.tier.ifBlank { "free" },
+                        canUseAgent = canUseAgent,
+                        powerModeEligible = canUseAgent,
+                        isPremium = entitlements.isPremium || entitlements.isCreatorPro || entitlements.isAdmin,
+                        assistantDailyLimit = state.assistantDailyLimit,
+                        assistantDailyRemaining = state.assistantDailyRemaining,
+                        powerCreditsBalance = entitlements.balance,
+                        autoRunEnabled = nextAutoRun,
+                        autonomyMode = nextAutonomyMode,
+                        sessionState = if (canUseAgent) {
+                            state.sessionState?.copy(
+                                powerModeEligible = true,
+                                isPremium = true,
+                                allowAutonomousActions = nextAutoRun,
+                                requestedAutonomyMode = nextAutonomyMode,
+                                effectiveAutonomyMode = nextAutonomyMode
+                            )
+                        } else {
+                            null
+                        },
+                        error = if (silent) state.error else null
+                    )
+                }
+                if (!canUseAgent) {
+                    AgentApiService.clearSession(applicationContext)
+                }
+                true
+            },
+            onFailure = { error ->
+                _uiState.update {
+                    it.copy(
+                        isLoadingEntitlements = false,
+                        error = if (silent) it.error else error.message ?: "Could not load AI access."
+                    )
+                }
+                false
+            }
+        )
     }
 
     fun ensureSession(surface: String) {
         viewModelScope.launch {
             val normalizedSurface = normalizeAgentSurface(surface)
+            if (!entitlementsLoaded) {
+                loadAiEntitlements(silent = true)
+            }
             val autonomyMode = AgentApiService.getStoredAutonomyMode(applicationContext)
-            val autoRunEnabled = autonomyMode == "power"
+            val canUseAgent = _uiState.value.canUseAgent
+            val safeAutonomyMode = if (canUseAgent) autonomyMode else "approval"
+            val autoRunEnabled = canUseAgent && safeAutonomyMode == "power"
             _uiState.update { state ->
                 state.copy(
                     autoRunEnabled = autoRunEnabled,
-                    autonomyMode = autonomyMode,
+                    autonomyMode = safeAutonomyMode,
                     sessionState = state.sessionState?.copy(
                         allowAutonomousActions = autoRunEnabled,
-                        requestedAutonomyMode = autonomyMode,
+                        requestedAutonomyMode = safeAutonomyMode,
                         effectiveAutonomyMode = if (autoRunEnabled) "power" else "approval",
                         currentSurface = normalizedSurface
                     )
                 )
+            }
+
+            if (!canUseAgent) {
+                if (autonomyMode == "power") {
+                    AgentApiService.setStoredAutonomyMode(applicationContext, "approval")
+                }
+                _uiState.update {
+                    it.copy(
+                        isLoadingSession = false,
+                        sessionState = null,
+                        liveStatus = "Free assistant ready"
+                    )
+                }
+                return@launch
             }
 
             val existingSession = _uiState.value.sessionState
@@ -143,7 +381,7 @@ class AgentViewModel(
                 mode = "text",
                 surface = surface,
                 allowAutonomousActions = autoRunEnabled,
-                autonomyMode = autonomyMode
+                autonomyMode = safeAutonomyMode
             ).onSuccess { response ->
                 _uiState.update {
                     it.copy(
@@ -151,6 +389,7 @@ class AgentViewModel(
                         sessionState = response.sessionState,
                         autoRunEnabled = response.sessionState.effectiveAutonomyMode == "power",
                         autonomyMode = response.sessionState.effectiveAutonomyMode,
+                        canUseAgent = response.sessionState.powerModeEligible,
                         powerModeEligible = response.sessionState.powerModeEligible,
                         isPremium = response.sessionState.isPremium
                     )
@@ -230,6 +469,14 @@ class AgentViewModel(
         if (_uiState.value.isRecordingVoice || _uiState.value.isVoiceSessionConnecting) return
 
         viewModelScope.launch {
+            if (!entitlementsLoaded) {
+                loadAiEntitlements(silent = true)
+            }
+            if (!_uiState.value.canUseAgent) {
+                showPremiumWall("Live voice and app actions")
+                return@launch
+            }
+
             val autoRunEnabled = _uiState.value.autoRunEnabled
             val autonomyMode = _uiState.value.autonomyMode
             pendingRealtimePrompt = openingGreeting?.trim()?.takeIf { it.isNotBlank() }
@@ -300,6 +547,13 @@ class AgentViewModel(
         allowAutonomousActions: Boolean,
         autonomyMode: String
     ): Result<AgentSessionState> {
+        if (!entitlementsLoaded) {
+            loadAiEntitlements(silent = true)
+        }
+        if (!_uiState.value.canUseAgent) {
+            return Result.failure(Exception("Power Mode is available for Premium users. Free assistant can still help with planning and drafts."))
+        }
+
         val existingSession = _uiState.value.sessionState
         if (existingSession != null) {
             val updatedSession = existingSession.copy(
@@ -327,6 +581,7 @@ class AgentViewModel(
                         sessionState = response.sessionState,
                         autoRunEnabled = response.sessionState.effectiveAutonomyMode == "power",
                         autonomyMode = response.sessionState.effectiveAutonomyMode,
+                        canUseAgent = response.sessionState.powerModeEligible,
                         powerModeEligible = response.sessionState.powerModeEligible,
                         isPremium = response.sessionState.isPremium
                     )
@@ -397,8 +652,9 @@ class AgentViewModel(
         setAutonomyMode(if (enabled) "power" else "approval")
     }
 
-    fun setPowerModeEnabled(enabled: Boolean, powerModeEligible: Boolean = _uiState.value.powerModeEligible) {
-        if (enabled && !powerModeEligible) {
+    fun setPowerModeEnabled(enabled: Boolean, powerModeEligible: Boolean = _uiState.value.canUseAgent) {
+        val canEnablePower = powerModeEligible && _uiState.value.canUseAgent
+        if (enabled && !canEnablePower) {
             _uiState.update {
                 it.copy(
                     autoRunEnabled = false,
@@ -416,6 +672,10 @@ class AgentViewModel(
 
     fun setAutonomyMode(mode: String) {
         val normalizedMode = if (mode.equals("power", ignoreCase = true)) "power" else "approval"
+        if (normalizedMode == "power" && !_uiState.value.canUseAgent) {
+            setPowerModeEnabled(enabled = true, powerModeEligible = false)
+            return
+        }
         viewModelScope.launch {
             AgentApiService.setStoredAutonomyMode(applicationContext, normalizedMode)
             val enabled = normalizedMode == "power"
@@ -433,8 +693,26 @@ class AgentViewModel(
         }
     }
 
+    fun showPremiumWall(featureLabel: String = "Power Mode") {
+        val feature = featureLabel.trim().ifBlank { "Power Mode" }
+        _uiState.update { state ->
+            state.copy(
+                liveStatus = "Premium unlock",
+                error = null,
+                messages = state.messages + AgentMessage(
+                    role = "assistant",
+                    content = "$feature is part of Vormex AI Power Mode for Premium and Creator Pro. Free assistant can still help you plan, draft, review, and decide the next step safely."
+                )
+            )
+        }
+    }
+
     fun refreshPendingActions(silent: Boolean = false) {
         viewModelScope.launch {
+            if (!_uiState.value.canUseAgent) {
+                _uiState.update { it.copy(isRefreshingMeta = false, pendingApprovals = emptyList()) }
+                return@launch
+            }
             if (!silent) {
                 _uiState.update { it.copy(isRefreshingMeta = true, error = null) }
             }
@@ -460,6 +738,10 @@ class AgentViewModel(
 
     fun refreshGoals(silent: Boolean = false) {
         viewModelScope.launch {
+            if (!_uiState.value.canUseAgent) {
+                _uiState.update { it.copy(isRefreshingMeta = false, goals = emptyList()) }
+                return@launch
+            }
             if (!silent) {
                 _uiState.update { it.copy(isRefreshingMeta = true, error = null) }
             }
@@ -486,6 +768,10 @@ class AgentViewModel(
     fun createGoal(goal: String, category: String? = null, priority: Int? = null) {
         val trimmedGoal = goal.trim()
         if (trimmedGoal.isEmpty() || _uiState.value.isSavingGoal) return
+        if (!_uiState.value.canUseAgent) {
+            showPremiumWall("AI goals")
+            return
+        }
 
         viewModelScope.launch {
             _uiState.update { it.copy(isSavingGoal = true, error = null) }
@@ -514,6 +800,10 @@ class AgentViewModel(
 
     fun deleteGoal(goalId: String) {
         if (goalId.isBlank() || _uiState.value.isSavingGoal) return
+        if (!_uiState.value.canUseAgent) {
+            showPremiumWall("AI goals")
+            return
+        }
 
         viewModelScope.launch {
             _uiState.update { it.copy(isSavingGoal = true, error = null) }
@@ -539,6 +829,10 @@ class AgentViewModel(
 
     fun approvePendingAction(actionId: String) {
         if (actionId.isBlank() || _uiState.value.isResolvingApproval) return
+        if (!_uiState.value.canUseAgent) {
+            showPremiumWall("Agent approvals")
+            return
+        }
 
         viewModelScope.launch {
             _uiState.update { it.copy(isResolvingApproval = true, error = null) }
@@ -577,6 +871,10 @@ class AgentViewModel(
 
     fun rejectPendingAction(actionId: String) {
         if (actionId.isBlank() || _uiState.value.isResolvingApproval) return
+        if (!_uiState.value.canUseAgent) {
+            showPremiumWall("Agent approvals")
+            return
+        }
 
         viewModelScope.launch {
             _uiState.update { it.copy(isResolvingApproval = true, error = null) }
@@ -611,8 +909,8 @@ class AgentViewModel(
         val trimmed = message.trim()
         if (trimmed.isEmpty() || _uiState.value.isSending) return
 
-        val autonomyMode = _uiState.value.autonomyMode
-        val autoRunEnabled = autonomyMode == "power"
+        val priorMessages = _uiState.value.messages
+        stopAssistantSpeech()
 
         _uiState.update {
             it.copy(
@@ -624,22 +922,80 @@ class AgentViewModel(
         playResponsePulseSound()
 
         viewModelScope.launch {
-            AgentApiService.sendTurn(
-                context = applicationContext,
-                inputText = trimmed,
-                surface = surface,
-                surfaceContext = surfaceContext,
-                allowAutonomousActions = autoRunEnabled,
-                autonomyMode = autonomyMode
-            ).onSuccess { response ->
-                applyTurnResponse(response)
-            }.onFailure { error ->
-                stopResponsePulseSound()
-                _uiState.update {
-                    it.copy(
-                        isSending = false,
-                        error = error.message ?: "Agent AI is unavailable right now."
-                    )
+            if (!entitlementsLoaded) {
+                loadAiEntitlements(silent = true)
+            }
+
+            if (_uiState.value.canUseAgent) {
+                val autonomyMode = _uiState.value.autonomyMode
+                val autoRunEnabled = autonomyMode == "power"
+                AgentApiService.sendTurn(
+                    context = applicationContext,
+                    inputText = trimmed,
+                    surface = surface,
+                    surfaceContext = surfaceContext,
+                    allowAutonomousActions = autoRunEnabled,
+                    autonomyMode = autonomyMode
+                ).onSuccess { response ->
+                    applyTurnResponse(response)
+                }.onFailure { error ->
+                    stopResponsePulseSound()
+                    _uiState.update {
+                        it.copy(
+                            isSending = false,
+                            error = error.message ?: "Agent AI is unavailable right now."
+                        )
+                    }
+                }
+            } else {
+                val history = priorMessages
+                    .takeLast(10)
+                    .mapNotNull { item ->
+                        val role = when (item.role.lowercase()) {
+                            "assistant" -> "assistant"
+                            "user" -> "user"
+                            else -> return@mapNotNull null
+                        }
+                        item.content.takeIf { it.isNotBlank() }?.let { content ->
+                            AssistantChatHistoryItem(role = role, content = content)
+                        }
+                    }
+                AgentApiService.sendAssistantMessage(
+                    context = applicationContext,
+                    message = trimmed,
+                    conversationHistory = history,
+                    intent = "free_assistant",
+                    surface = normalizeAgentSurface(surface)
+                ).onSuccess { response ->
+                    stopResponsePulseSound()
+                    _uiState.update { state ->
+                        state.copy(
+                            isSending = false,
+                            aiTier = response.tier.ifBlank { state.aiTier },
+                            canUseAgent = response.canUseAgent,
+                            powerModeEligible = response.canUseAgent,
+                            isPremium = state.isPremium || response.canUseAgent,
+                            assistantDailyLimit = response.assistantDailyLimit,
+                            assistantDailyRemaining = response.assistantDailyRemaining,
+                            liveStatus = response.assistantDailyRemaining?.let { remaining ->
+                                "$remaining free AI chats left today"
+                            },
+                            messages = state.messages + AgentMessage(
+                                role = "assistant",
+                                content = response.reply.ifBlank {
+                                    "I can help plan, draft, and review. What should we improve first?"
+                                }
+                            )
+                        )
+                    }
+                }.onFailure { error ->
+                    stopResponsePulseSound()
+                    _uiState.update {
+                        it.copy(
+                            isSending = false,
+                            error = error.message ?: "Vormex AI is unavailable right now."
+                        )
+                    }
                 }
             }
         }
@@ -647,6 +1003,10 @@ class AgentViewModel(
 
     fun startVoiceRecording(context: Context) {
         if (_uiState.value.isRecordingVoice || _uiState.value.isSending) return
+        if (!_uiState.value.canUseAgent) {
+            showPremiumWall("Voice agent")
+            return
+        }
 
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
@@ -686,6 +1046,11 @@ class AgentViewModel(
         surfaceContext: Map<String, String> = emptyMap()
     ) {
         if (!_uiState.value.isRecordingVoice) return
+        if (!_uiState.value.canUseAgent) {
+            showPremiumWall("Voice agent")
+            cancelVoiceRecording()
+            return
+        }
 
         val autonomyMode = _uiState.value.autonomyMode
         val autoRunEnabled = autonomyMode == "power"
@@ -854,6 +1219,24 @@ class AgentViewModel(
         _uiState.update { it.copy(error = null) }
     }
 
+    fun clearConversation() {
+        stopResponsePulseSound()
+        stopAssistantSpeech()
+        _uiState.update {
+            it.copy(
+                messages = emptyList(),
+                pendingUiIntents = emptyList(),
+                activeInlineResults = null,
+                dismissedInlineResultIds = emptySet(),
+                inlineResultActionInProgress = emptySet(),
+                lastExecutedActions = emptyList(),
+                lastSuggestedActions = emptyList(),
+                error = null,
+                liveStatus = if (it.canUseAgent) "Ready" else "Free assistant ready"
+            )
+        }
+    }
+
     private fun resolveUiArtifacts(uiIntents: List<AgentUiIntent>): Pair<List<AgentUiIntent>, AgentInlineResultsPanel?> {
         if (uiIntents.isEmpty()) {
             return emptyList<AgentUiIntent>() to null
@@ -918,6 +1301,9 @@ class AgentViewModel(
     private fun applyTurnResponse(response: AgentTurnResponse) {
         stopResponsePulseSound()
         AgentSocketManager.updateSession(response.sessionState.sessionId)
+        val assistantText = response.assistantMessage.ifBlank {
+            "I’m here. Tell me what to do next in Vormex."
+        }
         _uiState.update { state ->
             val (navigationIntents, inlineResults, resetInlineUiState) = applyResolvedUiState(
                 current = state,
@@ -930,13 +1316,13 @@ class AgentViewModel(
                 sessionState = response.sessionState,
                 autoRunEnabled = response.sessionState.effectiveAutonomyMode == "power",
                 autonomyMode = response.sessionState.effectiveAutonomyMode,
+                aiTier = if (response.sessionState.isPremium) "premium" else state.aiTier,
+                canUseAgent = response.sessionState.powerModeEligible,
                 powerModeEligible = response.sessionState.powerModeEligible,
                 isPremium = response.sessionState.isPremium,
                 messages = state.messages + AgentMessage(
                     role = "assistant",
-                    content = response.assistantMessage.ifBlank {
-                        "I’m here. Tell me what to do next in Vormex."
-                    }
+                    content = assistantText
                 ),
                 pendingUiIntents = navigationIntents,
                 activeInlineResults = inlineResults,
@@ -948,6 +1334,7 @@ class AgentViewModel(
                 goals = response.goals
             )
         }
+        speakAssistantReplyIfPremium(assistantText)
     }
 
     private fun applyVoiceTurnResponse(
@@ -956,6 +1343,9 @@ class AgentViewModel(
     ) {
         stopResponsePulseSound()
         AgentSocketManager.updateSession(response.sessionState.sessionId)
+        val assistantText = response.assistantMessage.ifBlank {
+            "I’m here. Tell me what to do next in Vormex."
+        }
         val newMessages = buildList {
             if (response.transcript.isNotBlank()) {
                 add(AgentMessage(role = "user", content = response.transcript))
@@ -963,9 +1353,7 @@ class AgentViewModel(
             add(
                 AgentMessage(
                     role = "assistant",
-                    content = response.assistantMessage.ifBlank {
-                        "I’m here. Tell me what to do next in Vormex."
-                    }
+                    content = assistantText
                 )
             )
         }
@@ -982,6 +1370,8 @@ class AgentViewModel(
                 sessionState = response.sessionState,
                 autoRunEnabled = response.sessionState.effectiveAutonomyMode == "power",
                 autonomyMode = response.sessionState.effectiveAutonomyMode,
+                aiTier = if (response.sessionState.isPremium) "premium" else state.aiTier,
+                canUseAgent = response.sessionState.powerModeEligible,
                 powerModeEligible = response.sessionState.powerModeEligible,
                 isPremium = response.sessionState.isPremium,
                 messages = state.messages + newMessages,
@@ -1001,6 +1391,8 @@ class AgentViewModel(
 
         if (playAudio && !response.audioBase64.isNullOrBlank()) {
             playSynthesizedAudio(response.audioBase64, response.audioMimeType)
+        } else if (playAudio) {
+            speakAssistantReplyIfPremium(assistantText)
         }
     }
 
@@ -1407,12 +1799,15 @@ class AgentViewModel(
         shouldStartRealtimeCapture = false
         AgentSocketManager.stopRealtimeVoice()
         realtimeVoiceManager.release()
+        stopAssistantSpeech()
         runCatching { mediaRecorder?.release() }
         runCatching { mediaPlayer?.release() }
         runCatching { responsePulsePlayer?.release() }
+        runCatching { assistantTts?.shutdown() }
         mediaRecorder = null
         mediaPlayer = null
         responsePulsePlayer = null
+        assistantTts = null
         voiceRecordingFile?.delete()
         voiceRecordingFile = null
     }

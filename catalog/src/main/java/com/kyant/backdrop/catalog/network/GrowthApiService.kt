@@ -40,7 +40,7 @@ object GrowthApiService {
         if (BuildConfig.DEBUG) {
             install(Logging) {
                 logger = Logger.ANDROID
-                level = LogLevel.BODY
+                level = LogLevel.HEADERS
             }
         }
         install(HttpTimeout) {

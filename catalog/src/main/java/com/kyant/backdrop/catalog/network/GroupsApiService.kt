@@ -46,7 +46,7 @@ object GroupsApiService {
         if (BuildConfig.DEBUG) {
             install(Logging) {
                 logger = Logger.ANDROID
-                level = LogLevel.BODY
+                level = LogLevel.HEADERS
             }
         }
         install(HttpTimeout) {
@@ -142,6 +142,46 @@ object GroupsApiService {
                 header("Authorization", "Bearer $token")
                 parameter("page", safePage)
                 parameter("limit", safeLimit)
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getMessageShortcuts(context: Context): Result<List<GroupMessageShortcut>> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/groups/message-shortcuts") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body<GroupMessageShortcutsResponse>().shortcuts)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun setMessageShortcut(
+        context: Context,
+        groupId: String,
+        enabled: Boolean
+    ): Result<GroupMessageShortcutResponse> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val response = client.patch("$BASE_URL/groups/$safeGroupId/message-shortcut") {
+                header("Authorization", "Bearer $token")
+                setBody(GroupMessageShortcutRequest(enabled))
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())

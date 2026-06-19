@@ -115,6 +115,7 @@ import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
 import com.kyant.backdrop.catalog.linkedin.defaultPostVideos
 import com.kyant.backdrop.catalog.linkedin.findDefaultPostVideo
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.media.MediaReadSafety
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.drawBackdrop
@@ -3341,6 +3342,7 @@ private fun MentionSuggestionRow(
                 )
                 VerificationBadge(
                     verified = user.hasVerificationBadge(),
+                    badgeStyle = user.verificationBadgeStyle(),
                     size = VerificationBadgeSize.Small
                 )
             }

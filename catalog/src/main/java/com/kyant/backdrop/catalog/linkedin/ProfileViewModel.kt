@@ -42,7 +42,9 @@ data class ProfilePeopleListItem(
     val college: String? = null,
     val isOnline: Boolean = false,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 data class ProfilePeopleSheetState(
@@ -113,6 +115,7 @@ data class ProfileUiState(
     // Action in progress
     val connectionActionInProgress: Boolean = false,
     val followActionInProgress: Boolean = false,
+    val profileSaveActionInProgress: Boolean = false,
     
     // Edit mode
     val isEditingBio: Boolean = false,
@@ -310,6 +313,12 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                         }
                     }
                     ProfileLoaderGiftMemory.put(mergedProfile.user.id, mergedProfile.user.visitLoaderGiftId)
+                    if (isOwner) {
+                        SettingsPreferences.setProfileTheme(
+                            context,
+                            normalizeProfileThemeKey(mergedProfile.user.profileTheme)
+                        )
+                    }
                     persistProfileSnapshot(
                         cacheOwnerId = cacheOwnerId,
                         requestedTargetKey = cacheTargetKey,
@@ -1590,6 +1599,31 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
     fun retry() {
         targetUserId?.let { loadProfile(it, forceRefresh = true) }
     }
+
+    fun toggleProfileSave() {
+        val profile = _uiState.value.profile ?: return
+        if (_uiState.value.isOwner || _uiState.value.profileSaveActionInProgress) return
+
+        _uiState.value = _uiState.value.copy(profileSaveActionInProgress = true)
+        viewModelScope.launch {
+            ApiClient.toggleProfileSave(context, profile.user.id)
+                .onSuccess { state ->
+                    val currentProfile = _uiState.value.profile
+                    _uiState.value = _uiState.value.copy(
+                        profileSaveActionInProgress = false,
+                        profile = currentProfile?.copy(
+                            viewerContext = currentProfile.viewerContext.copy(
+                                isProfileSaved = state.saved
+                            )
+                        )
+                    )
+                    persistCurrentProfileSnapshot()
+                }
+                .onFailure {
+                    _uiState.value = _uiState.value.copy(profileSaveActionInProgress = false)
+                }
+        }
+    }
     
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
@@ -1622,7 +1656,9 @@ private fun ProfileConnectionItem.toPeopleSheetItem(): ProfilePeopleListItem {
         college = user.college,
         isOnline = user.isOnline,
         verified = user.verified,
-        isVerified = user.isVerified
+        isVerified = user.isVerified,
+        profileBadgeStyle = user.profileBadgeStyle,
+        isPremium = user.isPremium
     )
 }
 
@@ -1636,6 +1672,8 @@ private fun ProfileFollowerItem.toPeopleSheetItem(): ProfilePeopleListItem {
         college = user.college,
         isOnline = user.isOnline,
         verified = user.verified,
-        isVerified = user.isVerified
+        isVerified = user.isVerified,
+        profileBadgeStyle = user.profileBadgeStyle,
+        isPremium = user.isPremium
     )
 }

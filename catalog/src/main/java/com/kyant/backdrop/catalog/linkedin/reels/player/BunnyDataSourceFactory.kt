@@ -61,8 +61,11 @@ class BunnyDataSourceFactory private constructor(context: Context) {
 
 private class ReelsLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy(3) {
     override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
-        val retryCount = loadErrorInfo.errorCount.coerceAtLeast(1)
-        val exponentialDelay = 250L * (1L shl (retryCount - 1).coerceAtMost(3))
-        return min(2_000L, exponentialDelay)
+        return when (loadErrorInfo.errorCount.coerceAtLeast(1)) {
+            1 -> 1_000L
+            2 -> 2_000L
+            3 -> 5_000L
+            else -> min(5_000L, super.getRetryDelayMsFor(loadErrorInfo).coerceAtLeast(0L))
+        }
     }
 }

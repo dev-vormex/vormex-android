@@ -386,7 +386,6 @@ fun SkillPassportScreen(
             )
             uiState.passport != null -> SkillPassportContent(
                 passport = uiState.passport!!,
-                backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
                 onOpenSkillSwap = onOpenSkillSwap,
@@ -400,7 +399,6 @@ fun SkillPassportScreen(
 @Composable
 private fun SkillPassportContent(
     passport: SkillPassportResponse,
-    backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
     onOpenSkillSwap: () -> Unit,
@@ -409,12 +407,11 @@ private fun SkillPassportContent(
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
         item {
             SkillPassportHero(
                 passport = passport,
-                backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
                 onOpenSkillSwap = onOpenSkillSwap,
@@ -424,12 +421,11 @@ private fun SkillPassportContent(
 
         if (passport.skills.isNotEmpty()) {
             item {
-                SkillSectionTitle("Verified skill graph", "${passport.summary.verifiedSkills} trusted signals", contentColor)
+                SkillSectionTitle("Skills", "${passport.summary.verifiedSkills} verified signals", contentColor)
             }
             items(passport.skills.take(12), key = { it.id + it.name }) { skill ->
                 SkillPassportSkillCard(
                     skill = skill,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor
                 )
@@ -438,12 +434,11 @@ private fun SkillPassportContent(
 
         if (passport.recentEvidence.isNotEmpty()) {
             item {
-                SkillSectionTitle("Recent proof", "${passport.recentEvidence.size} latest items", contentColor)
+                SkillSectionTitle("Proof", "${passport.recentEvidence.size} recent items", contentColor)
             }
             items(passport.recentEvidence.take(8), key = { it.id }) { evidence ->
                 SkillEvidenceRow(
                     evidence = evidence,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor
                 )
@@ -452,12 +447,11 @@ private fun SkillPassportContent(
 
         if (passport.recentEndorsements.isNotEmpty()) {
             item {
-                SkillSectionTitle("Peer endorsements", "${passport.recentEndorsements.size} recent", contentColor)
+                SkillSectionTitle("Endorsements", "${passport.recentEndorsements.size} recent", contentColor)
             }
             items(passport.recentEndorsements, key = { it.id }) { endorsement ->
                 SkillEndorsementRow(
                     endorsement = endorsement,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onOpenProfile = onOpenProfile
@@ -472,59 +466,85 @@ private fun SkillPassportContent(
 @Composable
 private fun SkillPassportHero(
     passport: SkillPassportResponse,
-    backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
     onOpenSkillSwap: () -> Unit,
     onLinkVerification: (String) -> Unit
 ) {
-    SkillSurfaceCard(
-        backdrop = backdrop,
-        contentColor = contentColor,
-        accentColor = accentColor,
-        tint = accentColor.copy(alpha = 0.10f)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp, bottom = 24.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            PassportScoreRing(
-                score = passport.summary.passportScore,
-                accentColor = accentColor,
-                contentColor = contentColor
+            SkillPassportAvatar(
+                name = passport.user.name ?: passport.user.username ?: "Student",
+                profileImage = passport.user.profileImage,
+                contentColor = contentColor,
+                accentColor = accentColor
             )
-            Column(modifier = Modifier.weight(1f)) {
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BasicText(
+                        passport.user.name ?: "Student",
+                        style = TextStyle(contentColor, 22.sp, FontWeight.Bold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (passport.summary.hasVerifiedSkillsBadge) {
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            Icons.Outlined.Verified,
+                            contentDescription = null,
+                            tint = Color(0xFF22C55E),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
                 BasicText(
-                    passport.user.name ?: "Student",
-                    style = TextStyle(contentColor, 22.sp, FontWeight.Bold),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                BasicText(
-                    passport.user.headline ?: passport.user.college ?: "Skill-powered profile",
-                    style = TextStyle(contentColor.copy(alpha = 0.68f), 13.sp),
+                    passport.user.headline ?: passport.user.college ?: "Skill proof profile",
+                    style = TextStyle(contentColor.copy(alpha = 0.62f), 13.sp),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SkillMetricChip("${passport.summary.totalSkills}", "Skills", contentColor, accentColor)
-                    SkillMetricChip("${passport.summary.evidenceCount}", "Proof", contentColor, accentColor)
-                    SkillMetricChip("${passport.summary.endorsementsCount}", "Votes", contentColor, accentColor)
-                }
-                if (passport.summary.hasVerifiedSkillsBadge) {
-                    Spacer(Modifier.height(10.dp))
-                    SkillRoleChip("Premium", "Verified skills", Color(0xFF22C55E), contentColor)
+                passport.user.college?.let { college ->
+                    Spacer(Modifier.height(3.dp))
+                    BasicText(
+                        college,
+                        style = TextStyle(contentColor.copy(alpha = 0.42f), 11.sp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
+            PassportScoreBadge(
+                score = passport.summary.passportScore,
+                contentColor = contentColor,
+                accentColor = accentColor
+            )
+        }
+
+        Spacer(Modifier.height(22.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            SkillPassportMetric("${passport.summary.totalSkills}", "Skills", contentColor)
+            SkillPassportMetric("${passport.summary.verifiedSkills}", "Verified", contentColor)
+            SkillPassportMetric("${passport.summary.evidenceCount}", "Proof", contentColor)
+            SkillPassportMetric("${passport.summary.endorsementsCount}", "Votes", contentColor)
         }
 
         if (passport.teachingSkills.isNotEmpty() || passport.learningGoals.isNotEmpty()) {
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(18.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(passport.teachingSkills.take(5), key = { "teach:$it" }) {
-                    SkillRoleChip("Can teach", it, accentColor, contentColor)
+                    SkillRoleChip("Teaches", it, accentColor, contentColor)
                 }
                 items(passport.learningGoals.take(5), key = { "learn:$it" }) {
                     SkillRoleChip("Learning", it, Color(0xFF22C55E), contentColor)
@@ -532,7 +552,7 @@ private fun SkillPassportHero(
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(18.dp))
         SkillPrimaryButton(
             text = "Open Skill Swap",
             icon = Icons.Outlined.Groups,
@@ -540,8 +560,8 @@ private fun SkillPassportHero(
             onClick = onOpenSkillSwap,
             modifier = Modifier.fillMaxWidth()
         )
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             SkillSecondaryButton(
                 text = "GitHub",
                 icon = Icons.Outlined.Code,
@@ -558,13 +578,77 @@ private fun SkillPassportHero(
             )
         }
         if (passport.verificationLinks.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 passport.verificationLinks.take(3).forEach { link ->
                     SkillTinyChip("${link.provider.replaceFirstChar { it.uppercase() }} linked", Color(0xFF22C55E), contentColor)
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SkillPassportAvatar(
+    name: String,
+    profileImage: String?,
+    contentColor: Color,
+    accentColor: Color
+) {
+    Box(
+        modifier = Modifier
+            .size(64.dp)
+            .clip(CircleShape)
+            .background(accentColor.copy(alpha = 0.14f))
+            .border(1.dp, contentColor.copy(alpha = 0.10f), CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        if (!profileImage.isNullOrBlank()) {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(profileImage)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            BasicText(
+                name.firstOrNull()?.uppercase() ?: "V",
+                style = TextStyle(accentColor, 24.sp, FontWeight.Bold)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PassportScoreBadge(
+    score: Int,
+    contentColor: Color,
+    accentColor: Color
+) {
+    Column(
+        modifier = Modifier
+            .width(58.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(accentColor.copy(alpha = 0.12f))
+            .padding(vertical = 9.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        BasicText(
+            score.coerceIn(0, 100).toString(),
+            style = TextStyle(accentColor, 18.sp, FontWeight.Bold)
+        )
+        BasicText("score", style = TextStyle(contentColor.copy(alpha = 0.54f), 10.sp))
+    }
+}
+
+@Composable
+private fun SkillPassportMetric(value: String, label: String, contentColor: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        BasicText(value, style = TextStyle(contentColor, 17.sp, FontWeight.Bold))
+        BasicText(label, style = TextStyle(contentColor.copy(alpha = 0.48f), 11.sp))
     }
 }
 
@@ -704,48 +788,52 @@ private fun PassportScoreRing(
 @Composable
 private fun SkillPassportSkillCard(
     skill: SkillPassportSkill,
-    backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color
 ) {
-    SkillSurfaceCard(
-        backdrop = backdrop,
-        contentColor = contentColor,
-        accentColor = accentColor
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 13.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(38.dp)
                     .clip(CircleShape)
-                    .background(accentColor.copy(alpha = 0.16f)),
+                    .background(contentColor.copy(alpha = 0.07f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = if (skill.verifiedEvidenceCount > 0) Icons.Outlined.Verified else Icons.Outlined.Code,
                     contentDescription = null,
-                    tint = accentColor,
-                    modifier = Modifier.size(22.dp)
+                    tint = if (skill.verifiedEvidenceCount > 0) Color(0xFF22C55E) else contentColor.copy(alpha = 0.74f),
+                    modifier = Modifier.size(19.dp)
                 )
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 BasicText(
                     skill.name,
-                    style = TextStyle(contentColor, 16.sp, FontWeight.SemiBold),
+                    style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 BasicText(
-                    "${skill.evidenceCount} proof items · ${skill.endorsementCount} endorsements",
-                    style = TextStyle(contentColor.copy(alpha = 0.62f), 12.sp)
+                    skillPassportSkillSubtitle(skill),
+                    style = TextStyle(contentColor.copy(alpha = 0.56f), 11.sp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
-            SkillConfidencePill(skill.confidenceScore, accentColor, contentColor)
+            BasicText(
+                "${skill.confidenceScore.coerceIn(0, 100)}%",
+                style = TextStyle(accentColor, 12.sp, FontWeight.Bold)
+            )
         }
 
         if (skill.canTeach || skill.wantsToLearn || skill.sources.isNotEmpty()) {
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -759,13 +847,14 @@ private fun SkillPassportSkillCard(
         }
 
         if (skill.evidence.isNotEmpty()) {
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 skill.evidence.take(2).forEach { evidence ->
                     SkillEvidenceMini(evidence, contentColor, accentColor)
                 }
             }
         }
+        SkillPassportDivider(contentColor)
     }
 }
 
@@ -774,15 +863,20 @@ fun SkillSwapScreen(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
+    initialTab: String = "discover",
     onNavigateBack: () -> Unit,
     onOpenProfile: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val viewModel: SkillSwapViewModel = viewModel(factory = SkillSwapViewModel.Factory(context))
     val uiState by viewModel.uiState.collectAsState()
-    var selectedTab by rememberSaveable { mutableStateOf("discover") }
+    var selectedTab by rememberSaveable { mutableStateOf(normalizeSkillSwapTab(initialTab)) }
     var selectedSuggestion by remember { mutableStateOf<SkillSwapSuggestion?>(null) }
     var completingSession by remember { mutableStateOf<SkillSwapSession?>(null) }
+
+    LaunchedEffect(initialTab) {
+        selectedTab = normalizeSkillSwapTab(initialTab)
+    }
 
     LaunchedEffect(uiState.toast) {
         uiState.toast?.let { message ->
@@ -883,6 +977,12 @@ fun SkillSwapScreen(
             }
         )
     }
+}
+
+private fun normalizeSkillSwapTab(tab: String?): String = when (tab?.lowercase()) {
+    "requests" -> "requests"
+    "sessions" -> "sessions"
+    else -> "discover"
 }
 
 @Composable
@@ -1488,10 +1588,21 @@ private fun SkillSurfaceCard(
 
 @Composable
 private fun SkillSectionTitle(title: String, subtitle: String, contentColor: Color) {
-    Column(Modifier.padding(top = 4.dp)) {
-        BasicText(title, style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold))
-        BasicText(subtitle, style = TextStyle(contentColor.copy(alpha = 0.54f), 12.sp))
+    Column(Modifier.padding(top = 10.dp, bottom = 6.dp)) {
+        BasicText(title, style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold))
+        BasicText(subtitle, style = TextStyle(contentColor.copy(alpha = 0.48f), 11.sp))
     }
+}
+
+@Composable
+private fun SkillPassportDivider(contentColor: Color) {
+    Spacer(
+        modifier = Modifier
+            .padding(top = 12.dp)
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(contentColor.copy(alpha = 0.08f))
+    )
 }
 
 @Composable
@@ -1719,12 +1830,16 @@ private fun SkillAvatar(
 @Composable
 private fun SkillEvidenceRow(
     evidence: SkillPassportEvidence,
-    backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color
 ) {
-    SkillSurfaceCard(backdrop, contentColor, accentColor) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp)
+    ) {
         SkillEvidenceMini(evidence, contentColor, accentColor)
+        SkillPassportDivider(contentColor)
     }
 }
 
@@ -1739,14 +1854,14 @@ private fun SkillEvidenceMini(
             modifier = Modifier
                 .size(36.dp)
                 .clip(CircleShape)
-                .background(accentColor.copy(alpha = 0.14f)),
+                .background(contentColor.copy(alpha = 0.07f)),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = evidenceIcon(evidence.type),
                 contentDescription = null,
-                tint = accentColor,
-                modifier = Modifier.size(18.dp)
+                tint = if (evidence.verified) Color(0xFF22C55E) else contentColor.copy(alpha = 0.72f),
+                modifier = Modifier.size(17.dp)
             )
         }
         Spacer(Modifier.width(10.dp))
@@ -1778,12 +1893,15 @@ private fun SkillEvidenceMini(
 @Composable
 private fun SkillEndorsementRow(
     endorsement: com.kyant.backdrop.catalog.network.models.SkillPassportEndorsement,
-    backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
     onOpenProfile: (String) -> Unit
 ) {
-    SkillSurfaceCard(backdrop, contentColor, accentColor) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp)
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             SkillAvatar(endorsement.endorsedBy, contentColor, accentColor) {
                 endorsement.endorsedBy?.id?.let(onOpenProfile)
@@ -1792,11 +1910,15 @@ private fun SkillEndorsementRow(
             Column(Modifier.weight(1f)) {
                 BasicText(
                     endorsement.skillName,
-                    style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold)
+                    style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 BasicText(
                     endorsement.endorsedBy?.name ?: "Peer endorsement",
-                    style = TextStyle(contentColor.copy(alpha = 0.62f), 12.sp)
+                    style = TextStyle(contentColor.copy(alpha = 0.58f), 12.sp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             endorsement.rating?.let {
@@ -1812,6 +1934,7 @@ private fun SkillEndorsementRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
+        SkillPassportDivider(contentColor)
     }
 }
 
@@ -1895,6 +2018,16 @@ private fun SkillSwapSkeletonCard(contentColor: Color) {
         Box(Modifier.fillMaxWidth(0.72f).height(14.dp).clip(RoundedCornerShape(7.dp)).background(contentColor.copy(alpha = 0.10f)))
         Box(Modifier.fillMaxWidth(0.50f).height(12.dp).clip(RoundedCornerShape(6.dp)).background(contentColor.copy(alpha = 0.08f)))
     }
+}
+
+private fun skillPassportSkillSubtitle(skill: SkillPassportSkill): String {
+    val parts = mutableListOf<String>()
+    skill.category?.takeIf { it.isNotBlank() }?.let(parts::add)
+    skill.proficiency?.takeIf { it.isNotBlank() }?.let(parts::add)
+    parts += "${skill.evidenceCount} proof"
+    parts += "${skill.endorsementCount} votes"
+    if (skill.verifiedEvidenceCount > 0) parts += "${skill.verifiedEvidenceCount} verified"
+    return parts.joinToString(" · ")
 }
 
 private fun sourceLabel(source: String): String = when (source) {

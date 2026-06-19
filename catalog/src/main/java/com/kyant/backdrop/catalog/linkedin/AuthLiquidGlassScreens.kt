@@ -86,10 +86,12 @@ internal fun LiquidGlassLoginScreen(
     isLoading: Boolean,
     isGoogleLoading: Boolean,
     error: String?,
+    savedAccountsCount: Int,
     onLogin: (String, String) -> Unit,
     onGoogleSignIn: () -> Unit,
     onForgotPassword: (String) -> Unit,
     onSignUpClick: () -> Unit,
+    onOpenSavedAccounts: () -> Unit,
     onClearError: () -> Unit
 ) {
     val context = LocalContext.current
@@ -162,6 +164,12 @@ internal fun LiquidGlassLoginScreen(
                 accentColor = accentColor,
                 contentColor = contentColor,
                 onClick = { showEmailLogin = true }
+            )
+            AuthSavedAccountsAction(
+                savedAccountsCount = savedAccountsCount,
+                accentColor = accentColor,
+                contentColor = contentColor,
+                onClick = onOpenSavedAccounts
             )
         } else {
             AuthSectionLabel(
@@ -248,6 +256,12 @@ internal fun LiquidGlassLoginScreen(
                 contentColor = contentColor,
                 onClick = onSignUpClick
             )
+            AuthSavedAccountsAction(
+                savedAccountsCount = savedAccountsCount,
+                accentColor = accentColor,
+                contentColor = contentColor,
+                onClick = onOpenSavedAccounts
+            )
         }
     }
 }
@@ -260,9 +274,11 @@ internal fun LiquidGlassSignUpScreen(
     isLoading: Boolean,
     isGoogleLoading: Boolean,
     error: String?,
+    savedAccountsCount: Int,
     onSignUp: (email: String, password: String, name: String, username: String) -> Unit,
     onGoogleSignIn: () -> Unit,
     onLoginClick: () -> Unit,
+    onOpenSavedAccounts: () -> Unit,
     onClearError: () -> Unit
 ) {
     var name by rememberSaveable { mutableStateOf("") }
@@ -388,6 +404,90 @@ internal fun LiquidGlassSignUpScreen(
 
         AuthTextActionRow(
             prompt = "Already have an account?",
+            action = "Sign in",
+            accentColor = accentColor,
+            contentColor = contentColor,
+            onClick = onLoginClick
+        )
+        AuthSavedAccountsAction(
+            savedAccountsCount = savedAccountsCount,
+            accentColor = accentColor,
+            contentColor = contentColor,
+            onClick = onOpenSavedAccounts
+        )
+    }
+}
+
+@Composable
+internal fun LiquidGlassEmailVerificationScreen(
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    email: String,
+    isLoading: Boolean,
+    error: String?,
+    onVerify: (String) -> Unit,
+    onResend: () -> Unit,
+    onLoginClick: () -> Unit,
+    onClearError: () -> Unit
+) {
+    var code by rememberSaveable { mutableStateOf("") }
+    var localError by rememberSaveable { mutableStateOf<String?>(null) }
+
+    LiquidGlassAuthFrame(
+        accentColor = accentColor,
+        contentColor = contentColor,
+        isForm = true
+    ) {
+        AuthSectionLabel(
+            title = "Verify email",
+            subtitle = "Enter the 6-digit code sent to $email.",
+            contentColor = contentColor
+        )
+
+        AuthInputField(
+            value = code,
+            onValueChange = { next ->
+                code = next.filter { it.isDigit() }.take(6)
+                localError = null
+                onClearError()
+            },
+            label = "Verification code",
+            hint = "000000",
+            iconRes = R.drawable.ic_check,
+            accentColor = accentColor,
+            keyboardType = KeyboardType.Number
+        )
+
+        localError?.let { AuthInlineError(message = it) }
+        error?.let { AuthInlineError(message = it) }
+
+        AuthPrimaryButton(
+            label = "Verify",
+            isLoading = isLoading,
+            enabled = !isLoading,
+            accentColor = accentColor,
+            onClick = {
+                if (code.length == 6) {
+                    onVerify(code)
+                } else {
+                    localError = "Enter the 6-digit code"
+                }
+            }
+        )
+
+        AuthTextActionRow(
+            prompt = "Didn't get it?",
+            action = "Resend code",
+            accentColor = accentColor,
+            contentColor = contentColor,
+            onClick = {
+                if (!isLoading) onResend()
+            }
+        )
+
+        AuthTextActionRow(
+            prompt = "Already verified?",
             action = "Sign in",
             accentColor = accentColor,
             contentColor = contentColor,
@@ -621,7 +721,7 @@ private fun currentAuthBorderColor(): Color {
 }
 
 @Composable
-private fun AuthSectionLabel(
+internal fun AuthSectionLabel(
     title: String,
     subtitle: String,
     contentColor: Color
@@ -653,7 +753,7 @@ private fun AuthSectionLabel(
 }
 
 @Composable
-private fun AuthPrimaryButton(
+internal fun AuthPrimaryButton(
     label: String,
     isLoading: Boolean,
     enabled: Boolean,
@@ -743,7 +843,29 @@ private fun AuthSocialButton(
 }
 
 @Composable
-private fun AuthTextActionRow(
+private fun AuthSavedAccountsAction(
+    savedAccountsCount: Int,
+    accentColor: Color,
+    contentColor: Color,
+    onClick: () -> Unit
+) {
+    if (savedAccountsCount <= 0) return
+    val prompt = if (savedAccountsCount == 1) {
+        "1 saved account"
+    } else {
+        "$savedAccountsCount saved accounts"
+    }
+    AuthTextActionRow(
+        prompt = prompt,
+        action = "Switch",
+        accentColor = accentColor,
+        contentColor = contentColor,
+        onClick = onClick
+    )
+}
+
+@Composable
+internal fun AuthTextActionRow(
     prompt: String,
     action: String,
     accentColor: Color,
@@ -778,7 +900,7 @@ private fun AuthTextActionRow(
 }
 
 @Composable
-private fun AuthInputField(
+internal fun AuthInputField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String,
@@ -1043,7 +1165,7 @@ private fun AuthGoogleButton(
 }
 
 @Composable
-private fun AuthInlineError(message: String) {
+internal fun AuthInlineError(message: String) {
     Box(
         modifier = Modifier
             .fillMaxWidth()

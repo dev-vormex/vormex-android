@@ -21,6 +21,33 @@ import com.kyant.backdrop.effects.vibrancy
 import com.kyant.shapes.RoundedRectangle
 
 const val DefaultThemeModeKey = "glass"
+const val DefaultProfileThemeKey = "default"
+const val GameRetroProfileThemeKey = "game_retro"
+
+data class VormexProfileThemeOption(
+    val key: String,
+    val label: String,
+    val description: String
+)
+
+val VormexProfileThemeOptions = listOf(
+    VormexProfileThemeOption(
+        key = DefaultProfileThemeKey,
+        label = "Default",
+        description = "Use the standard Vormex profile layout"
+    ),
+    VormexProfileThemeOption(
+        key = GameRetroProfileThemeKey,
+        label = "Game Retro",
+        description = "A bold arcade-card profile with XP, stats, and hard shadows"
+    )
+)
+
+fun normalizeProfileThemeKey(value: String?): String =
+    when (value) {
+        GameRetroProfileThemeKey -> GameRetroProfileThemeKey
+        else -> DefaultProfileThemeKey
+    }
 
 enum class VormexThemeMode(val key: String) {
     Glass("glass"),

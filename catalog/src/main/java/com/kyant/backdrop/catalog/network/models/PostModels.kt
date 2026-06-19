@@ -218,7 +218,9 @@ data class LikeUser(
     val reactionType: String = "LIKE",
     val createdAt: String? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -243,7 +245,8 @@ data class ReportReasonsResponse(
 @Serializable
 data class ReportPostRequest(
     val reason: String,
-    val description: String? = null
+    val description: String? = null,
+    val blockUser: Boolean = false
 )
 
 @Serializable
@@ -264,7 +267,9 @@ data class MentionUser(
     val profileImage: String? = null,
     val headline: String? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable

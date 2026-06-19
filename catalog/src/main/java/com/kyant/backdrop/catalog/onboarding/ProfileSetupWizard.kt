@@ -19,7 +19,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -43,6 +42,12 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import com.airbnb.lottie.compose.LottieAnimation
+import com.airbnb.lottie.compose.LottieCompositionSpec
+import com.airbnb.lottie.compose.animateLottieCompositionAsState
+import com.airbnb.lottie.compose.rememberLottieComposition
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.catalog.R
@@ -102,6 +107,10 @@ data class ProfileSetupUiState(
     val error: String? = null,
     // Step 0 data
     val college: String = "",
+    val collegeSuggestions: List<CollegeInfo> = emptyList(),
+    val selectedCollege: CollegeInfo? = null,
+    val isSearchingColleges: Boolean = false,
+    val collegeSearchError: String? = null,
     val primaryGoal: String = "",
     val lookingFor: List<String> = emptyList(),
     // Step 1 data (Experience) - client-side only
@@ -133,12 +142,41 @@ private fun normalizeProfileSetupStep(step: Int): Int = when {
 }
 
 class ProfileSetupViewModel(private val context: android.content.Context) : ViewModel() {
-    
+
     private val _uiState = mutableStateOf(ProfileSetupUiState())
     val uiState: State<ProfileSetupUiState> = _uiState
-    
+
+    private var lastLat: Double? = null
+    private var lastLng: Double? = null
+
     init {
         loadOnboardingData()
+        fetchDeviceLocation()
+    }
+
+    private fun fetchDeviceLocation() {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            try {
+                com.google.android.gms.location.LocationServices.getFusedLocationProviderClient(context)
+                    .lastLocation
+                    .addOnSuccessListener { location ->
+                        if (location != null) {
+                            lastLat = location.latitude
+                            lastLng = location.longitude
+                        }
+                    }
+            } catch (e: Exception) {
+                // Ignore silently
+            }
+        }
     }
     
     private fun loadOnboardingData() {
@@ -171,19 +209,69 @@ class ProfileSetupViewModel(private val context: android.content.Context) : View
         }
     }
     
+    private var collegeSearchJob: kotlinx.coroutines.Job? = null
+
+    private fun scheduleCollegeSearch(query: String, immediate: Boolean = false) {
+        collegeSearchJob?.cancel()
+        collegeSearchJob = viewModelScope.launch {
+            if (!immediate) {
+                delay(260)
+            }
+            searchColleges(query)
+        }
+    }
+
+    private suspend fun searchColleges(query: String) {
+        _uiState.value = _uiState.value.copy(
+            isSearchingColleges = true,
+            collegeSearchError = null
+        )
+        ApiClient.searchColleges(context, query.trim(), limit = 14, lat = lastLat, lng = lastLng)
+            .onSuccess { response ->
+                _uiState.value = _uiState.value.copy(
+                    collegeSuggestions = response.colleges,
+                    isSearchingColleges = false,
+                    collegeSearchError = null
+                )
+            }
+            .onFailure { error ->
+                _uiState.value = _uiState.value.copy(
+                    isSearchingColleges = false,
+                    collegeSearchError = error.message
+                )
+            }
+    }
+
+    fun selectCollege(college: CollegeInfo) {
+        _uiState.value = _uiState.value.copy(
+            college = college.name,
+            selectedCollege = college,
+            collegeSuggestions = emptyList()
+        )
+    }
+
     private fun loadUserCollege() {
         viewModelScope.launch {
             ApiClient.getCurrentUser(context)
                 .onSuccess { user ->
+                    val userCollege = user.college ?: ""
                     _uiState.value = _uiState.value.copy(
-                        college = user.college ?: ""
+                        college = userCollege
                     )
+                    scheduleCollegeSearch(userCollege, immediate = true)
+                }
+                .onFailure {
+                    scheduleCollegeSearch("", immediate = true)
                 }
         }
     }
     
     fun updateCollege(value: String) {
-        _uiState.value = _uiState.value.copy(college = value)
+        _uiState.value = _uiState.value.copy(
+            college = value,
+            selectedCollege = null
+        )
+        scheduleCollegeSearch(value)
     }
     
     fun selectPrimaryGoal(goalId: String) {
@@ -990,6 +1078,286 @@ private fun OnboardingTextInput(
 }
 
 @Composable
+private fun CollegeUniversityPicker(
+    value: String,
+    onValueChange: (String) -> Unit,
+    suggestions: List<CollegeInfo>,
+    selectedCollege: CollegeInfo?,
+    isSearching: Boolean,
+    searchError: String?,
+    onSelectCollege: (CollegeInfo) -> Unit
+) {
+    val trimmedValue = value.trim()
+    val visibleSuggestions = suggestions.take(12)
+    val showGoogleAttribution = visibleSuggestions.any { it.source == "google_places" }
+    val suggestionsScrollState = rememberScrollState()
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color.White.copy(alpha = 0.52f))
+                .border(
+                    1.dp,
+                    if (selectedCollege != null) OnboardingGreen.copy(alpha = 0.55f) else OnboardingLine,
+                    RoundedCornerShape(12.dp)
+                )
+                .padding(horizontal = 14.dp, vertical = 13.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.School,
+                    contentDescription = null,
+                    tint = OnboardingMuted,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(10.dp))
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    textStyle = TextStyle(
+                        color = OnboardingInk,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                    decorationBox = { innerTextField ->
+                        Box {
+                            if (value.isEmpty()) {
+                                BasicText(
+                                    "College / university",
+                                    style = TextStyle(
+                                        color = OnboardingMuted.copy(alpha = 0.58f),
+                                        fontSize = 14.sp
+                                    )
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
+                )
+                Spacer(Modifier.width(10.dp))
+                when {
+                    isSearching -> CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = OnboardingGreen,
+                        strokeWidth = 2.dp
+                    )
+                    selectedCollege != null -> Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = OnboardingGreen,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    else -> Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        tint = OnboardingMuted.copy(alpha = 0.7f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+
+        AnimatedVisibility(visible = visibleSuggestions.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 388.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White.copy(alpha = 0.46f))
+                    .border(1.dp, OnboardingLine, RoundedCornerShape(14.dp))
+                    .verticalScroll(suggestionsScrollState)
+                    .padding(vertical = 4.dp)
+            ) {
+                visibleSuggestions.forEachIndexed { index, college ->
+                    CollegeSuggestionRow(
+                        college = college,
+                        selected = selectedCollege?.name?.equals(college.name, ignoreCase = true) == true,
+                        onClick = { onSelectCollege(college) }
+                    )
+                    if (index < visibleSuggestions.lastIndex) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(OnboardingLine.copy(alpha = 0.7f))
+                        )
+                    }
+                }
+                if (showGoogleAttribution) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.White.copy(alpha = 0.34f))
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                        contentAlignment = Alignment.CenterEnd
+                    ) {
+                        BasicText(
+                            "Powered by Google",
+                            style = TextStyle(
+                                color = OnboardingMuted,
+                                fontSize = 10.sp,
+                                lineHeight = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        if (searchError != null && visibleSuggestions.isEmpty()) {
+            BasicText(
+                "College suggestions are unavailable. You can still type your college name.",
+                style = TextStyle(
+                    color = OnboardingMuted,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp
+                )
+            )
+        } else if (trimmedValue.length >= 2 && selectedCollege == null) {
+            BasicText(
+                "Press Continue to use \"$trimmedValue\" if it is not listed.",
+                style = TextStyle(
+                    color = OnboardingMuted.copy(alpha = 0.78f),
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun CollegeSuggestionRow(
+    college: CollegeInfo,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val meta = buildList {
+        add(college.kind?.takeIf { it.isNotBlank() } ?: "School")
+        college.country?.takeIf { it.isNotBlank() }?.let { add(it) }
+        college.city?.takeIf { it.isNotBlank() }?.let { add(it) }
+        college.state?.takeIf { it.isNotBlank() && !it.equals(college.city, ignoreCase = true) }?.let { add(it) }
+        if (college.count > 0) {
+            add("${college.count} ${if (college.count == 1) "member" else "members"} on Vormex")
+        }
+    }.joinToString(" · ")
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp)
+    ) {
+        CollegeLogoBadge(college = college)
+        Column(modifier = Modifier.weight(1f)) {
+            BasicText(
+                college.name,
+                style = TextStyle(
+                    color = OnboardingInk,
+                    fontSize = 13.sp,
+                    lineHeight = 17.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (meta.isNotBlank()) {
+                BasicText(
+                    meta,
+                    style = TextStyle(
+                        color = OnboardingMuted,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        if (selected) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = null,
+                tint = OnboardingGreen,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun CollegeLogoBadge(college: CollegeInfo) {
+    val initials = remember(college.name) { collegeInitials(college.name) }
+    val context = LocalContext.current
+    val logoUrl = remember(college.logoUrl, college.domain) {
+        ApiClient.resolveCollegeLogoUrl(college.logoUrl, college.domain)
+    }
+    Box(
+        modifier = Modifier
+            .size(38.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color.White.copy(alpha = 0.82f))
+            .border(1.dp, OnboardingLine, RoundedCornerShape(8.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            initials,
+            style = TextStyle(
+                color = OnboardingGreen,
+                fontSize = if (initials.length > 2) 10.sp else 12.sp,
+                lineHeight = 12.sp,
+                fontWeight = FontWeight.Bold
+            ),
+            maxLines = 1
+        )
+        logoUrl?.let { resolvedLogoUrl ->
+            val logoRequest = remember(logoUrl) {
+                ImageRequest.Builder(context)
+                    .data(resolvedLogoUrl)
+                    .crossfade(true)
+                    .allowHardware(false)
+                    .memoryCachePolicy(CachePolicy.ENABLED)
+                    .diskCachePolicy(CachePolicy.ENABLED)
+                    .networkCachePolicy(CachePolicy.ENABLED)
+                    .build()
+            }
+            AsyncImage(
+                model = logoRequest,
+                contentDescription = null,
+                modifier = Modifier
+                    .matchParentSize()
+                    .padding(4.dp),
+                contentScale = ContentScale.Fit
+            )
+        }
+    }
+}
+
+private fun collegeInitials(name: String): String {
+    val compactMatch = Regex("\\b[A-Z]{2,5}\\b").find(name)
+    if (compactMatch != null) return compactMatch.value.take(3)
+
+    val parts = name
+        .replace("&", " ")
+        .split(Regex("\\s+"))
+        .map { it.trim(',', '.', '-', '(', ')') }
+        .filter { it.isNotBlank() }
+        .filterNot { it.lowercase() in setOf("of", "and", "the", "in", "for") }
+
+    return parts
+        .take(3)
+        .mapNotNull { it.firstOrNull()?.uppercaseChar()?.toString() }
+        .joinToString("")
+        .ifBlank { "S" }
+}
+
+@Composable
 private fun OnboardingChoiceChip(
     label: String,
     selected: Boolean,
@@ -1059,11 +1427,14 @@ private fun StepProfile(
                         title = "A campus people can place you in",
                         subtitle = "We'll use this to quiet the first matches around you."
                     )
-                    OnboardingTextInput(
+                    CollegeUniversityPicker(
                         value = state.college,
                         onValueChange = { viewModel.updateCollege(it) },
-                        placeholder = "College / university",
-                        leadingIcon = Icons.Default.School
+                        suggestions = state.collegeSuggestions,
+                        selectedCollege = state.selectedCollege,
+                        isSearching = state.isSearchingColleges,
+                        searchError = state.collegeSearchError,
+                        onSelectCollege = { viewModel.selectCollege(it) }
                     )
                 }
             }
@@ -3468,24 +3839,29 @@ private fun OnboardingMatchCard(match: OnboardingMatch) {
 
 @Composable
 private fun VormexLogoRevealScreen(onFinished: () -> Unit) {
-    val sliceCount = 7
-    val sliceAlphas = remember { List(sliceCount) { Animatable(0f) } }
-    val wordAlpha = remember { Animatable(0f) }
+    val composition by rememberLottieComposition(
+        LottieCompositionSpec.RawRes(R.raw.onboarding_vormex_outro)
+    )
+    var didFinish by remember { mutableStateOf(false) }
+    val progress by animateLottieCompositionAsState(
+        composition = composition,
+        iterations = 1,
+        isPlaying = composition != null && !didFinish
+    )
+
+    LaunchedEffect(progress, composition) {
+        if (composition != null && progress >= 0.99f && !didFinish) {
+            didFinish = true
+            onFinished()
+        }
+    }
 
     LaunchedEffect(Unit) {
-        sliceAlphas.forEachIndexed { index, alpha ->
-            launch {
-                delay(index * 115L)
-                alpha.animateTo(
-                    targetValue = 1f,
-                    animationSpec = tween(durationMillis = 520, easing = FastOutSlowInEasing)
-                )
-            }
+        delay(6500)
+        if (!didFinish) {
+            didFinish = true
+            onFinished()
         }
-        delay(780)
-        wordAlpha.animateTo(1f, tween(durationMillis = 480))
-        delay(950)
-        onFinished()
     }
 
     BoxWithConstraints(
@@ -3495,50 +3871,59 @@ private fun VormexLogoRevealScreen(onFinished: () -> Unit) {
             .navigationBarsPadding(),
         contentAlignment = Alignment.Center
     ) {
-        val logoSize = (maxWidth - 100.dp).coerceIn(150.dp, 220.dp)
-        val sliceWidth = logoSize / sliceCount.toFloat()
+        val animationSize = (maxWidth - 42.dp).coerceAtMost(360.dp).coerceAtLeast(230.dp)
 
         Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(22.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 34.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Row(
-                modifier = Modifier.size(logoSize),
-                horizontalArrangement = Arrangement.Center
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center
             ) {
-                repeat(sliceCount) { index ->
-                    Box(
-                        modifier = Modifier
-                            .width(sliceWidth)
-                            .height(logoSize)
-                            .clipToBounds()
-                            .graphicsLayer {
-                                alpha = sliceAlphas[index].value
-                                translationY = (1f - sliceAlphas[index].value) * if (index % 2 == 0) 16f else -16f
-                            }
-                    ) {
-                        Image(
-                            painter = painterResource(R.drawable.vormex_logo),
-                            contentDescription = "Vormex logo",
-                            modifier = Modifier
-                                .size(logoSize)
-                                .offset(x = -(sliceWidth * index)),
-                            contentScale = ContentScale.Fit
-                        )
-                    }
+                if (composition != null) {
+                    LottieAnimation(
+                        composition = composition,
+                        progress = { progress },
+                        modifier = Modifier.size(animationSize),
+                        alignment = Alignment.Center,
+                        contentScale = ContentScale.Fit,
+                        clipToCompositionBounds = false
+                    )
+                } else {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(28.dp),
+                        color = OnboardingGreen,
+                        strokeWidth = 2.dp
+                    )
                 }
             }
 
-            BasicText(
-                "vormex",
-                modifier = Modifier.graphicsLayer { alpha = wordAlpha.value },
-                style = TextStyle(
-                    color = OnboardingInk,
-                    fontSize = 34.sp,
-                    lineHeight = 38.sp,
-                    fontFamily = OnboardingBrandFontFamily
+            Row(
+                modifier = Modifier.padding(bottom = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BasicText(
+                    "vormex",
+                    style = TextStyle(
+                        color = OnboardingInk,
+                        fontSize = 14.sp,
+                        lineHeight = 18.sp,
+                        fontFamily = OnboardingBrandFontFamily
+                    )
                 )
-            )
+                Image(
+                    painter = painterResource(R.drawable.vormex_logo),
+                    contentDescription = "Vormex logo",
+                    modifier = Modifier.size(20.dp),
+                    contentScale = ContentScale.Fit
+                )
+            }
         }
     }
 }

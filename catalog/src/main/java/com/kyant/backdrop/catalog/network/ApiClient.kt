@@ -28,6 +28,10 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
@@ -41,11 +45,74 @@ import kotlinx.serialization.json.putJsonObject
 import kotlinx.io.asSource
 import kotlinx.io.buffered
 import java.io.IOException
+import java.util.UUID
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "vormex_prefs")
 
 object ApiClient {
+    @Serializable
+    data class SavedAccountSession(
+        val userId: String,
+        val email: String? = null,
+        val username: String? = null,
+        val name: String? = null,
+        val profileImage: String? = null,
+        val token: String,
+        val refreshToken: String? = null,
+        val updatedAtMillis: Long = System.currentTimeMillis()
+    )
+
+    internal fun normalizeSavedAccountSessions(
+        accounts: List<SavedAccountSession>
+    ): List<SavedAccountSession> {
+        return accounts
+            .filter { it.userId.isNotBlank() && it.token.isNotBlank() }
+            .distinctBy { it.userId }
+            .sortedByDescending { it.updatedAtMillis }
+    }
+
+    internal fun upsertSavedAccountSessions(
+        existing: List<SavedAccountSession>,
+        user: User,
+        token: String,
+        refreshToken: String?,
+        nowMillis: Long = System.currentTimeMillis()
+    ): List<SavedAccountSession> {
+        val previous = existing.firstOrNull { it.userId == user.id }
+        val next = SavedAccountSession(
+            userId = user.id,
+            email = user.email,
+            username = user.username,
+            name = user.name,
+            profileImage = user.profileImage,
+            token = token,
+            refreshToken = refreshToken ?: previous?.refreshToken,
+            updatedAtMillis = nowMillis
+        )
+        return normalizeSavedAccountSessions(listOf(next) + existing.filterNot { it.userId == user.id })
+    }
+
+    internal fun markSavedAccountSessionUsed(
+        existing: List<SavedAccountSession>,
+        userId: String,
+        nowMillis: Long = System.currentTimeMillis()
+    ): List<SavedAccountSession> {
+        return normalizeSavedAccountSessions(
+            existing.map { account ->
+                if (account.userId == userId) account.copy(updatedAtMillis = nowMillis) else account
+            }
+        )
+    }
+
+    internal fun removeSavedAccountSession(
+        existing: List<SavedAccountSession>,
+        userId: String
+    ): List<SavedAccountSession> {
+        return normalizeSavedAccountSessions(existing.filterNot { it.userId == userId })
+    }
+
     private val BASE_URL = BuildConfig.API_BASE_URL
+    private val managedAdSessionId = UUID.randomUUID().toString()
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val DEFAULT_REQUEST_TIMEOUT_MILLIS = 60_000L
     private const val DEFAULT_CONNECT_TIMEOUT_MILLIS = 20_000L
@@ -53,6 +120,21 @@ object ApiClient {
     private const val UPLOAD_REQUEST_TIMEOUT_MILLIS = 300_000L
     private const val UPLOAD_CONNECT_TIMEOUT_MILLIS = 30_000L
     private const val UPLOAD_SOCKET_TIMEOUT_MILLIS = 300_000L
+
+    fun resolveCollegeLogoUrl(logoUrl: String?, domain: String?): String? {
+        val normalizedDomain = domain?.trim()?.takeIf { it.isNotBlank() }
+            ?: logoUrl
+                ?.takeIf { it.isNotBlank() }
+                ?.let { runCatching { Uri.parse(it).getQueryParameter("domain") }.getOrNull() }
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+
+        if (normalizedDomain != null) {
+            return "${BASE_URL.trimEnd('/')}/people/college-logo?domain=${Uri.encode(normalizedDomain)}"
+        }
+
+        return logoUrl?.takeIf { it.isNotBlank() }
+    }
     private const val AUTH_TOKEN_TRANSPORT_HEADER = "X-Auth-Token-Transport"
     private const val AUTH_TOKEN_TRANSPORT_BEARER = "bearer"
     
@@ -105,7 +187,7 @@ object ApiClient {
         if (BuildConfig.DEBUG) {
             install(Logging) {
                 logger = Logger.ANDROID
-                level = if (logBody) LogLevel.BODY else LogLevel.HEADERS
+                level = LogLevel.HEADERS
             }
         }
         install(HttpTimeout) {
@@ -125,13 +207,33 @@ object ApiClient {
     private val TOKEN_KEY = stringPreferencesKey("auth_token")
     private val REFRESH_TOKEN_KEY = stringPreferencesKey("refresh_token")
     private val USER_ID_KEY = stringPreferencesKey("user_id")
+    private val SAVED_ACCOUNTS_KEY = stringPreferencesKey("saved_accounts_json")
+    private val DEVICE_INSTALL_ID_KEY = stringPreferencesKey("device_install_id")
     
     private var cachedToken: String? = null
     private var cachedRefreshToken: String? = null
+    private val sessionRefreshMutex = Mutex()
 
     private data class ApiFailure(
         val message: String
     )
+
+    suspend fun getOrCreateDeviceInstallId(context: Context): String {
+        val existing = context.dataStore.data.first()[DEVICE_INSTALL_ID_KEY]
+            ?.takeIf { it.length in 16..256 }
+        if (existing != null) return existing
+
+        val installId = UUID.randomUUID().toString()
+        context.dataStore.edit { prefs ->
+            prefs[DEVICE_INSTALL_ID_KEY] = installId
+        }
+        return installId
+    }
+
+    private fun HttpRequestBuilder.attachDeviceLinkHeaders(installId: String) {
+        header("X-Vormex-Install-Id", installId)
+        header("X-Vormex-Platform", "android")
+    }
 
     private class SessionRefreshException(
         message: String,
@@ -165,6 +267,13 @@ object ApiClient {
         }
     }
 
+    private suspend fun clearRefreshToken(context: Context) {
+        cachedRefreshToken = null
+        context.dataStore.edit { prefs ->
+            prefs.remove(REFRESH_TOKEN_KEY)
+        }
+    }
+
     private suspend fun recoverFromMalformedAccessToken(context: Context): String? {
         clearAccessToken(context)
         if (getRefreshToken(context) == null) {
@@ -172,13 +281,14 @@ object ApiClient {
             return null
         }
 
-        val refreshedToken = refreshSession(context)
+        val refreshResult = refreshSession(context)
+        val refreshedToken = refreshResult
             .getOrNull()
             ?.token
             ?.let { normalizeBearerToken(it) }
             ?.takeIf { isLikelyJwtAccessToken(it) }
 
-        if (refreshedToken == null) {
+        if (refreshedToken == null && isConfirmedSessionExpired(refreshResult.exceptionOrNull())) {
             clearToken(context)
         }
 
@@ -194,12 +304,109 @@ object ApiClient {
         }
         val cleanRefreshToken = refreshToken?.trim()?.takeIf { it.isNotEmpty() }
         cachedToken = cleanToken
-        if (cleanRefreshToken != null) cachedRefreshToken = cleanRefreshToken
+        cachedRefreshToken = cleanRefreshToken
         context.dataStore.edit { prefs ->
             prefs[TOKEN_KEY] = cleanToken
             prefs[USER_ID_KEY] = userId
             if (cleanRefreshToken != null) {
                 prefs[REFRESH_TOKEN_KEY] = cleanRefreshToken
+            } else {
+                prefs.remove(REFRESH_TOKEN_KEY)
+            }
+        }
+    }
+
+    suspend fun saveAuthenticatedSession(
+        context: Context,
+        token: String,
+        user: User,
+        refreshToken: String? = null
+    ) {
+        val cleanToken = normalizeBearerToken(token)
+            ?: throw IllegalArgumentException("Authentication token missing")
+        if (!isLikelyJwtAccessToken(cleanToken)) {
+            throw IllegalArgumentException("Authentication token is invalid")
+        }
+        val cleanRefreshToken = refreshToken?.trim()?.takeIf { it.isNotEmpty() }
+        val effectiveRefreshToken = cleanRefreshToken
+            ?: readSavedAccountSessions(context).firstOrNull { it.userId == user.id }?.refreshToken
+        saveToken(context, cleanToken, user.id, effectiveRefreshToken)
+        upsertSavedAccountSession(context, user, cleanToken, effectiveRefreshToken)
+    }
+
+    suspend fun saveActiveAccountSnapshot(context: Context, user: User) {
+        val activeUserId = getCurrentUserId(context)?.takeIf { it == user.id } ?: return
+        val token = getToken(context) ?: return
+        upsertSavedAccountSession(context, user.copy(id = activeUserId), token, getRefreshToken(context))
+    }
+
+    suspend fun getSavedAccountSessions(context: Context): List<SavedAccountSession> {
+        return readSavedAccountSessions(context)
+    }
+
+    suspend fun switchToSavedAccount(context: Context, userId: String): Result<SavedAccountSession> {
+        return try {
+            val existing = readSavedAccountSessions(context)
+            val target = existing.firstOrNull { it.userId == userId }
+                ?: return Result.failure(Exception("Account is not saved on this device."))
+            saveToken(context, target.token, target.userId, target.refreshToken)
+            val updated = target.copy(updatedAtMillis = System.currentTimeMillis())
+            writeSavedAccountSessions(
+                context,
+                markSavedAccountSessionUsed(existing, userId, updated.updatedAtMillis)
+            )
+            Result.success(updated)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun removeSavedAccount(context: Context, userId: String) {
+        val activeUserId = getCurrentUserId(context)
+        writeSavedAccountSessions(
+            context,
+            removeSavedAccountSession(readSavedAccountSessions(context), userId)
+        )
+        if (activeUserId == userId) {
+            clearToken(context)
+        }
+    }
+
+    private suspend fun upsertSavedAccountSession(
+        context: Context,
+        user: User,
+        token: String,
+        refreshToken: String?
+    ) {
+        val existing = readSavedAccountSessions(context)
+        writeSavedAccountSessions(
+            context,
+            upsertSavedAccountSessions(existing, user, token, refreshToken)
+        )
+    }
+
+    private suspend fun readSavedAccountSessions(context: Context): List<SavedAccountSession> {
+        val raw = context.dataStore.data.first()[SAVED_ACCOUNTS_KEY] ?: return emptyList()
+        return runCatching {
+            json.decodeFromString<List<SavedAccountSession>>(raw)
+        }.getOrElse {
+            emptyList()
+        }
+            .filter { it.userId.isNotBlank() && it.token.isNotBlank() }
+            .distinctBy { it.userId }
+            .sortedByDescending { it.updatedAtMillis }
+    }
+
+    private suspend fun writeSavedAccountSessions(
+        context: Context,
+        accounts: List<SavedAccountSession>
+    ) {
+        val normalized = normalizeSavedAccountSessions(accounts)
+        context.dataStore.edit { prefs ->
+            if (normalized.isEmpty()) {
+                prefs.remove(SAVED_ACCOUNTS_KEY)
+            } else {
+                prefs[SAVED_ACCOUNTS_KEY] = json.encodeToString(normalized)
             }
         }
     }
@@ -229,6 +436,22 @@ object ApiClient {
         }
         cachedToken = normalized
         return normalized
+    }
+
+    suspend fun getRealtimeAccessToken(context: Context): String? {
+        val existingToken = getToken(context)?.takeIf { it.isNotBlank() } ?: return null
+        if (getRefreshToken(context) == null) {
+            return existingToken
+        }
+
+        return when (refreshTokenForRetry(context)) {
+            SessionRefreshResult.SUCCESS -> getToken(context) ?: existingToken
+            SessionRefreshResult.KEEP_SESSION -> existingToken
+            SessionRefreshResult.CLEAR_SESSION -> {
+                clearRefreshToken(context)
+                existingToken
+            }
+        }
     }
     
     suspend fun getCurrentUserId(context: Context): String? {
@@ -266,21 +489,37 @@ object ApiClient {
     }
 
     private suspend fun refreshTokenForRetry(context: Context): SessionRefreshResult {
-        if (getRefreshToken(context) == null) {
+        val refreshTokenBeforeWait = getRefreshToken(context)
+        if (refreshTokenBeforeWait == null) {
             return SessionRefreshResult.CLEAR_SESSION
         }
 
-        val refreshResult = refreshSession(context)
-        if (refreshResult.isSuccess) {
-            return SessionRefreshResult.SUCCESS
-        }
+        return sessionRefreshMutex.withLock {
+            val currentRefreshToken = getRefreshToken(context)
+            if (currentRefreshToken == null) {
+                return@withLock SessionRefreshResult.CLEAR_SESSION
+            }
 
-        val refreshError = refreshResult.exceptionOrNull()
-        return if ((refreshError as? SessionRefreshException)?.shouldClearSession == true) {
-            SessionRefreshResult.CLEAR_SESSION
-        } else {
-            SessionRefreshResult.KEEP_SESSION
+            if (currentRefreshToken != refreshTokenBeforeWait && getToken(context) != null) {
+                return@withLock SessionRefreshResult.SUCCESS
+            }
+
+            val refreshResult = refreshSession(context)
+            if (refreshResult.isSuccess) {
+                return@withLock SessionRefreshResult.SUCCESS
+            }
+
+            val refreshError = refreshResult.exceptionOrNull()
+            if ((refreshError as? SessionRefreshException)?.shouldClearSession == true) {
+                SessionRefreshResult.CLEAR_SESSION
+            } else {
+                SessionRefreshResult.KEEP_SESSION
+            }
         }
+    }
+
+    fun isConfirmedSessionExpired(error: Throwable?): Boolean {
+        return (error as? SessionRefreshException)?.shouldClearSession == true
     }
 
     private suspend inline fun <reified T> authorizedRequestWithRefresh(
@@ -391,12 +630,14 @@ object ApiClient {
         return this
     }
 
-    suspend fun login(email: String, password: String): Result<AuthResponse> {
+    suspend fun login(context: Context, email: String, password: String): Result<AuthResponse> {
         return try {
             val safeEmail = InputSecurity.email(email)
             val safePassword = InputSecurity.text(password, "password", 256)
+            val installId = getOrCreateDeviceInstallId(context)
             val response = client.post("$BASE_URL/auth/login") {
                 header(AUTH_TOKEN_TRANSPORT_HEADER, AUTH_TOKEN_TRANSPORT_BEARER)
+                attachDeviceLinkHeaders(installId)
                 setBody(LoginRequest(safeEmail, safePassword))
             }
             if (response.status.isSuccess()) {
@@ -411,11 +652,13 @@ object ApiClient {
     }
     
     // Google Sign-In
-    suspend fun googleSignIn(idToken: String): Result<AuthResponse> {
+    suspend fun googleSignIn(context: Context, idToken: String): Result<AuthResponse> {
         return try {
             val safeIdToken = InputSecurity.text(idToken, "idToken", 8_192)
+            val installId = getOrCreateDeviceInstallId(context)
             val response = client.post("$BASE_URL/auth/google") {
                 header(AUTH_TOKEN_TRANSPORT_HEADER, AUTH_TOKEN_TRANSPORT_BEARER)
+                attachDeviceLinkHeaders(installId)
                 setBody(GoogleSignInRequest(safeIdToken))
             }
             if (response.status.isSuccess()) {
@@ -446,8 +689,51 @@ object ApiClient {
         }
     }
 
+    suspend fun resendVerificationCode(email: String): Result<MessageResponse> {
+        return try {
+            val safeEmail = InputSecurity.email(email)
+            val response = client.post("$BASE_URL/auth/resend-verification") {
+                setBody(ResendVerificationRequest(safeEmail))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun verifyEmailOtp(context: Context, email: String, code: String): Result<AuthResponse> {
+        return try {
+            val safeEmail = InputSecurity.email(email)
+            val safeCode = InputSecurity.text(code, "verification code", 16)
+                .filter { it.isDigit() }
+            if (safeCode.length != 6) {
+                return Result.failure(Exception("Enter the 6-digit verification code."))
+            }
+            val installId = getOrCreateDeviceInstallId(context)
+            val response = client.post("$BASE_URL/auth/verify-email") {
+                header(AUTH_TOKEN_TRANSPORT_HEADER, AUTH_TOKEN_TRANSPORT_BEARER)
+                attachDeviceLinkHeaders(installId)
+                setBody(VerifyEmailOtpRequest(safeEmail, safeCode))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body<AuthResponse>().requireBearerToken())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     // Register new user
     suspend fun register(
+        context: Context,
         email: String,
         password: String,
         name: String,
@@ -462,7 +748,10 @@ object ApiClient {
             val safeUsername = InputSecurity.identifier(username, "username")
             val safeCollege = InputSecurity.optionalText(college, "college", 120)
             val safeBranch = InputSecurity.optionalText(branch, "branch", 120)
+            val installId = getOrCreateDeviceInstallId(context)
             val response = client.post("$BASE_URL/auth/register") {
+                header(AUTH_TOKEN_TRANSPORT_HEADER, AUTH_TOKEN_TRANSPORT_BEARER)
+                attachDeviceLinkHeaders(installId)
                 setBody(RegisterRequest(safeEmail, safePassword, safeName, safeUsername, safeCollege, safeBranch))
             }
             if (response.status.isSuccess()) {
@@ -485,15 +774,17 @@ object ApiClient {
                         shouldClearSession = true
                     )
                 )
+            val installId = getOrCreateDeviceInstallId(context)
             val response = client.post("$BASE_URL/auth/refresh") {
                 header(AUTH_TOKEN_TRANSPORT_HEADER, AUTH_TOKEN_TRANSPORT_BEARER)
+                attachDeviceLinkHeaders(installId)
                 setBody(mapOf("refreshToken" to refreshToken))
             }
             if (response.status.isSuccess()) {
                 val authResponse = response.body<AuthResponse>().requireBearerToken()
                 val bearerToken = authResponse.token
                     ?: throw IllegalStateException("Authentication token missing from server response")
-                saveToken(context, bearerToken, authResponse.user.id, authResponse.refreshToken)
+                saveAuthenticatedSession(context, bearerToken, authResponse.user, authResponse.refreshToken)
                 Result.success(authResponse)
             } else {
                 val error = parseApiFailure(response)
@@ -562,9 +853,129 @@ object ApiClient {
         }
     }
 
+    suspend fun getProfileBoostState(context: Context): Result<PremiumProfileBoostState> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/premium/boosts/me") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                val body: PremiumProfileBoostResponse = response.body()
+                Result.success(body.profileBoost)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun activateProfileBoost(
+        context: Context,
+        durationHours: Int? = null
+    ): Result<ActivateProfileBoostResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.post("$BASE_URL/premium/boosts/profile") {
+                header("Authorization", "Bearer $token")
+                setBody(ActivateProfileBoostRequest(durationHours))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun setDeveloperPremiumOverride(
+        context: Context,
+        enabled: Boolean
+    ): Result<PremiumVerifyResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.post("$BASE_URL/premium/debug-override") {
+                header("Authorization", "Bearer $token")
+                setBody(DeveloperPremiumOverrideRequest(enabled))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getCreatorPro(context: Context): Result<CreatorProResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/premium/creator-pro") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateCreatorProSettings(
+        context: Context,
+        request: CreatorProSettingsRequest
+    ): Result<CreatorProResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.patch("$BASE_URL/premium/creator-pro/settings") {
+                header("Authorization", "Bearer $token")
+                setBody(request)
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun setDeveloperCreatorProOverride(
+        context: Context,
+        enabled: Boolean
+    ): Result<CreatorProResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.post("$BASE_URL/premium/creator-pro/debug-override") {
+                header("Authorization", "Bearer $token")
+                setBody(DeveloperCreatorProOverrideRequest(enabled))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun createPremiumCheckout(
         context: Context,
-        billingCycle: String = "monthly"
+        billingCycle: String = "monthly",
+        plan: String = "premium"
     ): Result<PremiumCheckoutResponse> {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
@@ -573,6 +984,7 @@ object ApiClient {
                 setBody(
                     buildJsonObject {
                         put("billingCycle", billingCycle)
+                        put("plan", plan)
                     }
                 )
             }
@@ -594,27 +1006,6 @@ object ApiClient {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val response = client.post("$BASE_URL/premium/verify") {
-                header("Authorization", "Bearer $token")
-                setBody(request)
-            }
-            if (response.status.isSuccess()) {
-                Result.success(response.body())
-            } else {
-                val error: ApiError = response.body()
-                Result.failure(Exception(error.getErrorMessage()))
-            }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    suspend fun verifyGooglePlayPremium(
-        context: Context,
-        request: GooglePlayPremiumVerifyRequest
-    ): Result<PremiumVerifyResponse> {
-        return try {
-            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.post("$BASE_URL/premium/play/verify") {
                 header("Authorization", "Bearer $token")
                 setBody(request)
             }
@@ -652,28 +1043,27 @@ object ApiClient {
         cursor: String? = null,
         limit: Int = 40,
         mode: String = "recommended",
-        useCache: Boolean = true
+        useCache: Boolean = true,
+        adItemOffset: Int = 0
     ): Result<FeedResponse> {
         return try {
-            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val safeMode = InputSecurity.enumValue(mode, setOf("RECOMMENDED", "LATEST"), "mode")
             val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 50)
-            val safeCursor = InputSecurity.optionalIdentifier(cursor, "cursor")
-            val response = client.get("$BASE_URL/posts/feed") {
-                header("Authorization", "Bearer $token")
-                if (!useCache) {
-                    header("Cache-Control", "no-cache, no-store, must-revalidate")
-                    parameter("cacheBust", System.currentTimeMillis())
+            val safeCursor = InputSecurity.optionalPaginationCursor(cursor, "cursor")
+            val safeAdItemOffset = InputSecurity.boundedInt(adItemOffset, "adItemOffset", 0, 10_000)
+            authorizedRequestWithRefresh<FeedResponse>(context) { token ->
+                client.get("$BASE_URL/posts/feed") {
+                    header("Authorization", "Bearer $token")
+                    if (!useCache) {
+                        header("Cache-Control", "no-cache, no-store, must-revalidate")
+                        parameter("cacheBust", System.currentTimeMillis())
+                    }
+                    parameter("limit", safeLimit)
+                    parameter("mode", safeMode)
+                    parameter("adSessionId", managedAdSessionId)
+                    parameter("adItemOffset", safeAdItemOffset)
+                    safeCursor?.let { parameter("cursor", it) }
                 }
-                parameter("limit", safeLimit)
-                parameter("mode", safeMode)
-                safeCursor?.let { parameter("cursor", it) }
-            }
-            if (response.status.isSuccess()) {
-                Result.success(response.body())
-            } else {
-                val error: ApiError = response.body()
-                Result.failure(Exception(error.getErrorMessage()))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -856,6 +1246,110 @@ object ApiClient {
         }
     }
 
+    suspend fun toggleProfileSave(context: Context, targetUserId: String): Result<ProfileSaveState> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.post("$BASE_URL/social-proof/profile-saves/$targetUserId/toggle") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body<ProfileSaveToggleResponse>().data)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getProfileSavers(
+        context: Context,
+        userId: String,
+        page: Int = 1,
+        limit: Int = 50
+    ): Result<ProfileSavers> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/social-proof/profile-saves/$userId") {
+                header("Authorization", "Bearer $token")
+                parameter("page", page)
+                parameter("limit", limit)
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body<ProfileSaversApiResponse>().data)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getRecentViewedProfiles(
+        context: Context,
+        page: Int = 1,
+        limit: Int = 50
+    ): Result<RecentViewedProfiles> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/social-proof/recent-profile-views") {
+                header("Authorization", "Bearer $token")
+                parameter("page", page)
+                parameter("limit", limit)
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body<RecentViewedProfilesApiResponse>().data)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getProfileInsights(context: Context, userId: String): Result<ProfileInsights> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/social-proof/profile-insights/$userId") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body<ProfileInsightsApiResponse>().data)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getSavedProfiles(
+        context: Context,
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<SavedProfilesResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/saved/profiles") {
+                header("Authorization", "Bearer $token")
+                parameter("limit", limit.coerceIn(1, 50))
+                cursor?.let { parameter("cursor", it) }
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     // Comments APIs
     suspend fun getComments(context: Context, postId: String, cursor: String? = null): Result<CommentsResponse> {
         return try {
@@ -977,6 +1471,14 @@ object ApiClient {
         college: String? = null,
         branch: String? = null,
         graduationYear: Int? = null,
+        skillLevel: String? = null,
+        intent: String? = null,
+        availability: String? = null,
+        verifiedOnly: Boolean = false,
+        radiusKm: Int? = null,
+        lat: Double? = null,
+        lng: Double? = null,
+        scope: String? = null,
         page: Int = 1,
         limit: Int = 20,
         cursor: String? = null,
@@ -991,6 +1493,14 @@ object ApiClient {
                 college?.let { parameter("college", it) }
                 branch?.let { parameter("branch", it) }
                 graduationYear?.let { parameter("graduationYear", it) }
+                skillLevel?.let { parameter("skillLevel", it) }
+                intent?.let { parameter("intent", it) }
+                availability?.let { parameter("availability", it) }
+                if (verifiedOnly) parameter("verifiedOnly", true)
+                radiusKm?.let { parameter("radiusKm", it) }
+                lat?.let { parameter("lat", it) }
+                lng?.let { parameter("lng", it) }
+                scope?.let { parameter("scope", it) }
                 parameter("page", page)
                 parameter("limit", limit)
                 cursor?.let { parameter("cursor", it) }
@@ -1029,6 +1539,119 @@ object ApiClient {
             val response = client.get("$BASE_URL/people/suggestions") {
                 header("Authorization", "Bearer $token")
                 parameter("limit", limit)
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun passDiscoverySuggestion(context: Context, targetUserId: String): Result<DiscoveryPassResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.post("$BASE_URL/people/discovery/pass") {
+                header("Authorization", "Bearer $token")
+                setBody(DiscoveryPassRequest(targetUserId))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun rewindDiscoveryPass(context: Context): Result<DiscoveryRewindResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.post("$BASE_URL/people/discovery/rewind") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getSavedDiscoverySearches(context: Context): Result<SavedDiscoverySearchesResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/people/saved-searches") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun saveDiscoverySearch(
+        context: Context,
+        name: String,
+        filters: Map<String, String>
+    ): Result<SavedDiscoverySearchResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.post("$BASE_URL/people/saved-searches") {
+                header("Authorization", "Bearer $token")
+                setBody(SaveDiscoverySearchRequest(name = name, filters = filters))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateSavedDiscoverySearch(
+        context: Context,
+        searchId: String,
+        request: UpdateSavedDiscoverySearchRequest
+    ): Result<SavedDiscoverySearchResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.patch("$BASE_URL/people/saved-searches/$searchId") {
+                header("Authorization", "Bearer $token")
+                setBody(request)
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteSavedDiscoverySearch(context: Context, searchId: String): Result<MessageResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.delete("$BASE_URL/people/saved-searches/$searchId") {
+                header("Authorization", "Bearer $token")
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())
@@ -1142,13 +1765,21 @@ object ApiClient {
     }
     
     // Search colleges on the platform
-    suspend fun searchColleges(context: Context, query: String, limit: Int = 10): Result<CollegeSearchResponse> {
+    suspend fun searchColleges(
+        context: Context,
+        query: String,
+        limit: Int = 10,
+        lat: Double? = null,
+        lng: Double? = null
+    ): Result<CollegeSearchResponse> {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val response = client.get("$BASE_URL/people/colleges") {
                 header("Authorization", "Bearer $token")
                 parameter("q", query)
                 parameter("limit", limit)
+                if (lat != null) parameter("lat", lat)
+                if (lng != null) parameter("lng", lng)
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())
@@ -1195,6 +1826,48 @@ object ApiClient {
                 Result.success(Unit)
             } else {
                 Result.failure(Exception("Failed to update location"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getCurrentLocation(context: Context): Result<CurrentLocationResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/location/current") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                Result.failure(Exception("Failed to load location settings"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateLocationSettings(
+        context: Context,
+        shareLocationPublic: Boolean? = null,
+        locationPermission: Boolean? = null
+    ): Result<Unit> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.put("$BASE_URL/location/settings") {
+                header("Authorization", "Bearer $token")
+                setBody(
+                    LocationSettingsRequest(
+                        shareLocationPublic = shareLocationPublic,
+                        locationPermission = locationPermission
+                    )
+                )
+            }
+            if (response.status.isSuccess()) {
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception("Failed to update location settings"))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -1538,6 +2211,22 @@ object ApiClient {
             "visitLoaderGiftId" in explicitNullFields -> put("visitLoaderGiftId", JsonNull)
         }
         when {
+            data.profileTheme != null -> put("profileTheme", InputSecurity.identifier(data.profileTheme, "profileTheme"))
+            "profileTheme" in explicitNullFields -> put("profileTheme", JsonNull)
+        }
+        when {
+            data.profileBadgeStyle != null -> {
+                val normalizedBadgeStyle = InputSecurity
+                    .identifier(data.profileBadgeStyle, "profileBadgeStyle")
+                    .lowercase()
+                require(normalizedBadgeStyle in setOf("student", "professional")) {
+                    "profileBadgeStyle is invalid"
+                }
+                put("profileBadgeStyle", normalizedBadgeStyle)
+            }
+            "profileBadgeStyle" in explicitNullFields -> put("profileBadgeStyle", JsonNull)
+        }
+        when {
             data.college != null -> put("college", InputSecurity.text(data.college, "college", 120, allowBlank = true))
             "college" in explicitNullFields -> put("college", JsonNull)
         }
@@ -1689,8 +2378,14 @@ object ApiClient {
                 }))
             }
             if (response.status.isSuccess()) {
-                val result: Map<String, String> = response.body()
-                Result.success(result["avatar"] ?: result["url"] ?: "")
+                val result: AvatarUploadResponse = response.body()
+                val avatarUrl = listOf(
+                    result.avatar,
+                    result.avatarUrl,
+                    result.url,
+                    result.user?.profileImage
+                ).firstOrNull { !it.isNullOrBlank() }.orEmpty()
+                Result.success(avatarUrl)
             } else {
                 Result.failure(Exception("Failed to upload avatar"))
             }
@@ -2315,12 +3010,167 @@ object ApiClient {
         context: Context,
         conversationId: String,
         reason: String,
-        description: String = ""
+        description: String = "",
+        blockUser: Boolean = false
     ): Result<Unit> {
         return authorizedUnitRequestWithRefresh(context) { token ->
             client.post("$BASE_URL/reports/chat/$conversationId") {
                 header("Authorization", "Bearer $token")
-                setBody(ReportChatRequest(reason = reason, description = description))
+                setBody(ReportChatRequest(reason = reason, description = description, blockUser = blockUser))
+            }
+        }
+    }
+
+    suspend fun reportUser(
+        context: Context,
+        userId: String,
+        reason: String,
+        description: String? = null,
+        blockUser: Boolean = false
+    ): Result<ReportResponse> {
+        return authorizedRequestWithRefresh<ReportResponse>(context) { token ->
+            val safeUserId = InputSecurity.identifier(userId, "userId")
+            val safeReason = InputSecurity.identifier(reason, "reason")
+            val safeDescription = InputSecurity.optionalText(description, "description", 1_000)
+            client.post("$BASE_URL/reports/user/$safeUserId") {
+                header("Authorization", "Bearer $token")
+                setBody(ReportUserRequest(safeReason, safeDescription, blockUser))
+            }
+        }
+    }
+
+    suspend fun getIdentityStatus(context: Context): Result<IdentityMeResponse> {
+        return authorizedRequestWithRefresh<IdentityMeResponse>(context) { token ->
+            client.get("$BASE_URL/identity/me") {
+                header("Authorization", "Bearer $token")
+            }
+        }
+    }
+
+    suspend fun verifyIdentityPhone(
+        context: Context,
+        firebaseIdToken: String
+    ): Result<IdentityMutationResponse> {
+        return authorizedRequestWithRefresh<IdentityMutationResponse>(context) { token ->
+            client.post("$BASE_URL/identity/phone/verify") {
+                header("Authorization", "Bearer $token")
+                setBody(PhoneVerifyRequest(idToken = firebaseIdToken))
+            }
+        }
+    }
+
+    suspend fun requestStudentEmailVerification(
+        context: Context,
+        studentEmail: String
+    ): Result<StudentEmailRequestResponse> {
+        return authorizedRequestWithRefresh<StudentEmailRequestResponse>(context) { token ->
+            client.post("$BASE_URL/identity/student-email/request") {
+                header("Authorization", "Bearer $token")
+                setBody(StudentEmailRequestBody(studentEmail = studentEmail))
+            }
+        }
+    }
+
+    suspend fun confirmStudentEmailVerification(
+        context: Context,
+        studentEmail: String,
+        code: String
+    ): Result<IdentityMutationResponse> {
+        return authorizedRequestWithRefresh<IdentityMutationResponse>(context) { token ->
+            client.post("$BASE_URL/identity/student-email/confirm") {
+                header("Authorization", "Bearer $token")
+                setBody(StudentEmailConfirmRequest(studentEmail = studentEmail, code = code))
+            }
+        }
+    }
+
+    suspend fun claimStudentBadge(context: Context): Result<ClaimStudentBadgeResponse> {
+        return authorizedRequestWithRefresh<ClaimStudentBadgeResponse>(context) { token ->
+            client.post("$BASE_URL/identity/student-badge/claim") {
+                header("Authorization", "Bearer $token")
+                setBody(buildJsonObject {})
+            }
+        }
+    }
+
+    suspend fun requestIdProofUpload(context: Context): Result<IdUploadRequestResponse> {
+        return authorizedRequestWithRefresh<IdUploadRequestResponse>(context) { token ->
+            client.post("$BASE_URL/identity/id/request-upload") {
+                header("Authorization", "Bearer $token")
+                setBody(buildJsonObject {})
+            }
+        }
+    }
+
+    suspend fun submitIdProof(
+        context: Context,
+        verificationId: String,
+        bytes: ByteArray,
+        fileName: String,
+        mimeType: String
+    ): Result<IdSubmitResponse> {
+        return authorizedRequestWithRefresh<IdSubmitResponse>(context) { token ->
+            val safeVerificationId = InputSecurity.identifier(verificationId, "verificationId")
+            val safeFileName = InputSecurity.fileName(fileName, "identity-proof")
+            val safeBytes = InputSecurity.uploadBytes(bytes, "identity-proof", 8 * 1024 * 1024)
+            uploadClient.post("$BASE_URL/identity/id/submit") {
+                header("Authorization", "Bearer $token")
+                setBody(MultiPartFormDataContent(formData {
+                    append("verificationId", safeVerificationId)
+                    append(
+                        "evidence",
+                        safeBytes,
+                        Headers.build {
+                            append(HttpHeaders.ContentType, mimeType)
+                            append(HttpHeaders.ContentDisposition, "filename=$safeFileName")
+                        }
+                    )
+                }))
+            }
+        }
+    }
+
+    suspend fun getBlockedUsers(context: Context): Result<BlocksResponse> {
+        return authorizedRequestWithRefresh<BlocksResponse>(context) { token ->
+            client.get("$BASE_URL/safety/blocks") {
+                header("Authorization", "Bearer $token")
+            }
+        }
+    }
+
+    suspend fun getMyReports(
+        context: Context,
+        page: Int = 1,
+        limit: Int = 50
+    ): Result<MyReportsResponse> {
+        return authorizedRequestWithRefresh<MyReportsResponse>(context) { token ->
+            client.get("$BASE_URL/reports/my-reports") {
+                header("Authorization", "Bearer $token")
+                parameter("page", page.coerceAtLeast(1))
+                parameter("limit", limit.coerceIn(1, 50))
+            }
+        }
+    }
+
+    suspend fun blockUser(
+        context: Context,
+        userId: String,
+        reason: String? = null
+    ): Result<BlockUserResponse> {
+        return authorizedRequestWithRefresh<BlockUserResponse>(context) { token ->
+            val safeUserId = InputSecurity.identifier(userId, "userId")
+            client.post("$BASE_URL/safety/blocks/$safeUserId") {
+                header("Authorization", "Bearer $token")
+                setBody(BlockUserRequest(reason = reason))
+            }
+        }
+    }
+
+    suspend fun unblockUser(context: Context, userId: String): Result<Unit> {
+        return authorizedUnitRequestWithRefresh(context) { token ->
+            val safeUserId = InputSecurity.identifier(userId, "userId")
+            client.delete("$BASE_URL/safety/blocks/$safeUserId") {
+                header("Authorization", "Bearer $token")
             }
         }
     }
@@ -2543,7 +3393,7 @@ object ApiClient {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val safeStoryId = InputSecurity.identifier(storyId, "storyId")
-            val safeCursor = InputSecurity.optionalIdentifier(cursor, "cursor")
+            val safeCursor = InputSecurity.optionalPaginationCursor(cursor, "cursor")
             val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 100)
             val response = client.get("$BASE_URL/stories/$safeStoryId/viewers") {
                 header("Authorization", "Bearer $token")
@@ -2584,18 +3434,27 @@ object ApiClient {
     
     // ==================== Reels APIs ====================
     
-    suspend fun getReelsFeed(context: Context, cursor: String? = null, limit: Int = 10, mode: String = "foryou"): Result<ReelsFeedResponse> {
+    suspend fun getReelsFeed(
+        context: Context,
+        cursor: String? = null,
+        limit: Int = 10,
+        mode: String = "foryou",
+        adItemOffset: Int = 0
+    ): Result<ReelsFeedResponse> {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val safeCursor = InputSecurity.optionalIdentifier(cursor, "cursor")
+            val safeCursor = InputSecurity.optionalPaginationCursor(cursor, "cursor")
             val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 30)
             val safeMode = InputSecurity.identifier(mode, "mode")
+            val safeAdItemOffset = InputSecurity.boundedInt(adItemOffset, "adItemOffset", 0, 10_000)
             val response = client.get("$BASE_URL/reels/feed") {
                 header("Authorization", "Bearer $token")
                 header("Cache-Control", "no-cache, no-store, must-revalidate")
                 safeCursor?.let { parameter("cursor", it) }
                 parameter("limit", safeLimit.toString())
                 parameter("mode", safeMode)
+                parameter("adSessionId", managedAdSessionId)
+                parameter("adItemOffset", safeAdItemOffset)
                 parameter("_t", System.currentTimeMillis()) // Cache buster
             }
             if (response.status.isSuccess()) {
@@ -2743,7 +3602,7 @@ object ApiClient {
     suspend fun getMyDraftReels(context: Context, cursor: String? = null, limit: Int = 20): Result<ReelsFeedResponse> {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val safeCursor = InputSecurity.optionalIdentifier(cursor, "cursor")
+            val safeCursor = InputSecurity.optionalPaginationCursor(cursor, "cursor")
             val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 50)
             val response = client.get("$BASE_URL/reels/drafts") {
                 header("Authorization", "Bearer $token")
@@ -2786,7 +3645,7 @@ object ApiClient {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val safeUserId = InputSecurity.identifier(userId, "userId")
-            val safeCursor = InputSecurity.optionalIdentifier(cursor, "cursor")
+            val safeCursor = InputSecurity.optionalPaginationCursor(cursor, "cursor")
             val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 50)
             val response = client.get("$BASE_URL/reels/user/$safeUserId/saved") {
                 header("Authorization", "Bearer $token")
@@ -2902,6 +3761,47 @@ object ApiClient {
             Result.failure(e)
         }
     }
+
+    suspend fun trackManagedAdImpression(
+        context: Context,
+        campaignId: String,
+        placement: String,
+        slotKey: String
+    ): Result<Unit> = trackManagedAdEvent(context, campaignId, placement, slotKey, "impression")
+
+    suspend fun trackManagedAdClick(
+        context: Context,
+        campaignId: String,
+        placement: String,
+        slotKey: String
+    ): Result<Unit> = trackManagedAdEvent(context, campaignId, placement, slotKey, "click")
+
+    private suspend fun trackManagedAdEvent(
+        context: Context,
+        campaignId: String,
+        placement: String,
+        slotKey: String,
+        eventType: String
+    ): Result<Unit> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeCampaignId = InputSecurity.identifier(campaignId, "campaignId")
+            val safePlacement = InputSecurity.enumValue(placement, setOf("FEED", "REELS"), "placement").lowercase()
+            val safeSlotKey = InputSecurity.text(slotKey, "slotKey", 64)
+            val response = client.post("$BASE_URL/ads/$safeCampaignId/$eventType") {
+                header("Authorization", "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(ManagedAdEventRequest(safePlacement, safeSlotKey, managedAdSessionId))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception("Failed to track ad event"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
     
     suspend fun getReelComments(
         context: Context,
@@ -2914,7 +3814,7 @@ object ApiClient {
         return try {
             val token = getToken(context)
             val safeReelId = InputSecurity.identifier(reelId, "reelId")
-            val safeCursor = InputSecurity.optionalIdentifier(cursor, "cursor")
+            val safeCursor = InputSecurity.optionalPaginationCursor(cursor, "cursor")
             val safeParentId = InputSecurity.optionalIdentifier(parentId, "parentId")
             val safeHighlightCommentId = InputSecurity.optionalIdentifier(highlightCommentId, "highlightCommentId")
             val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 100)
@@ -3039,21 +3939,22 @@ object ApiClient {
      * Get top networkers leaderboard (Social Proof)
      * @param period "week" or "month"
      */
-    suspend fun getLeaderboard(context: Context, period: String = "week"): Result<LeaderboardData> {
+    suspend fun getLeaderboard(context: Context, period: String = "week", limit: Int = 100): Result<LeaderboardData> {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val response = client.get("$BASE_URL/engagement/leaderboard") {
                 header("Authorization", "Bearer $token")
                 parameter("period", period)
+                parameter("limit", limit.coerceIn(1, 100))
             }
             if (response.status.isSuccess()) {
                 val leaderboardResponse: LeaderboardResponse = response.body()
-                Result.success(leaderboardResponse.data)
+                Result.success(leaderboardResponse.data.copy(period = period))
             } else {
-                Result.success(LeaderboardData())
+                Result.success(LeaderboardData(period = period))
             }
         } catch (e: Exception) {
-            Result.success(LeaderboardData())
+            Result.success(LeaderboardData(period = period))
         }
     }
     

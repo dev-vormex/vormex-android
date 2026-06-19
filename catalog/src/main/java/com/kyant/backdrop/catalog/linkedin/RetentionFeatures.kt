@@ -69,6 +69,7 @@ import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.shapes.Capsule
 import com.kyant.shapes.RoundedRectangle
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -90,17 +91,6 @@ private val mockWeeklyGoals = WeeklyGoalsData(
     weekEndDate = "2026-03-08",
     streakAtRisk = true,
     reminderMessage = "You're 1/10 on weekly connections. 9 more to go!"
-)
-
-private val mockLeaderboard = LeaderboardData(
-    users = listOf(
-        LeaderboardUser(rank = 1, userId = "1", name = "YASMANTH VEMALA", profileImage = null, score = 7, connectionsThisPeriod = 7, isCurrentUser = true),
-        LeaderboardUser(rank = 2, userId = "2", name = "Medam Srinivas", headline = "IIT Kharagpur", profileImage = null, score = 3, connectionsThisPeriod = 3),
-        LeaderboardUser(rank = 3, userId = "3", name = "Experimentingtech", profileImage = null, score = 3, connectionsThisPeriod = 3)
-    ),
-    period = "week",
-    currentUserRank = 1,
-    totalParticipants = 15
 )
 
 private val mockLiveActivity = LiveActivityData(
@@ -171,6 +161,7 @@ data class RetentionUiState(
     // Leaderboard (Social Proof)
     val leaderboardData: LeaderboardData = LeaderboardData(),
     val leaderboardPeriod: String = "week",
+    val isLeaderboardLoading: Boolean = false,
     // Live Activity (FOMO)
     val liveActivity: LiveActivityData = LiveActivityData(),
     // Session Summary (Peak-End)
@@ -197,6 +188,8 @@ class RetentionViewModel(private val context: Context) : ViewModel() {
     private var connectionLimitLoadedAtMillis = 0L
     private var isRequestInFlight = false
     private var isConnectionLimitRequestInFlight = false
+    private var leaderboardLoadJob: Job? = null
+    private val leaderboardCacheByPeriod = mutableMapOf<String, Pair<Long, LeaderboardData>>()
     
     // 12-hour seed that changes twice a day for variety in recommendations
     private val twelveHourSeed: Long
@@ -245,9 +238,15 @@ class RetentionViewModel(private val context: Context) : ViewModel() {
             val goalsResult = ApiClient.getWeeklyGoals(context)
             val activityResult = ApiClient.getLiveActivity(context)
             val limitResult = ApiClient.getConnectionLimit(context)
-            val leaderboardResult = ApiClient.getLeaderboard(context, "week")
+            val leaderboardResult = ApiClient.getLeaderboard(context, "week", limit = 100)
             val peopleLikeYouResult = ApiClient.getPeopleLikeYou(context)
             val dailyMatchesResult = ApiClient.getDailyMatches(context)
+            val leaderboardData = leaderboardResult.getOrDefault(
+                leaderboardCacheByPeriod["week"]?.second ?: LeaderboardData(period = "week")
+            )
+            leaderboardResult.getOrNull()?.let { data ->
+                leaderboardCacheByPeriod["week"] = System.currentTimeMillis() to data
+            }
             
             // Use empty states for authenticated progress data instead of fake streaks/goals.
             lastLoadedAtMillis = System.currentTimeMillis()
@@ -258,7 +257,9 @@ class RetentionViewModel(private val context: Context) : ViewModel() {
                 weeklyGoals = goalsResult.getOrDefault(WeeklyGoalsData()),
                 liveActivity = activityResult.getOrDefault(mockLiveActivity),
                 connectionLimit = limitResult.getOrDefault(mockConnectionLimit),
-                leaderboardData = leaderboardResult.getOrDefault(mockLeaderboard),
+                leaderboardData = leaderboardData,
+                leaderboardPeriod = leaderboardData.period,
+                isLeaderboardLoading = false,
                 // Use real API data with shuffled mock fallback
                 peopleLikeYou = peopleLikeYouResult.getOrNull()?.people ?: getShuffledPeopleLikeYou(),
                 todaysMatches = dailyMatchesResult.getOrNull()?.matches ?: getShuffledTodaysMatches()
@@ -268,11 +269,42 @@ class RetentionViewModel(private val context: Context) : ViewModel() {
     }
     
     fun loadLeaderboard(period: String = "week") {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(leaderboardPeriod = period)
-            ApiClient.getLeaderboard(context, period)
+        val normalizedPeriod = if (period == "month") "month" else "week"
+        val now = System.currentTimeMillis()
+        leaderboardCacheByPeriod[normalizedPeriod]
+            ?.takeIf { now - it.first < cacheTtlMillis }
+            ?.let { cached ->
+                _uiState.value = _uiState.value.copy(
+                    leaderboardPeriod = normalizedPeriod,
+                    leaderboardData = cached.second.copy(period = normalizedPeriod),
+                    isLeaderboardLoading = false
+                )
+                return
+            }
+
+        leaderboardLoadJob?.cancel()
+        _uiState.value = _uiState.value.copy(
+            leaderboardPeriod = normalizedPeriod,
+            isLeaderboardLoading = true
+        )
+        leaderboardLoadJob = viewModelScope.launch {
+            ApiClient.getLeaderboard(context, normalizedPeriod, limit = 100)
                 .onSuccess { data ->
-                    _uiState.value = _uiState.value.copy(leaderboardData = data)
+                    val normalizedData = data.copy(period = normalizedPeriod)
+                    leaderboardCacheByPeriod[normalizedPeriod] = System.currentTimeMillis() to normalizedData
+                    _uiState.value = _uiState.value.copy(
+                        leaderboardPeriod = normalizedPeriod,
+                        leaderboardData = normalizedData,
+                        isLeaderboardLoading = false
+                    )
+                }
+                .onFailure {
+                    _uiState.value = _uiState.value.copy(
+                        leaderboardPeriod = normalizedPeriod,
+                        isLeaderboardLoading = false,
+                        leaderboardData = leaderboardCacheByPeriod[normalizedPeriod]?.second
+                            ?: LeaderboardData(period = normalizedPeriod)
+                    )
                 }
         }
     }
@@ -999,6 +1031,13 @@ fun StreakDetailsScreen(
             }
 
             item {
+                StreakCategoriesPanel(
+                    streaks = streaks,
+                    contentColor = contentColor
+                )
+            }
+
+            item {
                 StreakHowToEarnCard(
                     contentColor = contentColor,
                     accentColor = accentColor,
@@ -1007,40 +1046,29 @@ fun StreakDetailsScreen(
                 )
             }
 
-            item {
-                StreakCategoriesPanel(
-                    streaks = streaks,
-                    contentColor = contentColor
-                )
-            }
-            
             // Streak freeze info
             if (streaks.streakFreezes > 0) {
                 item {
-                    Box(
-                        Modifier
+                    Row(
+                        modifier = Modifier
                             .fillMaxWidth()
-                            .retentionCard(contentColor, 12.dp)
-                            .padding(12.dp)
+                            .padding(horizontal = 2.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.WarningAmber,
-                                contentDescription = null,
-                                tint = accentColor,
-                                modifier = Modifier.size(18.dp)
+                        Icon(
+                            imageVector = Icons.Outlined.WarningAmber,
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        BasicText(
+                            "${streaks.streakFreezes} streak freeze${if (streaks.streakFreezes > 1) "s" else ""} available",
+                            style = TextStyle(
+                                color = contentColor.copy(alpha = 0.74f),
+                                fontSize = 13.sp
                             )
-                            BasicText(
-                                "${streaks.streakFreezes} Streak Freeze${if (streaks.streakFreezes > 1) "s" else ""} available",
-                                style = TextStyle(
-                                    color = contentColor,
-                                    fontSize = 14.sp
-                                )
-                            )
-                        }
+                        )
                     }
                 }
             }
@@ -1080,78 +1108,89 @@ private fun StreakHeroCard(
     contentColor: Color,
     accentColor: Color
 ) {
-    Box(
-        Modifier
+    Column(
+        modifier = Modifier
             .fillMaxWidth()
-            .retentionCard(contentColor, 24.dp)
-            .padding(20.dp)
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                PremiumStreakIcon(
-                    iconRes = R.drawable.ic_vx_streak_flame,
-                    modifier = Modifier.size(70.dp),
-                    surfaceColor = if (isAtRisk) Color(0xFFFF6B35).copy(alpha = 0.10f)
-                    else accentColor.copy(alpha = 0.10f)
-                )
-                StreakStatusPill(
-                    qualifiedToday = qualifiedToday,
-                    isAtRisk = isAtRisk,
-                    contentColor = contentColor,
-                    accentColor = accentColor
-                )
-            }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            StreakFireLottie(modifier = Modifier.size(82.dp))
 
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BasicText(
+                        "Daily streak",
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.58f),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                    StreakStatusPill(
+                        qualifiedToday = qualifiedToday,
+                        isAtRisk = isAtRisk,
+                        contentColor = contentColor,
+                        accentColor = accentColor
+                    )
+                }
                 BasicText(
                     "$dailyStreak day${if (dailyStreak == 1) "" else "s"}",
                     style = TextStyle(
                         color = contentColor,
-                        fontSize = 42.sp,
+                        fontSize = 40.sp,
                         fontWeight = FontWeight.Bold
                     )
                 )
                 BasicText(
                     when {
-                        qualifiedToday -> "Daily Activity Streak is safe for today."
-                        isAtRisk -> "Do one meaningful action today to keep it alive."
-                        dailyStreak > 0 -> "One meaningful action each day keeps this growing."
-                        else -> "Start today with one meaningful action."
+                        qualifiedToday -> "Safe today."
+                        isAtRisk -> "Take one action today to keep it alive."
+                        dailyStreak > 0 -> "One useful action each day keeps it growing."
+                        else -> "Start with one useful action today."
                     },
                     style = TextStyle(
                         color = contentColor.copy(alpha = 0.68f),
-                        fontSize = 14.sp
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
                     )
                 )
             }
+        }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                StreakSummaryTile(
-                    label = "Best",
-                    value = longestDailyStreak.coerceAtLeast(dailyStreak).toString(),
-                    contentColor = contentColor,
-                    modifier = Modifier.weight(1f)
-                )
-                StreakSummaryTile(
-                    label = "Today",
-                    value = if (qualifiedToday) "Done" else "Open",
-                    contentColor = contentColor,
-                    modifier = Modifier.weight(1f)
-                )
-                StreakSummaryTile(
-                    label = "Score",
-                    value = engagementScore.coerceIn(0, 100).toString(),
-                    contentColor = contentColor,
-                    modifier = Modifier.weight(1f)
-                )
-            }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            StreakSummaryTile(
+                label = "Best",
+                value = longestDailyStreak.coerceAtLeast(dailyStreak).toString(),
+                contentColor = contentColor,
+                modifier = Modifier.weight(1f)
+            )
+            StreakSummaryTile(
+                label = "Today",
+                value = if (qualifiedToday) "Done" else "Open",
+                contentColor = contentColor,
+                modifier = Modifier.weight(1f)
+            )
+            StreakSummaryTile(
+                label = "Score",
+                value = engagementScore.coerceIn(0, 100).toString(),
+                contentColor = contentColor,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }
@@ -1166,7 +1205,7 @@ private fun StreakStatusPill(
     val pillColor = when {
         qualifiedToday -> Color(0xFF22C55E)
         isAtRisk -> Color(0xFFFF6B35)
-        else -> accentColor
+        else -> Color(0xFFFF8A00)
     }
     val label = when {
         qualifiedToday -> "Safe today"
@@ -1177,14 +1216,14 @@ private fun StreakStatusPill(
     Box(
         Modifier
             .clip(Capsule())
-            .background(pillColor.copy(alpha = 0.14f))
-            .padding(horizontal = 12.dp, vertical = 7.dp)
+            .background(pillColor.copy(alpha = 0.10f))
+            .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
         BasicText(
             label,
             style = TextStyle(
                 color = if (qualifiedToday || isAtRisk) pillColor else contentColor,
-                fontSize = 12.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold
             )
         )
@@ -1200,6 +1239,8 @@ private fun StreakSummaryTile(
 ) {
     Column(
         modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(contentColor.copy(alpha = 0.05f))
             .padding(vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -1230,10 +1271,7 @@ private fun StreakRiskCard(
     Box(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(accentColor.copy(alpha = 0.12f))
-            .border(1.dp, accentColor.copy(alpha = 0.26f), RoundedCornerShape(18.dp))
-            .padding(14.dp)
+            .padding(horizontal = 2.dp, vertical = 2.dp)
     ) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1249,7 +1287,8 @@ private fun StreakRiskCard(
                 "Your streak needs action today. Connect, post, comment, message, or finish a game.",
                 style = TextStyle(
                     color = contentColor,
-                    fontSize = 13.sp
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
                 ),
                 modifier = Modifier.weight(1f)
             )
@@ -1264,19 +1303,18 @@ private fun StreakHowToEarnCard(
     onNavigateToFindPeople: () -> Unit,
     onNavigateToCreatePost: () -> Unit
 ) {
-    Box(
-        Modifier
+    Column(
+        modifier = Modifier
             .fillMaxWidth()
-            .retentionCard(contentColor, 20.dp)
-            .padding(16.dp)
+            .padding(horizontal = 2.dp, vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 BasicText(
                     "Keep it alive",
                     style = TextStyle(
                         color = contentColor,
-                        fontSize = 17.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 )
@@ -1284,7 +1322,8 @@ private fun StreakHowToEarnCard(
                     "One meaningful action preserves the main streak. Login is tracked separately.",
                     style = TextStyle(
                         color = contentColor.copy(alpha = 0.66f),
-                        fontSize = 13.sp
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
                     )
                 )
             }
@@ -1335,7 +1374,6 @@ private fun StreakHowToEarnCard(
                     onClick = onNavigateToCreatePost
                 )
             }
-        }
     }
 }
 
@@ -1352,8 +1390,8 @@ private fun StreakActionRow(
     ) {
         PremiumStreakIcon(
             iconRes = iconRes,
-            modifier = Modifier.size(36.dp),
-            surfaceColor = contentColor.copy(alpha = 0.06f)
+            modifier = Modifier.size(32.dp),
+            surfaceColor = Color.Transparent
         )
         Column(
             modifier = Modifier.weight(1f),
@@ -1363,7 +1401,7 @@ private fun StreakActionRow(
                 title,
                 style = TextStyle(
                     color = contentColor,
-                    fontSize = 14.sp,
+                    fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
             )
@@ -1371,7 +1409,8 @@ private fun StreakActionRow(
                 subtitle,
                 style = TextStyle(
                     color = contentColor.copy(alpha = 0.58f),
-                    fontSize = 12.sp
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp
                 )
             )
         }
@@ -1389,10 +1428,10 @@ private fun StreakQuickActionButton(
 ) {
     Row(
         modifier = modifier
-            .height(44.dp)
+            .height(40.dp)
             .clip(Capsule())
-            .background(tint.copy(alpha = 0.14f))
-            .border(1.dp, tint.copy(alpha = 0.26f), Capsule())
+            .background(contentColor.copy(alpha = 0.06f))
+            .border(1.dp, contentColor.copy(alpha = 0.12f), Capsule())
             .clickable { onClick() }
             .padding(horizontal = 12.dp),
         horizontalArrangement = Arrangement.Center,
@@ -1409,7 +1448,7 @@ private fun StreakQuickActionButton(
             label,
             style = TextStyle(
                 color = contentColor,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold
             )
         )
@@ -1421,13 +1460,12 @@ private fun StreakCategoriesPanel(
     streaks: StreakData,
     contentColor: Color
 ) {
-    Box(
-        Modifier
+    Column(
+        modifier = Modifier
             .fillMaxWidth()
-            .retentionCard(contentColor, 20.dp)
-            .padding(16.dp)
+            .padding(horizontal = 2.dp, vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1437,7 +1475,7 @@ private fun StreakCategoriesPanel(
                     "Progress by action",
                     style = TextStyle(
                         color = contentColor,
-                        fontSize = 17.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 )
@@ -1445,7 +1483,7 @@ private fun StreakCategoriesPanel(
                     "Best included",
                     style = TextStyle(
                         color = contentColor.copy(alpha = 0.52f),
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
                     )
                 )
@@ -1458,7 +1496,7 @@ private fun StreakCategoriesPanel(
                 currentStreak = streaks.connectionStreak,
                 longestStreak = streaks.longestConnectionStreak,
                 isAtRisk = streaks.isAtRisk.connection,
-                color = Color(0xFF3B82F6),
+                color = Color(0xFFFF8A00),
                 contentColor = contentColor
             )
             StreakPanelDivider(contentColor)
@@ -1480,7 +1518,7 @@ private fun StreakCategoriesPanel(
                 currentStreak = streaks.postingStreak,
                 longestStreak = streaks.longestPostingStreak,
                 isAtRisk = streaks.isAtRisk.posting,
-                color = Color(0xFF8B5CF6),
+                color = Color(0xFFFFB020),
                 contentColor = contentColor
             )
             StreakPanelDivider(contentColor)
@@ -1494,7 +1532,6 @@ private fun StreakCategoriesPanel(
                 color = Color(0xFFFF6B35),
                 contentColor = contentColor
             )
-        }
     }
 }
 
@@ -1533,7 +1570,7 @@ private fun StreakDetailBar(
         PremiumStreakIcon(
             iconRes = iconRes,
             modifier = Modifier.size(42.dp),
-            surfaceColor = color.copy(alpha = 0.10f)
+            surfaceColor = contentColor.copy(alpha = 0.05f)
         )
 
         Column(
@@ -1638,11 +1675,10 @@ fun TopNetworkersScreen(
     val context = LocalContext.current
     val viewModel: RetentionViewModel = viewModel(factory = RetentionViewModel.Factory(context))
     val state by viewModel.uiState.collectAsState()
+    val selectedPeriod = state.leaderboardPeriod
     
-    var selectedPeriod by remember { mutableStateOf("week") }
-    
-    LaunchedEffect(selectedPeriod) {
-        viewModel.loadLeaderboard(selectedPeriod)
+    LaunchedEffect(Unit) {
+        viewModel.loadLeaderboard("week")
     }
     
     Column(
@@ -1672,7 +1708,11 @@ fun TopNetworkersScreen(
                         .weight(1f)
                         .clip(Capsule())
                         .background(if (selectedPeriod == period) accentColor else Color.Transparent)
-                        .clickable { selectedPeriod = period }
+                        .clickable {
+                            if (selectedPeriod != period) {
+                                viewModel.loadLeaderboard(period)
+                            }
+                        }
                         .padding(vertical = 10.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -1695,6 +1735,50 @@ fun TopNetworkersScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            if (state.isLeaderboardLoading) {
+                item {
+                    BasicText(
+                        "Loading ${if (selectedPeriod == "month") "this month" else "this week"}...",
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.58f),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        ),
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            if (state.leaderboardData.users.isEmpty()) {
+                item {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .retentionCard(contentColor, 16.dp)
+                            .padding(18.dp)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            BasicText(
+                                "No networkers yet",
+                                style = TextStyle(
+                                    color = contentColor,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            )
+                            BasicText(
+                                "The top 100 will appear here as people start connecting this ${if (selectedPeriod == "month") "month" else "week"}.",
+                                style = TextStyle(
+                                    color = contentColor.copy(alpha = 0.64f),
+                                    fontSize = 12.sp,
+                                    lineHeight = 17.sp
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
             // Top 3 podium
             if (state.leaderboardData.users.size >= 3) {
                 item {
@@ -1709,12 +1793,13 @@ fun TopNetworkersScreen(
             }
             
             // Rest of the list
+            val listStartIndex = if (state.leaderboardData.users.size >= 3) 3 else 0
             itemsIndexed(
-                state.leaderboardData.users.drop(3)
+                state.leaderboardData.users.drop(listStartIndex)
             ) { index, user ->
                 LeaderboardUserRow(
                     user = user,
-                    rank = index + 4,
+                    rank = index + listStartIndex + 1,
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
@@ -1724,7 +1809,7 @@ fun TopNetworkersScreen(
             
             // Current user position (if not in top list)
             state.leaderboardData.currentUserRank?.let { rank ->
-                if (rank > 10) {
+                if (rank > state.leaderboardData.users.size) {
                     item {
                         Box(
                             Modifier
@@ -2449,7 +2534,7 @@ fun ConnectionLimitIndicator(
         }
         
         BasicText(
-            "${limitData.remaining}/${limitData.limit} left",
+            "${limitData.remaining}/${limitData.limit} today",
             style = TextStyle(
                 color = if (isLow) Color(0xFFFF6B6B) else contentColor.copy(alpha = 0.6f),
                 fontSize = 11.sp

@@ -19,6 +19,7 @@ import com.kyant.backdrop.catalog.MainActivity
 import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.chat.cache.ChatCacheRepository
 import com.kyant.backdrop.catalog.data.ChatMutePreferences
+import com.kyant.backdrop.catalog.data.SettingsPreferences
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.ChatSocketManager
 import com.kyant.backdrop.catalog.network.GroupSocketManager
@@ -80,6 +81,8 @@ class VormexMessagingService : FirebaseMessagingService() {
         const val ACTION_CONNECTION_CELEBRATION = "connection_celebration"
         const val ACTION_SESSION_SUMMARY = "session_summary"
         const val ACTION_GROUP_CHAT = "group_chat"
+        const val ACTION_HACKATHONS = "hackathons"
+        const val ACTION_SKILL_SWAP = "skill_swap"
         
         // Intent extras
         const val EXTRA_ACTION = "notification_action"
@@ -91,6 +94,7 @@ class VormexMessagingService : FirebaseMessagingService() {
         const val EXTRA_CONVERSATION_ID = "conversation_id"
         const val EXTRA_GROUP_ID = "group_id"
         const val EXTRA_CONNECTION_ID = "connection_id"
+        const val EXTRA_TAB = "tab"
 
         /**
          * Get current FCM token
@@ -256,6 +260,7 @@ class VormexMessagingService : FirebaseMessagingService() {
                 .setSound(soundUri)
                 .setContentIntent(pendingIntent)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setLargeIcon(NotificationBranding.getAppLogoBitmap(context))
             
             if (body.length > 50) {
                 notificationBuilder.setStyle(NotificationCompat.BigTextStyle().bigText(body))
@@ -270,6 +275,9 @@ class VormexMessagingService : FirebaseMessagingService() {
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 
                 val type = data["type"] ?: data["screen"] ?: ""
+                if (isIdentityVerificationNotification(type)) {
+                    return@apply
+                }
                 
                 when {
                     type.contains("group_message", ignoreCase = true) ||
@@ -329,8 +337,20 @@ class VormexMessagingService : FirebaseMessagingService() {
                     type.contains("streak", ignoreCase = true) -> {
                         putExtra(EXTRA_ACTION, ACTION_STREAK)
                     }
+                    type.contains("hackathon", ignoreCase = true) ||
+                    data["screen"].equals("hackathons", ignoreCase = true) -> {
+                        putExtra(EXTRA_ACTION, ACTION_HACKATHONS)
+                    }
+                    type.contains("skill_swap", ignoreCase = true) ||
+                    data["screen"].equals("skill_swap", ignoreCase = true) -> {
+                        putExtra(EXTRA_ACTION, ACTION_SKILL_SWAP)
+                        data["tab"]?.let { putExtra(EXTRA_TAB, it) }
+                        data["actorId"]?.let { putExtra(EXTRA_USER_ID, it) }
+                    }
                     type.contains("match", ignoreCase = true) || type == "find_people" -> {
                         putExtra(EXTRA_ACTION, ACTION_FIND_PEOPLE)
+                        data["matchUserId"]?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_USER_ID, it) }
+                            ?: data["actorId"]?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_USER_ID, it) }
                     }
                     type.equals("profile_view", ignoreCase = true) ||
                     data["screen"].equals("profile_views", ignoreCase = true) -> {
@@ -348,6 +368,11 @@ class VormexMessagingService : FirebaseMessagingService() {
             }
         }
 
+        private fun isIdentityVerificationNotification(type: String): Boolean {
+            return type.equals("identity_verification_approved", ignoreCase = true) ||
+                type.equals("identity_verification_resubmit_requested", ignoreCase = true)
+        }
+
         /**
          * Map notification type to channel
          */
@@ -356,6 +381,8 @@ class VormexMessagingService : FirebaseMessagingService() {
                 type.contains("message", ignoreCase = true) -> CHANNEL_ID_MESSAGES
                 type.contains("connection", ignoreCase = true) -> CHANNEL_ID_CONNECTIONS
                 type.contains("streak", ignoreCase = true) -> CHANNEL_ID_STREAKS
+                type.contains("hackathon", ignoreCase = true) -> CHANNEL_ID_ENGAGEMENT
+                type.contains("skill_swap", ignoreCase = true) -> CHANNEL_ID_ENGAGEMENT
                 type.contains("like", ignoreCase = true) ||
                 type.contains("comment", ignoreCase = true) ||
                 type.contains("mention", ignoreCase = true) ||
@@ -363,6 +390,12 @@ class VormexMessagingService : FirebaseMessagingService() {
                 type.contains("profile", ignoreCase = true) -> CHANNEL_ID_SOCIAL
                 else -> CHANNEL_ID_ENGAGEMENT
             }
+        }
+
+        private fun isMatchNotificationType(type: String): Boolean {
+            return type.contains("match", ignoreCase = true) ||
+                type.equals("daily_match", ignoreCase = true) ||
+                type.equals("recommended_match", ignoreCase = true)
         }
 
         private fun resolveNotificationId(type: String, data: Map<String, String>): Int {
@@ -421,6 +454,16 @@ class VormexMessagingService : FirebaseMessagingService() {
             val body = data["body"] ?: notification?.body ?: ""
             
             Log.d(TAG, "Processing notification - Title: $title, Body: $body, Type: $type")
+
+            if (isMatchNotificationType(type)) {
+                val matchAlertsEnabled = runBlocking(Dispatchers.IO) {
+                    SettingsPreferences.isMatchNotificationDeliveryEnabled(this@VormexMessagingService)
+                }
+                if (!matchAlertsEnabled) {
+                    Log.d(TAG, "Skipping match notification because match alerts are disabled")
+                    return
+                }
+            }
             
             if (body.isNotEmpty()) {
                 if (
@@ -490,6 +533,7 @@ class VormexMessagingService : FirebaseMessagingService() {
             .setDefaults(NotificationCompat.DEFAULT_LIGHTS)
             // Full screen intent for heads-up notification on locked screen
             .setFullScreenIntent(pendingIntent, true)
+            .setLargeIcon(NotificationBranding.getAppLogoBitmap(this))
 
         if (body.length > 50) {
             notificationBuilder.setStyle(NotificationCompat.BigTextStyle().bigText(body))

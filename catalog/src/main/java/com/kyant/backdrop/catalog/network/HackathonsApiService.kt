@@ -27,7 +27,7 @@ import kotlinx.serialization.json.Json
 
 object HackathonsApiService {
     private val baseUrl = BuildConfig.API_BASE_URL
-    private val allowedSources = setOf("DEVFOLIO", "MLH", "COLLEGE_FEST", "CUSTOM")
+    private val allowedSources = setOf("DEVFOLIO", "MLH", "DEVPOST", "HACKEREARTH", "COLLEGE_FEST", "CUSTOM")
     private val allowedApplicationActions = setOf("ACCEPT", "REJECT")
 
     private val json = Json {
@@ -55,7 +55,7 @@ object HackathonsApiService {
                     Log.d("HackathonsApiService", message)
                 }
             }
-            level = if (BuildConfig.DEBUG) LogLevel.BODY else LogLevel.NONE
+            level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
         }
         install(HttpTimeout) {
             requestTimeoutMillis = 60000
@@ -84,17 +84,17 @@ object HackathonsApiService {
 
     suspend fun getHackathons(
         context: Context,
-        status: String = "active",
+        status: String = "open",
         search: String? = null,
         source: String? = null,
         skill: String? = null,
         college: String? = null,
         page: Int = 1,
-        limit: Int = 20
+        limit: Int = 50
     ): Result<HackathonsResponse> {
         return try {
             val token = authHeader(context)
-            val safeStatus = InputSecurity.optionalText(status, "status", 24) ?: "active"
+            val safeStatus = InputSecurity.optionalText(status, "status", 24) ?: "open"
             val safeSearch = InputSecurity.optionalText(search, "search", 120)
             val safeSource = source?.let {
                 InputSecurity.enumValue(it, allowedSources, "source").lowercase()

@@ -13,7 +13,7 @@ Quick start for a connected Android phone:
 
 ```bash
 cd ../vormex-backend
-npm run dev
+REDIS_URL= REDIS_REQUIRED=false PORT=5000 npm run dev:server
 ```
 
 In another terminal:

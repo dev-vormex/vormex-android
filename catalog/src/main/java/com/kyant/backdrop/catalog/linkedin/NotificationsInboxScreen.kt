@@ -42,6 +42,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.network.models.Notification
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -65,13 +66,15 @@ private enum class NotificationBucket {
 }
 
 private enum class NotificationDestinationKind {
+    None,
     Conversation,
     Post,
     Reel,
     ProfileViews,
     Profile,
     Network,
-    GrowthHub
+    GrowthHub,
+    SkillSwap
 }
 
 private data class NotificationSection(
@@ -95,6 +98,7 @@ private data class NotificationDestination(
     val commentId: String? = null,
     val parentCommentId: String? = null,
     val openComments: Boolean = false,
+    val tab: String? = null,
     val label: String,
     val hint: String,
     val badge: String
@@ -114,7 +118,8 @@ fun NotificationsInboxScreen(
     onOpenReel: (String, String?, String?) -> Unit = { _, _, _ -> },
     onOpenConversation: (String) -> Unit = {},
     onOpenNetwork: () -> Unit = {},
-    onOpenGrowthHub: () -> Unit = {}
+    onOpenGrowthHub: () -> Unit = {},
+    onOpenSkillSwap: (String?) -> Unit = {}
 ) {
     val context = LocalContext.current
     val viewModel: NotificationsInboxViewModel =
@@ -226,7 +231,8 @@ fun NotificationsInboxScreen(
                                                 onOpenReel = onOpenReel,
                                                 onOpenConversation = onOpenConversation,
                                                 onOpenNetwork = onOpenNetwork,
-                                                onOpenGrowthHub = onOpenGrowthHub
+                                                onOpenGrowthHub = onOpenGrowthHub,
+                                                onOpenSkillSwap = onOpenSkillSwap
                                             )
                                         }
                                     )
@@ -336,6 +342,7 @@ private fun NotificationInboxCard(
     val tone = notificationTone(notification.type, accentColor)
     val showCollabInviteActions = notification.isPendingPostCollabInvite()
     val collabStatus = notification.collabStatus()
+    val actionTextMaxLines = if (notification.isIdentityVerificationNotice()) 8 else 2
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -374,6 +381,7 @@ private fun NotificationInboxCard(
                     )
                     VerificationBadge(
                         verified = notification.actor?.hasVerificationBadge() == true,
+                        badgeStyle = notification.actor?.verificationBadgeStyle(),
                         size = VerificationBadgeSize.Micro
                     )
                 }
@@ -385,7 +393,7 @@ private fun NotificationInboxCard(
                         fontSize = 12.sp,
                         lineHeight = 16.sp
                     ),
-                    maxLines = 2,
+                    maxLines = actionTextMaxLines,
                     overflow = TextOverflow.Ellipsis
                 )
 
@@ -451,16 +459,29 @@ private fun NotificationAvatar(
     displayName: String,
     tone: Color
 ) {
-    val profileImage = if (notificationActionKey(notification.type) == "profile_view") {
+    val branded = notificationUsesVormexBranding(notification)
+    val context = LocalContext.current
+    val profileImage = if (notificationActionKey(notification.type) == "profile_view" || branded) {
         null
     } else {
         notification.actor?.profileImage
     }
 
     Box(contentAlignment = Alignment.BottomEnd) {
-        if (!profileImage.isNullOrBlank()) {
+        if (branded) {
             AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
+                model = ImageRequest.Builder(context)
+                    .data(R.drawable.vormex_logo)
+                    .crossfade(false)
+                    .build(),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+            )
+        } else if (!profileImage.isNullOrBlank()) {
+            AsyncImage(
+                model = ImageRequest.Builder(context)
                     .data(profileImage)
                     .crossfade(true)
                     .build(),
@@ -487,10 +508,13 @@ private fun NotificationAvatar(
                 )
             }
         }
-        VerificationBadge(
-            verified = notification.actor?.hasVerificationBadge() == true,
-            size = VerificationBadgeSize.Micro
-        )
+        if (!branded) {
+            VerificationBadge(
+                verified = notification.actor?.hasVerificationBadge() == true,
+                badgeStyle = notification.actor?.verificationBadgeStyle(),
+                size = VerificationBadgeSize.Micro
+            )
+        }
     }
 }
 
@@ -783,6 +807,9 @@ private fun notificationActionKey(type: String): String {
     return when {
         normalized == "connection_request" -> "connect_request"
         normalized == "connection_accepted" -> "connect_accepted"
+        normalized == "skill_swap_request" -> "skill_swap_request"
+        normalized == "skill_swap_accepted" -> "skill_swap_accepted"
+        normalized == "skill_swap_completed" -> "skill_swap_completed"
         normalized == "profile_view" -> "profile_view"
         normalized == "follow" -> "follow"
         normalized == "message" || "message" in normalized -> "message"
@@ -802,6 +829,9 @@ private fun notificationTargetKey(notification: Notification): String {
         notification.reel?.id != null || "reel" in normalized -> "reel"
         notification.post?.id != null -> "post"
         "reply" in normalized -> "comment"
+        "skill_swap" in normalized -> notification.dataValue("sessionId")
+            ?: notification.dataValue("requestId")
+            ?: "skill_swap"
         "connection" in normalized -> "connection"
         "profile" in normalized -> "profile"
         else -> "generic"
@@ -809,6 +839,8 @@ private fun notificationTargetKey(notification: Notification): String {
 }
 
 private fun notificationDisplayName(notification: Notification): String {
+    if (notificationUsesVormexBranding(notification)) return "Vormex"
+
     if (notificationActionKey(notification.type) == "profile_view") {
         val title = notificationDisplayTitle(notification.title)
         return if (title.isNotBlank()) title else "Profile views"
@@ -820,7 +852,7 @@ private fun notificationDisplayName(notification: Notification): String {
     val username = notification.actor?.username?.trim().orEmpty()
     if (username.isNotBlank()) return username
 
-    return if (notificationUsesVormexBranding(notification)) "Vormex" else "Someone"
+    return "Someone"
 }
 
 private fun notificationActionSummary(notifications: List<Notification>): String {
@@ -855,6 +887,9 @@ private fun notificationActionSummary(notifications: List<Notification>): String
             singular = "sent you a message",
             plural = "sent $count messages"
         )
+        "skill_swap_request" -> "sent you a Skill Swap request"
+        "skill_swap_accepted" -> "accepted your Skill Swap"
+        "skill_swap_completed" -> "completed a Skill Swap session"
         "like" -> when (notificationTargetKey(notification)) {
             "reel" -> quantityCopy(count, "liked your reel", "liked $count of your reels")
             "post" -> quantityCopy(count, "liked your post", "liked $count of your posts")
@@ -980,6 +1015,9 @@ private fun notificationTypeLabel(type: String): String {
         normalized == "admin_announcement" -> "Announcement"
         normalized == "connection_request" -> "Connection request"
         normalized == "connection_accepted" -> "Connection accepted"
+        normalized == "skill_swap_request" -> "Skill Swap request"
+        normalized == "skill_swap_accepted" -> "Skill Swap accepted"
+        normalized == "skill_swap_completed" -> "Skill Swap completed"
         normalized == "profile_view" -> "Profile views"
         normalized == "comment_reply" -> "Reply"
         normalized == "reel_comment_reply" -> "Reel reply"
@@ -1052,6 +1090,7 @@ private fun notificationTone(type: String, accentColor: Color): Color {
         "mention" in normalized -> Color(0xFFFFB74D)
         "profile" in normalized -> Color(0xFF26A69A)
         "follow" in normalized || "connection" in normalized -> Color(0xFF66BB6A)
+        "skill_swap" in normalized -> Color(0xFF8B5CF6)
         "comment" in normalized -> Color(0xFF29B6F6)
         "reel" in normalized -> Color(0xFFFF8A65)
         "streak" in normalized || "xp" in normalized -> Color(0xFFFFC107)
@@ -1066,12 +1105,21 @@ private fun resolveNotificationDestination(notification: Notification): Notifica
     val reelId = notification.reel?.id ?: notification.dataValue("reelId")
     val commentId = notification.dataValue("commentId")
     val parentCommentId = notification.dataValue("parentCommentId")
+    val screen = notification.dataValue("screen")?.lowercase(Locale.getDefault())
+    val tab = notification.dataValue("tab")
     val actorId = notification.actor?.id
         ?: notification.dataValue("viewerId")
         ?: notification.dataValue("userId")
         ?: notification.dataValue("actorId")
 
     return when {
+        notification.isIdentityVerificationNotice() -> NotificationDestination(
+            kind = NotificationDestinationKind.None,
+            label = "Vormex update",
+            hint = "Read this verification update in your inbox",
+            badge = "Vormex"
+        )
+
         normalizedType == "profile_view" -> NotificationDestination(
             kind = NotificationDestinationKind.ProfileViews,
             label = "See viewers",
@@ -1084,6 +1132,18 @@ private fun resolveNotificationDestination(notification: Notification): Notifica
             label = "Open Vormex",
             hint = "Read the latest update from the Vormex team",
             badge = "Vormex"
+        )
+
+        screen == "skill_swap" || "skill_swap" in normalizedType -> NotificationDestination(
+            kind = NotificationDestinationKind.SkillSwap,
+            tab = tab ?: if ("accepted" in normalizedType || "completed" in normalizedType) "sessions" else "requests",
+            label = if ("accepted" in normalizedType || "completed" in normalizedType) "Open session" else "Open request",
+            hint = if ("accepted" in normalizedType || "completed" in normalizedType) {
+                "Jump to your Skill Swap sessions"
+            } else {
+                "Review this Skill Swap request"
+            },
+            badge = "Skill Swap"
         )
 
         !conversationId.isNullOrBlank() || "message" in normalizedType -> NotificationDestination(
@@ -1189,9 +1249,17 @@ private fun resolveNotificationDestination(notification: Notification): Notifica
 }
 
 private fun notificationUsesVormexBranding(notification: Notification): Boolean {
-    return notification.type.lowercase(Locale.getDefault()) == "admin_announcement" ||
+    return notification.isIdentityVerificationNotice() ||
+        notification.type.lowercase(Locale.getDefault()) == "admin_announcement" ||
         notification.dataValue("branding") == "vormex" ||
-        notification.dataValue("senderType") == "admin"
+        notification.dataValue("senderType") == "admin" ||
+        notification.dataValue("senderType") == "vormex"
+}
+
+private fun Notification.isIdentityVerificationNotice(): Boolean {
+    val normalized = type.lowercase(Locale.getDefault())
+    return normalized == "identity_verification_approved" ||
+        normalized == "identity_verification_resubmit_requested"
 }
 
 private fun avatarInitials(displayName: String): String {
@@ -1224,11 +1292,13 @@ private fun routeNotification(
     onOpenReel: (String, String?, String?) -> Unit,
     onOpenConversation: (String) -> Unit,
     onOpenNetwork: () -> Unit,
-    onOpenGrowthHub: () -> Unit
+    onOpenGrowthHub: () -> Unit,
+    onOpenSkillSwap: (String?) -> Unit
 ) {
     val destination = resolveNotificationDestination(notification)
 
     when (destination.kind) {
+        NotificationDestinationKind.None -> Unit
         NotificationDestinationKind.Conversation -> {
             destination.targetId?.let(onOpenConversation) ?: onOpenNetwork()
         }
@@ -1246,6 +1316,7 @@ private fun routeNotification(
         }
         NotificationDestinationKind.Network -> onOpenNetwork()
         NotificationDestinationKind.GrowthHub -> onOpenGrowthHub()
+        NotificationDestinationKind.SkillSwap -> onOpenSkillSwap(destination.tab)
     }
 }
 

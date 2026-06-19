@@ -18,12 +18,12 @@ if ! "${adb_cmd[@]}" get-state >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! curl -fsS "http://127.0.0.1:5000/api/health" >/dev/null 2>&1; then
+if ! curl -fsS "http://127.0.0.1:5000/api/health/live" >/dev/null 2>&1; then
   cat <<EOF
 Backend is not responding on http://127.0.0.1:5000.
 Start it in another terminal with:
   cd "$BACKEND_DIR"
-  npm run dev
+  REDIS_URL= REDIS_REQUIRED=false PORT=5000 npm run dev:server
 EOF
   exit 1
 fi

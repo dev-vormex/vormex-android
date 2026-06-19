@@ -68,7 +68,7 @@ object SkillsApiService {
                     Log.d("SkillsApiService", message)
                 }
             }
-            level = if (BuildConfig.DEBUG) LogLevel.BODY else LogLevel.NONE
+            level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
         }
         install(HttpTimeout) {
             requestTimeoutMillis = 60000

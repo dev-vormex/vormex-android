@@ -4,7 +4,9 @@ import android.util.Log
 import com.kyant.backdrop.catalog.BuildConfig
 import io.socket.client.Ack
 import io.socket.client.IO
+import io.socket.client.Manager
 import io.socket.client.Socket
+import io.socket.engineio.client.Transport
 import io.socket.engineio.client.transports.WebSocket
 import io.socket.emitter.Emitter
 import kotlinx.coroutines.TimeoutCancellationException
@@ -28,10 +30,10 @@ import kotlin.coroutines.resume
  * - chat:edit_message, chat:message_edited
  * - chat:message_reaction
  * - chat:cleared
- * 
+ *
  * Configuration:
  * - For local dev with `adb reverse tcp:5000 tcp:5000`: use "http://localhost:5000"
- * - For Android emulator: use "http://10.0.2.2:5000"
+ * - For Android emulator without adb reverse: use "http://10.0.2.2:5000"
  * - For production: use your production WebSocket URL (e.g., "https://api.vormex.com")
  */
 object ChatSocketManager {
@@ -46,8 +48,9 @@ object ChatSocketManager {
     private var isConnecting = false
     private var isAuthenticated = false
     var currentUserId: String? = null
+    private var currentTransportName: String? = null
     private const val SEND_ACK_TIMEOUT_MS = 8_000L
-    private const val CONNECT_GRACE_MS = 2_500L
+    private const val CONNECT_GRACE_MS = 1_000L
     
     // Track joined rooms to re-join on reconnect
     private val joinedRooms = mutableSetOf<String>()
@@ -114,12 +117,21 @@ object ChatSocketManager {
     }
 
     fun connect(token: String) {
+        if (token.isBlank()) return
+
         if (socket?.connected() == true && currentToken == token && isAuthenticated) {
             Log.d(TAG, "Already connected with same token, skipping")
             return
         }
         if (isConnecting && currentToken == token) {
             Log.d(TAG, "Already connecting with same token, skipping")
+            return
+        }
+        if (socket != null && currentToken == token && socket?.connected() != true) {
+            Log.d(TAG, "Re-opening existing socket with same token")
+            isConnecting = true
+            _connectionStateFlow.tryEmit(ConnectionState.CONNECTING)
+            socket?.connect()
             return
         }
         
@@ -138,12 +150,19 @@ object ChatSocketManager {
                 reconnectionDelay = 1000
                 reconnectionDelayMax = 5000
                 timeout = 20000
-                transports = arrayOf(WebSocket.NAME, "polling")
+                transports = arrayOf(WebSocket.NAME)
+                upgrade = false
+                rememberUpgrade = true
                 auth = mapOf("token" to token)
             }
             socket = IO.socket(URI.create(SOCKET_URL), opts).apply {
+                io().on(Manager.EVENT_TRANSPORT) { args ->
+                    val transport = args.firstOrNull() as? Transport
+                    currentTransportName = transport?.name
+                    Log.d(TAG, "🚇 Socket transport=${currentTransportName ?: "unknown"} socketId=${id().orEmpty()}")
+                }
                 on(Socket.EVENT_CONNECT) {
-                    Log.d(TAG, "✅ Socket connected! ID: ${id()}")
+                    Log.d(TAG, "✅ Socket connected! ID: ${id()} transport=${currentTransportName ?: "unknown"}")
                     _connectionStateFlow.tryEmit(ConnectionState.CONNECTING)
                 }
                 on("socket:authenticated") { args ->
@@ -155,7 +174,7 @@ object ChatSocketManager {
                         ?.let { authenticatedUserId ->
                             currentUserId = authenticatedUserId
                         }
-                    Log.d(TAG, "✅ Socket authenticated as user ${currentUserId.orEmpty()}")
+                    Log.d(TAG, "✅ Socket authenticated as user ${currentUserId.orEmpty()} transport=${currentTransportName ?: "unknown"}")
                     _connectionStateFlow.tryEmit(ConnectionState.CONNECTED)
                     rejoinAllRooms()
                 }
@@ -254,7 +273,14 @@ object ChatSocketManager {
                 Log.w(TAG, "📩 message object is null in: $obj")
                 return
             }
-            Log.d(TAG, "📩 New message in conversation $conversationId: ${message.optString("content").take(50)}")
+            val serverEmittedAtMs = obj.optLong("serverEmittedAtMs", 0L)
+            val latencyMs = if (serverEmittedAtMs > 0L) System.currentTimeMillis() - serverEmittedAtMs else null
+            Log.d(
+                TAG,
+                "📩 chat:new_message received conversation=$conversationId message=${message.optString("id")} " +
+                    "clientMessageId=${message.optString("clientMessageId")} transport=${currentTransportName ?: "unknown"} " +
+                    "latencyMs=${latencyMs ?: "unknown"} content=${message.optString("content").take(50)}"
+            )
             if (conversationId.isNotEmpty()) {
                 emitIncomingMessage(conversationId, message, "event")
             }
@@ -389,6 +415,14 @@ object ChatSocketManager {
         if (args.isEmpty()) return
         try {
             val obj = parseSocketObject(args[0]) ?: return
+            val serverEmittedAtMs = obj.optLong("serverEmittedAtMs", 0L)
+            val latencyMs = if (serverEmittedAtMs > 0L) System.currentTimeMillis() - serverEmittedAtMs else null
+            Log.d(
+                TAG,
+                "⌨️ chat:user_typing received conversation=${obj.optString("conversationId")} " +
+                    "user=${obj.optString("userId")} isTyping=${obj.optBoolean("isTyping")} " +
+                    "transport=${currentTransportName ?: "unknown"} latencyMs=${latencyMs ?: "unknown"}"
+            )
             _typingFlow.tryEmit(
                 Triple(
                     obj.optString("conversationId"),
@@ -485,6 +519,7 @@ object ChatSocketManager {
         currentToken = null
         isConnecting = false
         isAuthenticated = false
+        currentTransportName = null
         _connectionStateFlow.tryEmit(ConnectionState.DISCONNECTED)
     }
 
@@ -503,7 +538,7 @@ object ChatSocketManager {
     fun reconnectIfNeeded() {
         val token = currentToken
         if (token != null && (socket?.connected() != true || !isAuthenticated) && !isConnecting) {
-            Log.d(TAG, "Reconnecting socket...")
+            Log.d(TAG, "Reconnecting socket... transport=${currentTransportName ?: "unknown"}")
             connect(token)
         }
     }
@@ -515,6 +550,7 @@ object ChatSocketManager {
             socket?.emit("chat:join", JSONObject().put("conversationId", conversationId))
             Log.d(TAG, "➡️ Emitted chat:join for room: $conversationId")
         } else {
+            reconnectIfNeeded()
             Log.d(TAG, "➡️ Socket not connected, room $conversationId will be joined on connect")
         }
     }
@@ -650,10 +686,10 @@ object ChatSocketManager {
                     activeSocket.once(Socket.EVENT_DISCONNECT, disconnectListener)
                     continuation.invokeOnCancellation { cleanup() }
 
-                    if (!activeSocket.connected()) {
-                        activeSocket.connect()
-                    } else if (isAuthenticated) {
+                    if (activeSocket.connected() && isAuthenticated) {
                         complete(true)
+                    } else if (!activeSocket.connected()) {
+                        activeSocket.connect()
                     }
                 }
             }
@@ -679,11 +715,15 @@ object ChatSocketManager {
             replyToId = replyToId,
             clientMessageId = clientMessageId
         )
-        Log.d(TAG, "📤 Sending message via socket to $conversationId")
+        Log.d(TAG, "📤 Sending message via socket to $conversationId transport=${currentTransportName ?: "unknown"}")
         socket?.emit("chat:send_message", obj)
     }
 
     fun sendTyping(conversationId: String, isTyping: Boolean) {
+        if (!isConnected()) {
+            reconnectIfNeeded()
+        }
+        Log.d(TAG, "⌨️ chat:typing conversation=$conversationId isTyping=$isTyping transport=${currentTransportName ?: "unknown"}")
         socket?.emit("chat:typing", JSONObject().put("conversationId", conversationId).put("isTyping", isTyping))
     }
 

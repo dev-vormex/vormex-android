@@ -5,7 +5,6 @@ coil = "2.6.0"
 media3 = "1.5.1"
 navigation = "2.8.5"
 firebase = "34.7.0"
-splashscreen = "1.0.1"
 mlkitGenAi = "1.0.0-beta1"
 mlkitPrompt = "1.0.0-alpha1"
 
@@ -24,13 +23,15 @@ composeMaterialIcons = "1.7.8"
 credentials = "1.5.0"
 googleId = "1.1.1"
 playServicesLocation = "21.3.0"
+playServicesAds = "25.3.0"
+userMessagingPlatform = "4.0.0"
 socketio = "2.1.0"
 googleServices = "4.4.2"
 room = "2.8.4"
 ksp = "2.3.6"
 lottie = "6.6.7"
 osmdroid = "6.1.20"
-billing = "8.3.0"
+razorpayCheckout = "1.6.39"
 zxing = "3.5.3"
 desugarJdkLibs = "2.1.5"
 
@@ -69,9 +70,6 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 # DataStore
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 
-# Splash Screen
-androidx-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "splashscreen" }
-
 # Navigation Compose
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigation" }
 
@@ -82,7 +80,11 @@ google-id = { group = "com.google.android.libraries.identity.googleid", name = "
 
 # Google Play Services
 google-play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
-google-play-billing = { group = "com.android.billingclient", name = "billing", version.ref = "billing" }
+google-play-services-ads = { group = "com.google.android.gms", name = "play-services-ads", version.ref = "playServicesAds" }
+google-user-messaging-platform = { group = "com.google.android.ump", name = "user-messaging-platform", version.ref = "userMessagingPlatform" }
+
+# Payments
+razorpay-checkout = { group = "com.razorpay", name = "checkout", version.ref = "razorpayCheckout" }
 
 # Image Loading
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }

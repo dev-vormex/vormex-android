@@ -17,9 +17,11 @@ import com.kyant.backdrop.catalog.chat.cache.CachedMessagesSnapshot
 import com.kyant.backdrop.catalog.chat.cache.ChatCacheRepository
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.ChatSocketManager
+import com.kyant.backdrop.catalog.network.GroupsApiService
 import com.kyant.backdrop.catalog.network.models.ChatUser
 import com.kyant.backdrop.catalog.network.models.Conversation
 import com.kyant.backdrop.catalog.network.models.ConversationLastMessage
+import com.kyant.backdrop.catalog.network.models.GroupMessageShortcut
 import com.kyant.backdrop.catalog.network.models.Message
 import com.kyant.backdrop.catalog.network.models.MessageReaction
 import com.kyant.backdrop.catalog.network.models.MessagesResponse
@@ -41,8 +43,8 @@ import java.util.Locale
 import java.util.TimeZone
 
 private const val TAG = "ChatViewModel"
-private const val OUTGOING_TYPING_STOP_DELAY_MS = 3_000L
-private const val OUTGOING_TYPING_HEARTBEAT_MS = 1_500L
+private const val OUTGOING_TYPING_STOP_DELAY_MS = 1_000L
+private const val OUTGOING_TYPING_HEARTBEAT_MS = 300L
 private const val REFRESH_CONVERSATIONS_DEBOUNCE_MS = 500L
 private const val UNREAD_COUNT_DEBOUNCE_MS = 1_000L
 private const val REFRESH_CONVERSATIONS_MIN_INTERVAL_MS = 2_000L
@@ -57,6 +59,7 @@ enum class ChatThreadReadyState {
 data class ChatUiState(
     val currentUserId: String? = null,
     val conversations: List<Conversation> = emptyList(),
+    val groupShortcuts: List<GroupMessageShortcut> = emptyList(),
     val messages: List<Message> = emptyList(),
     val selectedConversation: Conversation? = null,
     val isResolvingConversationOpen: Boolean = false,
@@ -95,6 +98,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private var loadConversationsJob: Job? = null
+    private var loadGroupShortcutsJob: Job? = null
     private var loadMessagesJob: Job? = null
     private var preloadJob: Job? = null
     private var typingIndicatorTimeoutJob: Job? = null
@@ -119,7 +123,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     init {
         Log.d(TAG, "ChatViewModel init")
         viewModelScope.launch {
-            val token = ApiClient.getToken(context)
+            val token = ApiClient.getRealtimeAccessToken(context)
             val userId = ApiClient.getCurrentUserId(context)
             ChatSocketManager.currentUserId = userId
             _uiState.update { it.copy(currentUserId = userId) }
@@ -149,7 +153,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
 
             ChatSocketManager.currentUserId = normalizedUserId
             hydrateCachedConversations(normalizedUserId)
-            ApiClient.getToken(context)?.takeIf { it.isNotBlank() }?.let { token ->
+            ApiClient.getRealtimeAccessToken(context)?.takeIf { it.isNotBlank() }?.let { token ->
                 ChatSocketManager.connect(token)
                 ChatSocketManager.currentUserId = normalizedUserId
             }
@@ -178,6 +182,11 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                         _uiState.update { it.copy(currentUserId = currentUserId) }
                     }
                     val isSelectedConversation = _uiState.value.selectedConversation?.id == conversationId
+                    Log.d(
+                        TAG,
+                        "Realtime message consumed conversation=$conversationId message=${message.id} " +
+                            "clientMessageId=${message.clientMessageId.orEmpty()} selected=$isSelectedConversation"
+                    )
                     var conversationKnown = false
 
                     if (isSelectedConversation) {
@@ -432,12 +441,12 @@ class ChatViewModel(private val context: Context) : ViewModel() {
 
     fun ensureSocketConnected() {
         viewModelScope.launch {
-            val token = ApiClient.getToken(context)
+            val token = ApiClient.getRealtimeAccessToken(context)
             if (!token.isNullOrEmpty()) {
-                if (ChatSocketManager.isConnected()) {
-                    ChatSocketManager.reconnectIfNeeded()
-                } else {
+                if (!ChatSocketManager.isConnected()) {
                     ChatSocketManager.connect(token)
+                } else {
+                    ChatSocketManager.reconnectIfNeeded()
                 }
             }
         }
@@ -448,16 +457,17 @@ class ChatViewModel(private val context: Context) : ViewModel() {
 
         preloadJob?.cancel()
         preloadJob = viewModelScope.launch {
-            val token = ApiClient.getToken(context) ?: return@launch
+            val token = ApiClient.getRealtimeAccessToken(context) ?: return@launch
             ChatSocketManager.connect(token)
 
             val currentUserId = ensureCurrentUserId() ?: return@launch
             lastPreloadedUserId = currentUserId
             loadConversationsInternal(
                 cacheOwnerId = currentUserId,
-                prefetchRecentMessages = true,
+                prefetchRecentMessages = false,
                 forceRefresh = forceRefresh
             )
+            refreshGroupShortcuts()
         }
     }
 
@@ -465,6 +475,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         viewModelScope.launch {
             val currentUserId = ensureCurrentUserId() ?: return@launch
             loadConversationsInternal(cacheOwnerId = currentUserId, forceRefresh = forceRefresh)
+            refreshGroupShortcuts()
         }
     }
 
@@ -472,7 +483,27 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         viewModelScope.launch {
             ensureCurrentUserId()?.let { currentUserId ->
                 loadConversationsInternal(cacheOwnerId = currentUserId)
+                refreshGroupShortcuts()
             }
+        }
+    }
+
+    fun refreshGroupShortcuts() {
+        if (loadGroupShortcutsJob?.isActive == true) return
+
+        loadGroupShortcutsJob = viewModelScope.launch {
+            GroupsApiService.getMessageShortcuts(context)
+                .onSuccess { shortcuts ->
+                    _uiState.update { state ->
+                        state.copy(
+                            groupShortcuts = shortcuts,
+                            error = state.error.takeUnless { state.conversations.isEmpty() && shortcuts.isNotEmpty() }
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    Log.w(TAG, "Failed to load group message shortcuts", error)
+                }
         }
     }
 
@@ -1040,9 +1071,14 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         replyToId: String?,
         clientMessageId: String
     ): Result<Message> {
-        val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+        val token = ApiClient.getRealtimeAccessToken(context)
+            ?: return Result.failure(Exception("Not logged in"))
         ChatSocketManager.currentUserId = ensureCurrentUserId()
-        ChatSocketManager.connect(token)
+        if (!ChatSocketManager.isConnected()) {
+            ChatSocketManager.connect(token)
+        } else {
+            ChatSocketManager.reconnectIfNeeded()
+        }
         ChatSocketManager.joinChat(conversationId)
 
         return ChatSocketManager.sendMessageWithAck(
@@ -1461,7 +1497,6 @@ class ChatViewModel(private val context: Context) : ViewModel() {
 
         _uiState.value.conversations.firstOrNull { it.id == targetConversationId }?.let { conversation ->
             selectConversation(conversation)
-            return
         }
 
         viewModelScope.launch {
@@ -1840,6 +1875,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     }
                 }
             loadUnreadAndRequestsCount()
+            refreshGroupShortcuts()
         }
     }
 
@@ -1871,6 +1907,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     }
                 }
             loadUnreadAndRequestsCount()
+            refreshGroupShortcuts()
         }
     }
 
@@ -2149,7 +2186,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     private fun scheduleTypingIndicatorClear(conversationId: String, userId: String) {
         typingIndicatorTimeoutJob?.cancel()
         typingIndicatorTimeoutJob = viewModelScope.launch {
-            delay(4_000)
+            delay(1_500)
             _uiState.update { state ->
                 if (state.selectedConversation?.id != conversationId || state.typingUserId != userId) {
                     state

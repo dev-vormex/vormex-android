@@ -14,6 +14,11 @@ data class CachedHomeFeed(
     val cachedAtMillis: Long
 )
 
+data class CachedHomeFeedSnapshot(
+    val userId: String,
+    val cachedFeed: CachedHomeFeed
+)
+
 object HomeFeedCache {
     private const val PREFS_NAME = "vormex_home_feed_cache"
     private const val KEY_PREFIX = "feed_"
@@ -30,21 +35,43 @@ object HomeFeedCache {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = cacheKey(cacheOwnerId)
         val raw = prefs.getString(key, null) ?: return null
-        return try {
-            val cached = json.decodeFromString<CachedHomeFeed>(raw)
-            val isTooOld =
-                System.currentTimeMillis() - cached.cachedAtMillis >
-                    VormexPerformancePolicy.PersistentFeedCacheMaxAgeMillis
-            if (isTooOld) {
-                prefs.edit().remove(key).apply()
-                null
-            } else {
-                cached
-            }
-        } catch (_: Exception) {
+        val cached = decodeCachedFeed(raw)
+        return if (cached == null || cached.isTooOld()) {
             prefs.edit().remove(key).apply()
             null
+        } else {
+            cached
         }
+    }
+
+    fun readLatest(context: Context): CachedHomeFeedSnapshot? {
+        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val editor = prefs.edit()
+        var hasInvalidEntries = false
+        var latest: CachedHomeFeedSnapshot? = null
+
+        prefs.all.forEach { (key, value) ->
+            if (!key.startsWith(KEY_PREFIX) || value !is String) return@forEach
+
+            val userId = key.removePrefix(KEY_PREFIX).takeIf { it.isNotBlank() }
+            val cached = decodeCachedFeed(value)
+            if (userId == null || cached == null || cached.isTooOld()) {
+                editor.remove(key)
+                hasInvalidEntries = true
+                return@forEach
+            }
+
+            val previous = latest
+            if (previous == null || cached.cachedAtMillis > previous.cachedFeed.cachedAtMillis) {
+                latest = CachedHomeFeedSnapshot(userId, cached)
+            }
+        }
+
+        if (hasInvalidEntries) {
+            editor.apply()
+        }
+
+        return latest
     }
 
     fun write(context: Context, userId: String?, response: FeedResponse) {
@@ -69,4 +96,15 @@ object HomeFeedCache {
     }
 
     private fun cacheKey(userId: String): String = KEY_PREFIX + userId
+
+    private fun decodeCachedFeed(raw: String): CachedHomeFeed? =
+        try {
+            json.decodeFromString<CachedHomeFeed>(raw)
+        } catch (_: Exception) {
+            null
+        }
+
+    private fun CachedHomeFeed.isTooOld(): Boolean =
+        System.currentTimeMillis() - cachedAtMillis >
+            VormexPerformancePolicy.PersistentFeedCacheMaxAgeMillis
 }

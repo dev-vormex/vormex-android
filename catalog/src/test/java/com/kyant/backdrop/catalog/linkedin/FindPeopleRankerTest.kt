@@ -1,6 +1,8 @@
 package com.kyant.backdrop.catalog.linkedin
 
 import com.kyant.backdrop.catalog.network.models.PersonInfo
+import com.kyant.backdrop.catalog.network.models.SmartMatch
+import com.kyant.backdrop.catalog.network.models.SmartMatchUser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -100,6 +102,19 @@ class FindPeopleRankerTest {
         assertTrue(ranked.last().connectionStatus == "connected")
     }
 
+    @Test
+    fun `backend smart match order is preserved`() {
+        val first = smartMatch("first", 72)
+        val second = smartMatch("second", 96)
+        val duplicateFirst = smartMatch("first", 99)
+
+        val ordered = FindPeopleRanker.preserveBackendSmartMatchOrder(
+            listOf(first, second, duplicateFirst)
+        )
+
+        assertEquals(listOf("first", "second"), ordered.map { it.user.id })
+    }
+
     private fun person(
         id: String,
         name: String = id,
@@ -125,6 +140,13 @@ class FindPeopleRankerTest {
             mutualConnections = mutualConnections,
             isOnline = isOnline,
             connectionStatus = connectionStatus
+        )
+    }
+
+    private fun smartMatch(id: String, percentage: Int): SmartMatch {
+        return SmartMatch(
+            user = SmartMatchUser(id = id, name = id),
+            matchPercentage = percentage
         )
     }
 }

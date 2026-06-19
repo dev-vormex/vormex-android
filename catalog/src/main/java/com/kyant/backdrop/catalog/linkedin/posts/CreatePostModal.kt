@@ -39,6 +39,7 @@ import com.kyant.backdrop.catalog.components.LiquidButton
 import com.kyant.backdrop.catalog.linkedin.VerificationBadge
 import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.media.MediaReadSafety
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.shapes.RoundedRectangle
@@ -952,6 +953,7 @@ private fun MentionSuggestions(
                             )
                             VerificationBadge(
                                 verified = user.hasVerificationBadge(),
+                                badgeStyle = user.verificationBadgeStyle(),
                                 size = VerificationBadgeSize.Small
                             )
                         }

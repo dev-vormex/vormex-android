@@ -120,6 +120,45 @@ data class AgentTurnResponse(
 )
 
 @Serializable
+data class AiEntitlementsResponse(
+    val tier: String = "free",
+    val isPremium: Boolean = false,
+    val isCreatorPro: Boolean = false,
+    val isAdmin: Boolean = false,
+    val canUseAgent: Boolean = false,
+    val canAccessProfileCustomization: Boolean = false,
+    val balance: Int = 0,
+    val creditsUsed: Int = 0,
+    val agentPromptLimit: Int = 0,
+    val agentLimitReached: Boolean = false,
+    val premiumDisplayAmount: String? = null,
+    val premiumEndsAt: String? = null
+)
+
+@Serializable
+data class AssistantChatHistoryItem(
+    val role: String = "user",
+    val content: String = ""
+)
+
+@Serializable
+data class AssistantChatRequest(
+    val message: String,
+    val conversationHistory: List<AssistantChatHistoryItem> = emptyList(),
+    val intent: String? = null,
+    val surface: String = "global"
+)
+
+@Serializable
+data class AssistantChatResponse(
+    val reply: String = "",
+    val tier: String = "free",
+    val canUseAgent: Boolean = false,
+    val assistantDailyLimit: Int? = null,
+    val assistantDailyRemaining: Int? = null
+)
+
+@Serializable
 data class AgentVoiceTurnResponse(
     val assistantMessage: String = "",
     val executedActions: List<AgentAction> = emptyList(),

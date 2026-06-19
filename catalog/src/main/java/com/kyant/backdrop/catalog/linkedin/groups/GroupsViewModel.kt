@@ -56,6 +56,7 @@ data class GroupsUiState(
     // Create group modal
     val showCreateModal: Boolean = false,
     val isCreatingGroup: Boolean = false,
+    val messageShortcutPromptGroup: Group? = null,
     
     // Detail page state
     val selectedGroup: Group? = null,
@@ -83,6 +84,7 @@ data class GroupsUiState(
     val invitingUserIds: Set<String> = emptySet(),
     val respondingInviteIds: Set<String> = emptySet(),
     val respondingJoinRequestIds: Set<String> = emptySet(),
+    val updatingMessageShortcutIds: Set<String> = emptySet(),
     val inviteLinkError: String? = null,
     
     // Pagination
@@ -282,6 +284,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                     _uiState.value = _uiState.value.copy(
                         joiningGroupIds = _uiState.value.joiningGroupIds - groupId
                     )
+                    showMessageShortcutPromptForGroup(groupId)
                 },
                 onFailure = { e ->
                     _uiState.value = _uiState.value.copy(
@@ -310,6 +313,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                                 selectedGroup = group.copy(
                                     isMember = false,
                                     memberRole = null,
+                                    isAddedToMessages = false,
                                     memberCount = (group.memberCount - 1).coerceAtLeast(0)
                                 )
                             )
@@ -317,7 +321,9 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                     }
                     
                     _uiState.value = _uiState.value.copy(
-                        leavingGroupIds = _uiState.value.leavingGroupIds - groupId
+                        leavingGroupIds = _uiState.value.leavingGroupIds - groupId,
+                        messageShortcutPromptGroup = _uiState.value.messageShortcutPromptGroup
+                            ?.takeUnless { it.id == groupId }
                     )
                 },
                 onFailure = { e ->
@@ -332,6 +338,86 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     
     fun showCreateModal(show: Boolean) {
         _uiState.value = _uiState.value.copy(showCreateModal = show)
+    }
+
+    fun dismissMessageShortcutPrompt() {
+        _uiState.value = _uiState.value.copy(messageShortcutPromptGroup = null)
+    }
+
+    private fun knownGroupForPrompt(groupId: String, fallback: Group? = null): Group? {
+        val state = _uiState.value
+        return fallback
+            ?: state.selectedGroup?.takeIf { it.id == groupId }
+            ?: state.myGroups.firstOrNull { it.id == groupId }
+            ?: state.discoverGroups.firstOrNull { it.id == groupId }
+            ?: state.pendingInvites.firstOrNull { it.group?.id == groupId }?.group
+            ?: _chatState.value.group?.takeIf { it.id == groupId }
+    }
+
+    private fun showMessageShortcutPromptForGroup(groupId: String, fallback: Group? = null) {
+        val knownGroup = knownGroupForPrompt(groupId, fallback)
+        if (knownGroup != null) {
+            val promptGroup = knownGroup.copy(
+                isMember = true,
+                memberRole = knownGroup.memberRole ?: "member"
+            )
+            if (!promptGroup.isAddedToMessages) {
+                _uiState.value = _uiState.value.copy(messageShortcutPromptGroup = promptGroup)
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            GroupsApiService.getGroup(context, groupId).fold(
+                onSuccess = { group ->
+                    if (group.isMember && !group.isAddedToMessages) {
+                        _uiState.value = _uiState.value.copy(messageShortcutPromptGroup = group)
+                    }
+                },
+                onFailure = { /* Prompt is optional; leave the joined flow untouched. */ }
+            )
+        }
+    }
+
+    fun setGroupMessageShortcut(
+        group: Group,
+        enabled: Boolean,
+        onUpdated: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                updatingMessageShortcutIds = _uiState.value.updatingMessageShortcutIds + group.id,
+                error = null
+            )
+
+            GroupsApiService.setMessageShortcut(context, group.id, enabled).fold(
+                onSuccess = {
+                    val updateGroup: (Group) -> Group = { candidate ->
+                        if (candidate.id == group.id) candidate.copy(isAddedToMessages = enabled) else candidate
+                    }
+                    _uiState.value = _uiState.value.let { state ->
+                        state.copy(
+                            myGroups = state.myGroups.map(updateGroup),
+                            discoverGroups = state.discoverGroups.map(updateGroup),
+                            selectedGroup = state.selectedGroup?.let(updateGroup),
+                            messageShortcutPromptGroup = state.messageShortcutPromptGroup
+                                ?.takeUnless { prompt -> prompt.id == group.id },
+                            updatingMessageShortcutIds = state.updatingMessageShortcutIds - group.id
+                        )
+                    }
+                    _chatState.value = _chatState.value.copy(
+                        group = _chatState.value.group?.let(updateGroup)
+                    )
+                    onUpdated()
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        updatingMessageShortcutIds = _uiState.value.updatingMessageShortcutIds - group.id,
+                        error = e.message
+                    )
+                }
+            )
+        }
     }
     
     fun createGroup(
@@ -355,7 +441,8 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                 onSuccess = { group ->
                     _uiState.value = _uiState.value.copy(
                         isCreatingGroup = false,
-                        showCreateModal = false
+                        showCreateModal = false,
+                        messageShortcutPromptGroup = group
                     )
                     loadMyGroups(refresh = true)
                 },
@@ -484,6 +571,9 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                     loadMyGroups(refresh = true)
                     loadDiscoverGroups(refresh = true)
                     response.groupId.takeIf { it.isNotBlank() }?.let { loadGroupDetail(it) }
+                    if (response.status == "joined" || response.status == "already_member") {
+                        response.groupId.takeIf { it.isNotBlank() }?.let { showMessageShortcutPromptForGroup(it) }
+                    }
                     onFinished(response)
                 },
                 onFailure = { e ->
@@ -587,6 +677,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
 
     fun respondToGroupInvite(inviteId: String, action: String) {
         viewModelScope.launch {
+            val invitedGroup = _uiState.value.pendingInvites.firstOrNull { it.id == inviteId }?.group
             _uiState.value = _uiState.value.copy(
                 respondingInviteIds = _uiState.value.respondingInviteIds + inviteId,
                 error = null
@@ -599,6 +690,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                     )
                     if (response.status == "joined" || response.status == "already_member") {
                         loadMyGroups(refresh = true)
+                        showMessageShortcutPromptForGroup(response.groupId, invitedGroup)
                     }
                 },
                 onFailure = { e ->

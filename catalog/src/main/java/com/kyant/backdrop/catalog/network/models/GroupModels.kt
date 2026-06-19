@@ -36,8 +36,38 @@ data class Group(
     val createdById: String? = null,
     val isMember: Boolean = false,
     val memberRole: String? = null, // owner, admin, moderator, member
+    val isAddedToMessages: Boolean = false,
     val allowMemberPosts: Boolean = true,
     val requirePostApproval: Boolean = false
+)
+
+@Serializable
+data class GroupShortcutLatestMessage(
+    val id: String,
+    val content: String = "",
+    val contentType: String = "text",
+    val preview: String = "",
+    val senderId: String,
+    val senderName: String = "Someone",
+    val createdAt: String
+)
+
+@Serializable
+data class GroupMessageShortcut(
+    val id: String,
+    val groupId: String,
+    val name: String,
+    val slug: String? = null,
+    val description: String? = null,
+    val coverImage: String? = null,
+    val iconImage: String? = null,
+    val privacy: String = "PUBLIC",
+    val memberCount: Int = 0,
+    val memberRole: String? = null,
+    val addedAt: String,
+    val lastActivityAt: String,
+    val latestMessage: GroupShortcutLatestMessage? = null,
+    val isAddedToMessages: Boolean = true
 )
 
 @Serializable
@@ -48,7 +78,9 @@ data class GroupUser(
     val profileImage: String? = null,
     val headline: String? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -184,6 +216,23 @@ data class UpdateGroupRequest(
     val coverImage: String? = null,
     val iconImage: String? = null,
     val rules: List<String>? = null
+)
+
+@Serializable
+data class GroupMessageShortcutRequest(
+    val enabled: Boolean
+)
+
+@Serializable
+data class GroupMessageShortcutsResponse(
+    val shortcuts: List<GroupMessageShortcut> = emptyList()
+)
+
+@Serializable
+data class GroupMessageShortcutResponse(
+    val groupId: String,
+    val enabled: Boolean,
+    val shortcut: GroupMessageShortcut? = null
 )
 
 @Serializable
@@ -341,7 +390,9 @@ data class CircleMember(
     val xpInCircle: Int = 0,
     val joinedAt: String? = null,
     val verified: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable

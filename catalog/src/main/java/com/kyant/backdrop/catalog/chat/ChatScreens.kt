@@ -87,6 +87,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
@@ -105,8 +107,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -133,10 +133,13 @@ import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.VideoPlayer
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.models.Conversation
+import com.kyant.backdrop.catalog.network.models.GroupMessageShortcut
 import com.kyant.backdrop.catalog.network.models.Message
+import com.kyant.backdrop.catalog.network.models.MySafetyReport
 import com.kyant.backdrop.catalog.network.models.SharedPostContent
 import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -170,6 +173,27 @@ private data class ChatFullscreenMedia(
     val backgroundStatusText: (() -> String?)? = null
 )
 
+private data class ChatPeerSafetyState(
+    val openReport: MySafetyReport? = null,
+    val isBlocked: Boolean = false,
+    val isLoading: Boolean = false
+)
+
+private sealed class ChatInboxEntry(open val sortAt: String) {
+    data class Direct(val conversation: Conversation) : ChatInboxEntry(
+        conversation.lastMessage?.createdAt ?: conversation.updatedAt
+    )
+
+    data class GroupShortcut(val shortcut: GroupMessageShortcut) : ChatInboxEntry(
+        shortcut.latestMessage?.createdAt ?: shortcut.lastActivityAt
+    )
+}
+
+private fun MySafetyReport.isOpenSafetyReport(): Boolean {
+    val normalizedStatus = status.uppercase(Locale.US)
+    return normalizedStatus == "PENDING" || normalizedStatus == "UNDER_REVIEW"
+}
+
 /**
  * Main entry point for the Chat tab.
  * @param onInChatThread Callback invoked when entering/leaving a chat thread.
@@ -189,7 +213,9 @@ fun ChatTabContent(
     onConsumedOpenChat: () -> Unit = {},
     onInChatThread: (Boolean) -> Unit = {},
     onNavigateToProfile: (String) -> Unit = {},
-    onNavigateToReel: (SharedPostContent) -> Unit = {}
+    onNavigateToReel: (SharedPostContent) -> Unit = {},
+    onOpenGroupShortcut: (String) -> Unit = {},
+    onCreateGroup: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -261,7 +287,9 @@ fun ChatTabContent(
             contentColor = contentColor,
             accentColor = accentColor,
             isGlassTheme = isGlassTheme,
-            viewModel = viewModel
+            viewModel = viewModel,
+            onOpenGroupShortcut = onOpenGroupShortcut,
+            onCreateGroup = onCreateGroup
         )
     }
 }
@@ -272,13 +300,17 @@ private fun ChatListScreen(
     contentColor: Color,
     accentColor: Color,
     isGlassTheme: Boolean,
-    viewModel: ChatViewModel
+    viewModel: ChatViewModel,
+    onOpenGroupShortcut: (String) -> Unit,
+    onCreateGroup: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
-    val isRefreshingConversations = uiState.isLoadingConversations && uiState.conversations.isNotEmpty()
+    var showSearchBar by remember { mutableStateOf(false) }
+    val searchFocusRequester = remember { FocusRequester() }
+    val isRefreshingConversations =
+        uiState.isLoadingConversations && (uiState.conversations.isNotEmpty() || uiState.groupShortcuts.isNotEmpty())
 
-    // Filter conversations based on search
     val searchedConversations = if (searchQuery.isNotBlank()) {
         uiState.conversations.filter { conv ->
             val name = conv.otherParticipant.name ?: conv.otherParticipant.username ?: ""
@@ -287,18 +319,85 @@ private fun ChatListScreen(
     } else {
         uiState.conversations
     }
-    val requestConversations = searchedConversations.filter { it.isMessageRequest }
-    val unreadConversations = searchedConversations.filter { !it.isMessageRequest && it.unreadCount > 0 }
-    val recentConversations = searchedConversations.filter { !it.isMessageRequest && it.unreadCount == 0 }
-    val orderedConversations = buildList {
-        addAll(requestConversations)
-        addAll(unreadConversations)
-        addAll(recentConversations)
+    val searchedGroupShortcuts = if (searchQuery.isNotBlank()) {
+        uiState.groupShortcuts.filter { shortcut ->
+            shortcut.name.contains(searchQuery, ignoreCase = true) ||
+                shortcut.description?.contains(searchQuery, ignoreCase = true) == true
+        }
+    } else {
+        uiState.groupShortcuts
     }
-    val hasVisibleConversations = orderedConversations.isNotEmpty()
+    val requestConversations = searchedConversations.filter { it.isMessageRequest }
+    val mixedEntries = buildList {
+        searchedConversations
+            .filterNot { it.isMessageRequest }
+            .forEach { add(ChatInboxEntry.Direct(it)) }
+        searchedGroupShortcuts.forEach { add(ChatInboxEntry.GroupShortcut(it)) }
+    }.sortedByDescending { it.sortAt }
+    val hasVisibleConversations = requestConversations.isNotEmpty() || mixedEntries.isNotEmpty()
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-        Spacer(Modifier.height(4.dp))
+    val inboxSurface = contentColor.copy(alpha = if (isGlassTheme) 0.028f else 0.02f)
+    val cardColor = contentColor.copy(alpha = if (isGlassTheme) 0.032f else 0.024f)
+    val cardBorder = contentColor.copy(alpha = if (isGlassTheme) 0.055f else 0.04f)
+    val quickEntries = mixedEntries.take(10)
+    val showQuickEntries = quickEntries.isNotEmpty() && !showSearchBar
+
+    LaunchedEffect(showSearchBar) {
+        if (showSearchBar) {
+            searchFocusRequester.requestFocus()
+        }
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .padding(horizontal = 12.dp)
+    ) {
+        Spacer(Modifier.height(2.dp))
+
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 2.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                BasicText(
+                    "Vormex",
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.5f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    maxLines = 1
+                )
+                Spacer(Modifier.height(2.dp))
+                BasicText(
+                    "Messages",
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Black
+                    ),
+                    maxLines = 1
+                )
+            }
+            Box(
+                Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable(onClick = onCreateGroup),
+                contentAlignment = Alignment.Center
+            ) {
+                androidx.compose.foundation.Image(
+                    painter = painterResource(R.drawable.ic_compose_outline),
+                    contentDescription = "New message",
+                    modifier = Modifier.size(25.dp),
+                    colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(contentColor.copy(alpha = 0.86f))
+                )
+            }
+        }
 
         if (isRefreshingConversations) {
             ChatSyncStatusPill(
@@ -309,57 +408,105 @@ private fun ChatListScreen(
             Spacer(Modifier.height(8.dp))
         }
 
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .background(contentColor.copy(alpha = if (isGlassTheme) 0.09f else 0.07f))
-                .padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            androidx.compose.foundation.Image(
-                painter = painterResource(R.drawable.ic_search),
-                contentDescription = "Search",
-                modifier = Modifier.size(16.dp),
-                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(contentColor.copy(alpha = 0.52f))
-            )
-            Spacer(Modifier.width(8.dp))
-            BasicTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                modifier = Modifier.weight(1f),
-                textStyle = TextStyle(contentColor, 13.sp),
-                cursorBrush = SolidColor(contentColor),
-                singleLine = true,
-                decorationBox = { innerTextField ->
-                    if (searchQuery.isEmpty()) {
-                        BasicText(
-                            "Search conversations...",
-                            style = TextStyle(contentColor.copy(alpha = 0.42f), 13.sp)
-                        )
+        if (showSearchBar) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(inboxSurface)
+                    .border(1.dp, cardBorder, RoundedCornerShape(24.dp))
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                androidx.compose.foundation.Image(
+                    painter = painterResource(R.drawable.ic_search),
+                    contentDescription = "Search",
+                    modifier = Modifier.size(18.dp),
+                    colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(contentColor.copy(alpha = 0.52f))
+                )
+                Spacer(Modifier.width(10.dp))
+                BasicTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(searchFocusRequester),
+                    textStyle = TextStyle(contentColor, 14.sp, FontWeight.Medium),
+                    cursorBrush = SolidColor(contentColor),
+                    singleLine = true,
+                    decorationBox = { innerTextField ->
+                        if (searchQuery.isEmpty()) {
+                            BasicText(
+                                "Search",
+                                style = TextStyle(contentColor.copy(alpha = 0.42f), 14.sp, FontWeight.Medium)
+                            )
+                        }
+                        innerTextField()
                     }
-                    innerTextField()
-                }
-            )
-            if (searchQuery.isNotEmpty()) {
+                )
                 androidx.compose.foundation.Image(
                     painter = painterResource(R.drawable.ic_close),
-                    contentDescription = "Clear",
+                    contentDescription = "Close search",
                     modifier = Modifier
                         .size(16.dp)
-                        .clickable { searchQuery = "" },
+                        .clickable {
+                            searchQuery = ""
+                            showSearchBar = false
+                        },
                     colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(contentColor.copy(alpha = 0.52f))
                 )
             }
         }
 
-        Spacer(Modifier.height(8.dp))
+        if (showQuickEntries) {
+            Spacer(Modifier.height(14.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                ChatQuickSearchChip(
+                    contentColor = contentColor,
+                    cardColor = cardColor,
+                    borderColor = cardBorder,
+                    onClick = { showSearchBar = true }
+                )
+                quickEntries.forEach { entry ->
+                    when (entry) {
+                        is ChatInboxEntry.Direct -> ChatQuickConversationChip(
+                            name = entry.conversation.otherParticipant.name
+                                ?: entry.conversation.otherParticipant.username
+                                ?: "Unknown",
+                            imageUrl = entry.conversation.otherParticipant.profileImage,
+                            unreadCount = entry.conversation.unreadCount,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            cardColor = cardColor,
+                            showFrame = false,
+                            onClick = { viewModel.selectConversation(entry.conversation) }
+                        )
+                        is ChatInboxEntry.GroupShortcut -> ChatQuickConversationChip(
+                            name = entry.shortcut.name,
+                            imageUrl = entry.shortcut.iconImage ?: entry.shortcut.coverImage,
+                            unreadCount = 0,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            cardColor = cardColor,
+                            onClick = { onOpenGroupShortcut(entry.shortcut.groupId) }
+                        )
+                    }
+                }
+            }
+        }
 
-        if (uiState.isLoadingConversations && uiState.conversations.isEmpty()) {
+        Spacer(Modifier.height(14.dp))
+
+        if (uiState.isLoadingConversations && uiState.conversations.isEmpty() && uiState.groupShortcuts.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 ChatConversationListLoadingState(contentColor = contentColor)
             }
-        } else if (uiState.error != null && uiState.conversations.isEmpty()) {
+        } else if (uiState.error != null && uiState.conversations.isEmpty() && uiState.groupShortcuts.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 ChatInboxErrorState(
                     message = uiState.error!!,
@@ -377,20 +524,191 @@ private fun ChatListScreen(
             }
         } else {
             LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(0.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 112.dp)
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 112.dp, top = 2.dp)
             ) {
-                items(orderedConversations, key = { it.id }) { conv ->
+                items(requestConversations, key = { "request_${it.id}" }) { conv ->
                     SwipeableConversationRow(
                         conversation = conv,
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        cardColor = cardColor,
+                        borderColor = cardBorder,
                         currentUserId = uiState.currentUserId,
                         onClick = { viewModel.selectConversation(conv) }
                     )
                 }
+                items(mixedEntries, key = { entry ->
+                    when (entry) {
+                        is ChatInboxEntry.Direct -> "direct_${entry.conversation.id}"
+                        is ChatInboxEntry.GroupShortcut -> "group_${entry.shortcut.groupId}"
+                    }
+                }) { entry ->
+                    when (entry) {
+                        is ChatInboxEntry.Direct -> {
+                            SwipeableConversationRow(
+                                conversation = entry.conversation,
+                                contentColor = contentColor,
+                                accentColor = accentColor,
+                                cardColor = cardColor,
+                                borderColor = cardBorder,
+                                currentUserId = uiState.currentUserId,
+                                onClick = { viewModel.selectConversation(entry.conversation) }
+                            )
+                        }
+                        is ChatInboxEntry.GroupShortcut -> {
+                            GroupShortcutConversationRow(
+                                shortcut = entry.shortcut,
+                                contentColor = contentColor,
+                                accentColor = accentColor,
+                                cardColor = cardColor,
+                                borderColor = cardBorder,
+                                currentUserId = uiState.currentUserId,
+                                onClick = { onOpenGroupShortcut(entry.shortcut.groupId) }
+                            )
+                        }
+                    }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun ChatQuickSearchChip(
+    contentColor: Color,
+    cardColor: Color,
+    borderColor: Color,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier.width(58.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            Modifier
+                .size(50.dp)
+                .clip(CircleShape)
+                .background(cardColor)
+                .border(1.dp, borderColor, CircleShape)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            androidx.compose.foundation.Image(
+                painter = painterResource(R.drawable.ic_search),
+                contentDescription = "Search",
+                modifier = Modifier.size(20.dp),
+                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(contentColor.copy(alpha = 0.74f))
+            )
+        }
+        Spacer(Modifier.height(7.dp))
+        BasicText(
+            "Search",
+            style = TextStyle(contentColor.copy(alpha = 0.78f), 11.sp, FontWeight.SemiBold),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun ChatQuickConversationChip(
+    name: String,
+    imageUrl: String?,
+    unreadCount: Int,
+    contentColor: Color,
+    accentColor: Color,
+    cardColor: Color,
+    showFrame: Boolean = true,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(58.dp)
+            .clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        ChatAvatar(
+            name = name,
+            imageUrl = imageUrl,
+            contentColor = contentColor,
+            accentColor = accentColor,
+            highlighted = unreadCount > 0,
+            showOnlineDot = false,
+            size = 50,
+            backgroundColor = if (showFrame) cardColor else Color.Transparent,
+            showFrame = showFrame
+        )
+        Spacer(Modifier.height(7.dp))
+        BasicText(
+            firstChatName(name),
+            style = TextStyle(contentColor.copy(alpha = 0.82f), 11.sp, FontWeight.SemiBold),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun ChatAvatar(
+    name: String,
+    imageUrl: String?,
+    contentColor: Color,
+    accentColor: Color,
+    highlighted: Boolean,
+    showOnlineDot: Boolean,
+    size: Int,
+    backgroundColor: Color = Color.Unspecified,
+    showFrame: Boolean = true
+) {
+    val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
+    val avatarBackground = when {
+        backgroundColor != Color.Unspecified -> backgroundColor
+        highlighted -> accentColor.copy(alpha = 0.18f)
+        else -> contentColor.copy(alpha = 0.1f)
+    }
+
+    Box(Modifier.size(size.dp)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .clip(CircleShape)
+                .background(avatarBackground)
+                .border(
+                    width = if (!showFrame) 0.dp else if (highlighted) 1.5.dp else 1.dp,
+                    color = if (!showFrame) Color.Transparent else if (highlighted) accentColor.copy(alpha = 0.36f) else contentColor.copy(alpha = 0.08f),
+                    shape = CircleShape
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (!imageUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = imageUrl,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                BasicText(
+                    initial,
+                    style = TextStyle(
+                        color = if (highlighted) accentColor else contentColor.copy(alpha = 0.82f),
+                        fontSize = (size * 0.34f).sp,
+                        fontWeight = FontWeight.Black
+                    )
+                )
+            }
+        }
+        if (showOnlineDot) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .size((size * 0.22f).dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF35D07F))
+                    .border(2.dp, avatarBackground, CircleShape)
+            )
         }
     }
 }
@@ -400,6 +718,8 @@ private fun SwipeableConversationRow(
     conversation: Conversation,
     contentColor: Color,
     accentColor: Color,
+    cardColor: Color,
+    borderColor: Color,
     currentUserId: String?,
     onClick: () -> Unit
 ) {
@@ -415,88 +735,79 @@ private fun SwipeableConversationRow(
         ?.toString()
         ?: "?"
 
-    Column(
-        Modifier
-            .fillMaxWidth()
+    Box(
+            Modifier
+                .fillMaxWidth()
+            .shadow(2.dp, RoundedCornerShape(26.dp), clip = false, ambientColor = Color.Black.copy(alpha = 0.015f), spotColor = Color.Black.copy(alpha = 0.02f))
+            .clip(RoundedCornerShape(26.dp))
+            .background(cardColor)
+            .border(1.dp, borderColor, RoundedCornerShape(26.dp))
             .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 11.dp)
     ) {
         Row(
             Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 2.dp, vertical = 9.dp),
+                .fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                Modifier
-                    .size(38.dp)
-                    .clip(CircleShape)
-                    .background(
-                        when {
-                            conversation.isMessageRequest -> accentColor.copy(alpha = 0.16f)
-                            showUnreadAccent -> accentColor.copy(alpha = 0.1f)
-                            else -> contentColor.copy(alpha = 0.1f)
-                        }
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                if (!other.profileImage.isNullOrBlank()) {
-                    AsyncImage(
-                        model = other.profileImage,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    BasicText(
-                        avatarInitial,
-                        style = TextStyle(
-                            color = if (conversation.isMessageRequest) accentColor else contentColor.copy(alpha = 0.82f),
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    )
-                }
-            }
-            Spacer(Modifier.width(10.dp))
+            ChatAvatar(
+                name = avatarInitial,
+                imageUrl = other.profileImage,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                highlighted = showUnreadAccent || conversation.isMessageRequest,
+                showOnlineDot = false,
+                size = 48,
+                backgroundColor = contentColor.copy(alpha = 0.018f),
+                showFrame = false
+            )
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Row(
                     Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    BasicText(
-                        other.name ?: other.username ?: "Unknown",
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 14.sp,
-                            fontWeight = if (showUnreadAccent) FontWeight.SemiBold else FontWeight.Medium
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    if (other.hasVerificationBadge()) {
-                        Spacer(Modifier.width(4.dp))
-                        VerificationBadge(
-                            verified = true,
-                            size = VerificationBadgeSize.Small
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BasicText(
+                            other.name ?: other.username ?: "Unknown",
+                            style = TextStyle(
+                                color = contentColor,
+                                fontSize = 15.sp,
+                                fontWeight = if (showUnreadAccent) FontWeight.Black else FontWeight.Bold
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
+                        if (other.hasVerificationBadge()) {
+                            Spacer(Modifier.width(4.dp))
+                            VerificationBadge(
+                                verified = true,
+                                badgeStyle = other.profileBadgeStyle,
+                                isPremium = other.isPremium,
+                                size = VerificationBadgeSize.Small
+                            )
+                        }
                     }
                     Spacer(Modifier.width(8.dp))
                     BasicText(
                         formatTime(rowTime),
                         style = TextStyle(
                             color = if (showUnreadAccent) accentColor else contentColor.copy(alpha = 0.44f),
-                            fontSize = 10.sp,
-                            fontWeight = if (showUnreadAccent) FontWeight.Medium else FontWeight.Normal
+                            fontSize = 11.sp,
+                            fontWeight = if (showUnreadAccent) FontWeight.SemiBold else FontWeight.Medium
                         )
                     )
                 }
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(5.dp))
                 BasicText(
                     previewText,
                     style = TextStyle(
                         color = contentColor.copy(alpha = if (showUnreadAccent) 0.72f else 0.54f),
-                        fontSize = 11.sp,
+                        fontSize = 12.sp,
                         fontWeight = if (showUnreadAccent) FontWeight.Medium else FontWeight.Normal
                     ),
                     maxLines = 1,
@@ -509,23 +820,96 @@ private fun SwipeableConversationRow(
                     Modifier
                         .clip(RoundedCornerShape(999.dp))
                         .background(accentColor)
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                        .padding(horizontal = 7.dp, vertical = 3.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     BasicText(
                         if (conversation.unreadCount > 99) "99+" else conversation.unreadCount.toString(),
-                        style = TextStyle(Color.White, 9.sp, fontWeight = FontWeight.SemiBold)
+                        style = TextStyle(Color.White, 10.sp, fontWeight = FontWeight.Black)
                     )
                 }
             }
         }
-        Box(
+    }
+}
+
+@Composable
+private fun GroupShortcutConversationRow(
+    shortcut: GroupMessageShortcut,
+    contentColor: Color,
+    accentColor: Color,
+    cardColor: Color,
+    borderColor: Color,
+    currentUserId: String?,
+    onClick: () -> Unit
+) {
+    val imageUrl = shortcut.iconImage ?: shortcut.coverImage
+    val avatarInitial = shortcut.name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "G"
+    val previewText = groupShortcutPreviewText(shortcut, currentUserId)
+
+    Box(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 48.dp)
-                .height(1.dp)
-                .background(contentColor.copy(alpha = 0.08f))
-        )
+            .shadow(2.dp, RoundedCornerShape(26.dp), clip = false, ambientColor = Color.Black.copy(alpha = 0.015f), spotColor = Color.Black.copy(alpha = 0.02f))
+            .clip(RoundedCornerShape(26.dp))
+            .background(cardColor)
+            .border(1.dp, borderColor, RoundedCornerShape(26.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 11.dp)
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ChatAvatar(
+                name = avatarInitial,
+                imageUrl = imageUrl,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                highlighted = true,
+                showOnlineDot = false,
+                size = 48
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BasicText(
+                        shortcut.name,
+                        style = TextStyle(
+                            color = contentColor,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    BasicText(
+                        formatTime(shortcut.lastActivityAt),
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.44f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
+                }
+                Spacer(Modifier.height(5.dp))
+                BasicText(
+                    previewText,
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.54f),
+                        fontSize = 12.sp
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 }
 
@@ -539,10 +923,10 @@ private fun ChatInboxEmptyState(
 
     if (searchQuery.isNotBlank()) {
         title = "No chats match \"$searchQuery\""
-        subtitle = "Try a different name or username."
+        subtitle = "Try a different name, username, or group."
     } else {
         title = "No conversations yet"
-        subtitle = "Start a chat from a profile and it will appear here."
+        subtitle = "Start a chat or add a group from Groups."
     }
 
     Column(
@@ -631,11 +1015,10 @@ private fun ChatThreadScreen(
     val lastMessageId = uiState.messages.lastOrNull()?.id
     var pendingLoadMoreAnchor by remember(conv.id) { mutableStateOf<LoadMoreAnchor?>(null) }
     var initialBottomScrollDone by remember(conv.id) { mutableStateOf(false) }
-    val connectionStatus = when {
+    val threadStatusLine = when {
         uiState.typingUserId != null -> "typing..."
         uiState.isLoadingMessages && uiState.messages.isEmpty() -> "loading messages..."
-        !conv.otherParticipant.username.isNullOrBlank() -> "@${conv.otherParticipant.username}"
-        else -> "messages"
+        else -> null
     }
     val showLoadingWithoutCache = uiState.threadReadyState == ChatThreadReadyState.LOADING_WITHOUT_CACHE
     val showEmptyThread = uiState.threadReadyState == ChatThreadReadyState.EMPTY_THREAD
@@ -665,6 +1048,48 @@ private fun ChatThreadScreen(
     val aiGateway = remember { VormexAiGateway(context.applicationContext) }
     var composerAiStatus by remember(conv.id) { mutableStateOf<String?>(null) }
     var composerAiBusyLabel by remember(conv.id) { mutableStateOf<String?>(null) }
+    var peerSafetyState by remember(conv.id, conv.otherParticipant.id) {
+        mutableStateOf(ChatPeerSafetyState())
+    }
+
+    suspend fun loadChatPeerSafetyState(): ChatPeerSafetyState {
+        val reports = ApiClient.getMyReports(context, limit = 50)
+            .getOrNull()
+            ?.reports
+            .orEmpty()
+        val openReport = reports.firstOrNull { report ->
+            report.reportType.equals("CHAT", ignoreCase = true) &&
+                report.conversationId == conv.id &&
+                report.isOpenSafetyReport()
+        }
+        val isBlocked = ApiClient.getBlockedUsers(context)
+            .getOrNull()
+            ?.blocks
+            ?.any { it.blockedUserId == conv.otherParticipant.id }
+            ?: false
+        return ChatPeerSafetyState(
+            openReport = openReport,
+            isBlocked = isBlocked,
+            isLoading = false
+        )
+    }
+
+    suspend fun refreshChatPeerSafetyState() {
+        peerSafetyState = peerSafetyState.copy(isLoading = true)
+        runCatching { loadChatPeerSafetyState() }
+            .onSuccess { peerSafetyState = it }
+            .onFailure { peerSafetyState = peerSafetyState.copy(isLoading = false) }
+    }
+
+    LaunchedEffect(conv.id, conv.otherParticipant.id) {
+        refreshChatPeerSafetyState()
+    }
+
+    LaunchedEffect(showReportChatSheet, conv.id, conv.otherParticipant.id) {
+        if (showReportChatSheet) {
+            refreshChatPeerSafetyState()
+        }
+    }
 
     LaunchedEffect(conv.id, uiState.initialDraftMessage) {
         val draft = uiState.initialDraftMessage?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
@@ -1029,79 +1454,115 @@ private fun ChatThreadScreen(
                     }
                 }
             } else {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    androidx.compose.foundation.Image(
-                        painter = painterResource(R.drawable.ic_back),
-                        contentDescription = "Back",
-                        modifier = Modifier
-                            .size(22.dp)
-                            .clickable { viewModel.selectConversation(null) },
-                        colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(threadContentColor)
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Box(
+                Column(Modifier.fillMaxWidth()) {
+                    Row(
                         Modifier
-                            .size(32.dp)
-                            .clip(CircleShape)
-                            .background(threadContentColor.copy(alpha = 0.12f))
-                            .clickable { onNavigateToProfile(conv.otherParticipant.id) }
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        AsyncImage(
-                            model = conv.otherParticipant.profileImage,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                    Spacer(Modifier.width(10.dp))
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .clickable { onNavigateToProfile(conv.otherParticipant.id) }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        Box(
+                            Modifier
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable { viewModel.selectConversation(null) },
+                            contentAlignment = Alignment.Center
                         ) {
-                            BasicText(
-                                conv.otherParticipant.name ?: conv.otherParticipant.username ?: "Unknown",
-                                style = TextStyle(threadContentColor, 14.sp, fontWeight = FontWeight.SemiBold),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            VerificationBadge(
-                                verified = conv.otherParticipant.hasVerificationBadge(),
-                                size = VerificationBadgeSize.Small
+                            androidx.compose.foundation.Image(
+                                painter = painterResource(R.drawable.ic_back),
+                                contentDescription = "Back",
+                                modifier = Modifier.size(24.dp),
+                                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(threadContentColor.copy(alpha = 0.88f))
                             )
                         }
-                        BasicText(
-                            connectionStatus,
-                            style = TextStyle(threadContentColor.copy(alpha = 0.6f), 11.sp)
-                        )
+                        Spacer(Modifier.width(4.dp))
+                        Box(
+                            Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(threadContentColor.copy(alpha = if (selectedWallpaper != null) 0.1f else 0.025f))
+                                .border(1.dp, threadContentColor.copy(alpha = 0.045f), CircleShape)
+                                .clickable { onNavigateToProfile(conv.otherParticipant.id) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (!conv.otherParticipant.profileImage.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = conv.otherParticipant.profileImage,
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                BasicText(
+                                    (conv.otherParticipant.name ?: conv.otherParticipant.username ?: "?")
+                                        .trim()
+                                        .firstOrNull()
+                                        ?.uppercaseChar()
+                                        ?.toString()
+                                        ?: "?",
+                                    style = TextStyle(
+                                        threadContentColor.copy(alpha = 0.82f),
+                                        14.sp,
+                                        FontWeight.Black
+                                    )
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .clickable { onNavigateToProfile(conv.otherParticipant.id) }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                BasicText(
+                                    conv.otherParticipant.name ?: conv.otherParticipant.username ?: "Unknown",
+                                    style = TextStyle(threadContentColor, 16.sp, fontWeight = FontWeight.Bold),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                VerificationBadge(
+                                    verified = conv.otherParticipant.hasVerificationBadge(),
+                                    badgeStyle = conv.otherParticipant.profileBadgeStyle,
+                                    isPremium = conv.otherParticipant.isPremium,
+                                    size = VerificationBadgeSize.Small
+                                )
+                            }
+                            threadStatusLine?.let { statusLine ->
+                                Spacer(Modifier.height(2.dp))
+                                BasicText(
+                                    statusLine,
+                                    style = TextStyle(threadContentColor.copy(alpha = 0.52f), 11.sp, FontWeight.Medium),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable { showChatMenu = true },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            androidx.compose.foundation.Image(
+                                painter = painterResource(R.drawable.ic_more),
+                                contentDescription = "Menu",
+                                modifier = Modifier.size(22.dp),
+                                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(threadContentColor.copy(alpha = 0.86f))
+                            )
+                        }
                     }
                     Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (selectedWallpaper != null) Color.Black.copy(alpha = 0.36f)
-                                else threadContentColor.copy(alpha = 0.08f)
-                            )
-                            .clickable { showChatMenu = true },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        androidx.compose.foundation.Image(
-                            painter = painterResource(R.drawable.ic_more),
-                            contentDescription = "Menu",
-                            modifier = Modifier.size(20.dp),
-                            colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(threadContentColor)
-                        )
-                    }
+                        Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(threadContentColor.copy(alpha = if (selectedWallpaper != null) 0.13f else 0.045f))
+                    )
                 }
             }
 
@@ -1543,7 +2004,13 @@ private fun ChatThreadScreen(
                             Modifier
                                 .size(30.dp)
                                 .clip(CircleShape)
-                                .background(chatComposerAccent.copy(alpha = 0.1f))
+                                .background(
+                                    if (inlineActionIsGrammar) {
+                                        chatComposerAccent.copy(alpha = 0.1f)
+                                    } else {
+                                        Color.Transparent
+                                    }
+                                )
                                 .clickable(
                                     enabled = inlineActionEnabled,
                                     onClick = {
@@ -1579,32 +2046,22 @@ private fun ChatThreadScreen(
                     Spacer(Modifier.width(8.dp))
                     Box(
                         Modifier
-                            .size(52.dp)
+                            .size(40.dp)
+                            .clip(CircleShape)
                             .background(
-                                color = chatComposerAccent.copy(alpha = if (canSendMessage) 0.16f else 0.06f),
-                                shape = CircleShape
-                            ),
+                                if (canSendMessage) chatComposerAccent else chatComposerAccent.copy(alpha = 0.44f)
+                            )
+                            .clickable(enabled = canSendMessage) { sendCurrentMessage() },
                         contentAlignment = Alignment.Center
                     ) {
-                        Box(
-                            Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (canSendMessage) chatComposerAccent else chatComposerAccent.copy(alpha = 0.44f)
-                                )
-                                .clickable(enabled = canSendMessage) { sendCurrentMessage() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            androidx.compose.foundation.Image(
-                                painter = painterResource(R.drawable.ic_send),
-                                contentDescription = "Send",
-                                modifier = Modifier
-                                    .size(18.dp)
-                                    .offset(x = 1.dp, y = (-1).dp),
-                                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(Color.White)
-                            )
-                        }
+                        androidx.compose.foundation.Image(
+                            painter = painterResource(R.drawable.ic_send),
+                            contentDescription = "Send",
+                            modifier = Modifier
+                                .size(17.dp)
+                                .offset(x = 1.dp, y = (-1).dp),
+                            colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(Color.White)
+                        )
                     }
                 }
             }
@@ -1703,22 +2160,53 @@ private fun ChatThreadScreen(
                 accentColor = accentColor,
                 isGlassTheme = isGlassTheme,
                 reportedLabel = conv.otherParticipant.name ?: conv.otherParticipant.username ?: "this person",
+                existingReport = peerSafetyState.openReport,
+                isBlocked = peerSafetyState.isBlocked,
+                isSafetyStateLoading = peerSafetyState.isLoading,
                 onDismiss = { showReportChatSheet = false },
-                onSubmit = { reason, details ->
+                onUnblock = {
                     reportScope.launch {
+                        peerSafetyState = peerSafetyState.copy(isLoading = true)
+                        ApiClient.unblockUser(context, conv.otherParticipant.id)
+                            .onSuccess {
+                                peerSafetyState = peerSafetyState.copy(
+                                    isBlocked = false,
+                                    isLoading = false
+                                )
+                                Toast.makeText(
+                                    context,
+                                    "Unblocked ${conv.otherParticipant.name ?: "this user"}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                            .onFailure { e ->
+                                peerSafetyState = peerSafetyState.copy(isLoading = false)
+                                Toast.makeText(
+                                    context,
+                                    e.message ?: "Could not unblock user",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                    }
+                },
+                onSubmit = { reason, details, blockUser ->
+                    reportScope.launch {
+                        peerSafetyState = peerSafetyState.copy(isLoading = true)
                         ApiClient.reportChat(
                             context,
                             conv.id,
                             reason,
-                            details
+                            details,
+                            blockUser = blockUser
                         ).onSuccess {
                             Toast.makeText(
                                 context,
                                 "Thanks — we received your report and will review it.",
                                 Toast.LENGTH_LONG
                             ).show()
-                            showReportChatSheet = false
+                            refreshChatPeerSafetyState()
                         }.onFailure { e ->
+                            peerSafetyState = peerSafetyState.copy(isLoading = false)
                             Toast.makeText(
                                 context,
                                 e.message ?: "Could not submit report",
@@ -3134,6 +3622,8 @@ private fun MessageBubble(
         !hasMediaContent &&
         isSystemEmojiOnlyMessage(message.content)
     val emojiFontSizeSp = if (isEmojiOnlyMessage) systemEmojiMessageFontSizeSp(message.content) else 14
+    val outgoingBubbleColor = Color(0xFF151A22)
+    val bubbleTextColor = if (isFromMe && !isEmojiOnlyMessage) Color.White else contentColor
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -3234,7 +3724,7 @@ private fun MessageBubble(
                         Modifier
                             .clip(RoundedCornerShape(16.dp))
                             .background(
-                                if (isFromMe) accentColor.copy(alpha = 0.18f)
+                                if (isFromMe) outgoingBubbleColor
                                 else contentColor.copy(alpha = 0.08f)
                             )
                             .padding(horizontal = 12.dp, vertical = 8.dp)
@@ -3245,7 +3735,7 @@ private fun MessageBubble(
                         modifier = messageBubbleModifier
                     ) {
                         if (message.isDeleted) {
-                            BasicText("Message deleted", style = TextStyle(contentColor.copy(alpha = 0.5f), 13.sp))
+                            BasicText("Message deleted", style = TextStyle(bubbleTextColor.copy(alpha = 0.5f), 13.sp))
                         } else {
                             if (sharedPost != null && (sharedPost.type == "shared_post" || sharedPost.type == "shared_reel")) {
                                 SharedPostCard(
@@ -3262,18 +3752,30 @@ private fun MessageBubble(
                                     onOpenMedia = onOpenMedia
                                 )
                             } else {
-                                BasicText(
-                                    message.content,
-                                    style = if (isEmojiOnlyMessage) {
-                                        TextStyle(
-                                            color = contentColor,
-                                            fontSize = emojiFontSizeSp.sp,
-                                            lineHeight = (emojiFontSizeSp + 4).sp
-                                        )
-                                    } else {
-                                        TextStyle(contentColor, 14.sp)
+                                val messageTextStyle = if (isEmojiOnlyMessage) {
+                                    TextStyle(
+                                        color = contentColor,
+                                        fontSize = emojiFontSizeSp.sp,
+                                        lineHeight = (emojiFontSizeSp + 4).sp
+                                    )
+                                } else {
+                                    TextStyle(bubbleTextColor, 14.sp)
+                                }
+
+                                if (isEmojiOnlyMessage) {
+                                    BasicText(
+                                        message.content,
+                                        style = messageTextStyle
+                                    )
+                                } else {
+                                    val formattedMessageContent = remember(message.content, bubbleTextColor) {
+                                        parseChatRichText(message.content, bubbleTextColor)
                                     }
-                                )
+                                    BasicText(
+                                        formattedMessageContent,
+                                        style = messageTextStyle
+                                    )
+                                }
                             }
                         }
                     }
@@ -3650,6 +4152,34 @@ private fun conversationPreviewText(
     return "$prefix$body".trim()
 }
 
+private fun groupShortcutPreviewText(
+    shortcut: GroupMessageShortcut,
+    currentUserId: String?
+): String {
+    val latest = shortcut.latestMessage ?: return "${shortcut.memberCount} members"
+    val body = latest.preview.ifBlank {
+        when (latest.contentType.lowercase()) {
+            "image" -> "sent a photo"
+            "video" -> "sent a video"
+            "audio" -> "sent a voice note"
+            "document", "file" -> "shared a file"
+            else -> "sent a message"
+        }
+    }
+    val senderPrefix = if (latest.senderId == currentUserId) "You" else latest.senderName
+    return "$senderPrefix: $body"
+}
+
+private fun firstChatName(name: String): String {
+    return name
+        .trim()
+        .split(Regex("\\s+"))
+        .firstOrNull()
+        ?.take(12)
+        ?.ifBlank { "Chat" }
+        ?: "Chat"
+}
+
 private fun Message.isFromCurrentUser(
     currentUserId: String?,
     conversation: Conversation?
@@ -3825,176 +4355,6 @@ private fun AiSuggestionsRow(
                         maxLines = 1
                     )
                 }
-            }
-        }
-    }
-}
-
-/**
- * Glass-styled chat options menu with blur effects matching app theme.
- */
-@Composable
-private fun GlassChatMenu(
-    backdrop: LayerBackdrop,
-    contentColor: Color,
-    accentColor: Color,
-    isMuted: Boolean,
-    muteStatusLine: String,
-    wallpaperStatusLine: String,
-    isGlassTheme: Boolean,
-    onDismiss: () -> Unit,
-    onViewProfile: () -> Unit,
-    onSearchMessages: () -> Unit,
-    onChangeWallpaper: () -> Unit,
-    onMuteNotifications: () -> Unit,
-    onClearChat: () -> Unit,
-    onReport: () -> Unit
-) {
-    val appearance = currentVormexAppearance()
-    val menuShape = RoundedCornerShape(18.dp)
-    val menuContentColor = if (isGlassTheme) Color.White else appearance.contentColor
-    val menuBorderColor =
-        if (isGlassTheme) Color.White.copy(alpha = 0.14f) else appearance.overlayBorderColor
-    val menuSurface: Modifier = if (isGlassTheme) {
-        Modifier.drawBackdrop(
-            backdrop = backdrop,
-            shape = { RoundedRectangle(18f.dp) },
-            effects = {
-                vibrancy()
-                blur(24f.dp.toPx())
-            },
-            onDrawSurface = { drawRect(Color.Black.copy(alpha = 0.66f)) }
-        )
-    } else {
-        Modifier.background(
-            color = appearance.overlayColor,
-            shape = menuShape
-        )
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .clickable(
-                indication = null,
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-            ) { onDismiss() }
-    ) {
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 60.dp, end = 16.dp)
-                .then(menuSurface)
-                .clip(menuShape)
-                .background(Color.Black.copy(alpha = if (isGlassTheme) 0.28f else 0f))
-                .border(1.dp, menuBorderColor, menuShape)
-                .clickable(enabled = false) { }
-        ) {
-            Column(
-                modifier = Modifier
-                    .widthIn(min = 228.dp, max = 280.dp)
-                    .padding(8.dp)
-            ) {
-                GlassMenuItem(
-                    iconRes = R.drawable.ic_profile,
-                    text = "View profile",
-                    contentColor = menuContentColor,
-                    onClick = onViewProfile
-                )
-                GlassMenuItem(
-                    iconRes = R.drawable.ic_search,
-                    text = "Search messages",
-                    contentColor = menuContentColor,
-                    onClick = onSearchMessages
-                )
-                GlassMenuItem(
-                    iconRes = R.drawable.ic_wallpaper,
-                    text = "Chat wallpaper",
-                    subtitle = wallpaperStatusLine,
-                    contentColor = menuContentColor,
-                    onClick = onChangeWallpaper
-                )
-                GlassMenuItem(
-                    iconRes = if (isMuted) R.drawable.ic_notifications_off else R.drawable.ic_notifications,
-                    text = if (isMuted) "Unmute notifications" else "Mute notifications",
-                    subtitle = muteStatusLine,
-                    contentColor = menuContentColor,
-                    onClick = onMuteNotifications
-                )
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                        .height(1.dp)
-                        .background(menuContentColor.copy(alpha = 0.15f))
-                )
-
-                GlassMenuItem(
-                    iconRes = R.drawable.ic_delete,
-                    text = "Delete chat",
-                    contentColor = Color(0xFFFF6B6B),
-                    onClick = onClearChat
-                )
-                GlassMenuItem(
-                    iconRes = R.drawable.ic_warning,
-                    text = "Report",
-                    subtitle = "Safety concerns",
-                    contentColor = Color(0xFFFFAA33),
-                    onClick = onReport
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun GlassMenuItem(
-    iconRes: Int,
-    text: String,
-    contentColor: Color,
-    onClick: () -> Unit,
-    subtitle: String? = null
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable { onClick() }
-            .padding(horizontal = 10.dp, vertical = if (subtitle != null) 8.dp else 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(34.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(contentColor.copy(alpha = 0.14f)),
-            contentAlignment = Alignment.Center
-        ) {
-            androidx.compose.foundation.Image(
-                painter = painterResource(iconRes),
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(contentColor)
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            BasicText(
-                text,
-                style = TextStyle(
-                    color = contentColor,
-                    fontSize = 15.sp
-                )
-            )
-            if (!subtitle.isNullOrBlank()) {
-                Spacer(Modifier.height(3.dp))
-                BasicText(
-                    subtitle,
-                    style = TextStyle(
-                        color = contentColor.copy(alpha = 0.5f),
-                        fontSize = 11.sp
-                    )
-                )
             }
         }
     }
@@ -4378,14 +4738,19 @@ private fun GlassReportChatDialog(
     accentColor: Color,
     isGlassTheme: Boolean,
     reportedLabel: String,
+    existingReport: MySafetyReport?,
+    isBlocked: Boolean,
+    isSafetyStateLoading: Boolean,
     onDismiss: () -> Unit,
-    onSubmit: (reason: String, details: String) -> Unit
+    onUnblock: () -> Unit,
+    onSubmit: (reason: String, details: String, blockUser: Boolean) -> Unit
 ) {
     val reasons = remember {
         listOf("Harassment or hate", "Spam or scam", "Impersonation", "Other")
     }
     var selectedReason by remember { mutableStateOf(reasons.first()) }
     var details by remember { mutableStateOf("") }
+    var blockUser by remember { mutableStateOf(false) }
     val appearance = currentVormexAppearance()
     val dialogContentColor = if (isGlassTheme) Color.White else appearance.contentColor
     val dialogShape = RoundedCornerShape(20.dp)
@@ -4429,102 +4794,285 @@ private fun GlassReportChatDialog(
                 .clickable(enabled = false) { }
         ) {
             Column(Modifier.padding(22.dp)) {
-                BasicText(
-                    "Report conversation",
-                    style = TextStyle(
-                        color = dialogContentColor,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold
+                if (existingReport != null || isBlocked || isSafetyStateLoading) {
+                    ChatReportSafetyStateContent(
+                        reportedLabel = reportedLabel,
+                        existingReport = existingReport,
+                        isBlocked = isBlocked,
+                        isLoading = isSafetyStateLoading,
+                        dialogContentColor = dialogContentColor,
+                        accentColor = accentColor,
+                        onDismiss = onDismiss,
+                        onUnblock = onUnblock
                     )
-                )
-                Spacer(Modifier.height(8.dp))
-                BasicText(
-                    "Tell us what’s wrong about your chat with $reportedLabel.",
-                    style = TextStyle(dialogContentColor.copy(alpha = 0.72f), 13.sp)
-                )
-                Spacer(Modifier.height(14.dp))
-                reasons.forEach { reason ->
-                    val selected = selectedReason == reason
+                } else {
+                    BasicText(
+                        "Report conversation",
+                        style = TextStyle(
+                            color = dialogContentColor,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    BasicText(
+                        "Tell us what’s wrong about your chat with $reportedLabel.",
+                        style = TextStyle(dialogContentColor.copy(alpha = 0.72f), 13.sp)
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    reasons.forEach { reason ->
+                        val selected = selectedReason == reason
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (selected) accentColor.copy(alpha = 0.16f) else dialogContentColor.copy(alpha = 0.06f)
+                                )
+                                .clickable { selectedReason = reason }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BasicText(
+                                if (selected) "●" else "○",
+                                style = TextStyle(accentColor, 12.sp),
+                                modifier = Modifier.width(20.dp)
+                            )
+                            BasicText(
+                                reason,
+                                style = TextStyle(dialogContentColor, 14.sp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    BasicText(
+                        "Details (optional)",
+                        style = TextStyle(dialogContentColor.copy(alpha = 0.55f), 11.sp)
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    BasicTextField(
+                        value = details,
+                        onValueChange = { details = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 72.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(dialogContentColor.copy(alpha = 0.08f))
+                            .padding(12.dp),
+                        textStyle = TextStyle(dialogContentColor, 13.sp),
+                        cursorBrush = SolidColor(dialogContentColor),
+                        maxLines = 4
+                    )
+                    Spacer(Modifier.height(12.dp))
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(
-                                if (selected) accentColor.copy(alpha = 0.16f) else dialogContentColor.copy(alpha = 0.06f)
-                            )
-                            .clickable { selectedReason = reason }
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(dialogContentColor.copy(alpha = if (blockUser) 0.14f else 0.07f))
+                            .clickable { blockUser = !blockUser }
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         BasicText(
-                            if (selected) "●" else "○",
+                            if (blockUser) "●" else "○",
                             style = TextStyle(accentColor, 12.sp),
                             modifier = Modifier.width(20.dp)
                         )
                         BasicText(
-                            reason,
+                            "Also block this user",
                             style = TextStyle(dialogContentColor, 14.sp)
                         )
                     }
-                }
-                Spacer(Modifier.height(10.dp))
-                BasicText(
-                    "Details (optional)",
-                    style = TextStyle(dialogContentColor.copy(alpha = 0.55f), 11.sp)
-                )
-                Spacer(Modifier.height(6.dp))
-                BasicTextField(
-                    value = details,
-                    onValueChange = { details = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 72.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(dialogContentColor.copy(alpha = 0.08f))
-                        .padding(12.dp),
-                    textStyle = TextStyle(dialogContentColor, 13.sp),
-                    cursorBrush = SolidColor(dialogContentColor),
-                    maxLines = 4
-                )
-                Spacer(Modifier.height(18.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(dialogContentColor.copy(alpha = 0.1f))
-                            .clickable { onDismiss() }
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
+                    Spacer(Modifier.height(18.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        BasicText(
-                            "Cancel",
-                            style = TextStyle(dialogContentColor, 15.sp, FontWeight.Medium)
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(accentColor.copy(alpha = 0.85f))
-                            .clickable {
-                                onSubmit(selectedReason, details.trim())
-                            }
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        BasicText(
-                            "Submit",
-                            style = TextStyle(Color.White, 15.sp, FontWeight.Medium)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(dialogContentColor.copy(alpha = 0.1f))
+                                .clickable { onDismiss() }
+                                .padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            BasicText(
+                                "Cancel",
+                                style = TextStyle(dialogContentColor, 15.sp, FontWeight.Medium)
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(accentColor.copy(alpha = 0.85f))
+                                .clickable {
+                                    onSubmit(selectedReason, details.trim(), blockUser)
+                                }
+                                .padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            BasicText(
+                                "Submit",
+                                style = TextStyle(Color.White, 15.sp, FontWeight.Medium)
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ChatReportSafetyStateContent(
+    reportedLabel: String,
+    existingReport: MySafetyReport?,
+    isBlocked: Boolean,
+    isLoading: Boolean,
+    dialogContentColor: Color,
+    accentColor: Color,
+    onDismiss: () -> Unit,
+    onUnblock: () -> Unit
+) {
+    val composition by rememberLottieComposition(LottieCompositionSpec.RawRes(R.raw.shield_icon))
+    val progress by animateLottieCompositionAsState(
+        composition = composition,
+        iterations = LottieConstants.IterateForever
+    )
+    val title = when {
+        existingReport != null -> "Report under review"
+        isBlocked -> "User blocked"
+        else -> "Checking safety status"
+    }
+    val statusLine = existingReport?.let {
+        "You already submitted this report. Trust & Safety is reviewing it now."
+    } ?: if (isBlocked) {
+        "$reportedLabel is blocked on your account."
+    } else {
+        "Checking whether this conversation already has a report or block."
+    }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        LottieAnimation(
+            composition = composition,
+            progress = { progress },
+            modifier = Modifier.size(108.dp)
+        )
+        Spacer(Modifier.height(4.dp))
+        BasicText(
+            title,
+            style = TextStyle(
+                color = dialogContentColor,
+                fontSize = 19.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center
+            ),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        BasicText(
+            statusLine,
+            style = TextStyle(
+                color = dialogContentColor.copy(alpha = 0.72f),
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center
+            ),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        if (isBlocked) {
+            Spacer(Modifier.height(16.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(dialogContentColor.copy(alpha = 0.07f))
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(9.dp)
+            ) {
+                BasicText(
+                    "While blocked:",
+                    style = TextStyle(dialogContentColor, 13.sp, FontWeight.SemiBold)
+                )
+                SafetyEffectLine("No messages from $reportedLabel will be received.", dialogContentColor, accentColor)
+                SafetyEffectLine("Other accounts linked to the same app install or browser signal are blocked from reaching you too.", dialogContentColor, accentColor)
+                SafetyEffectLine("They cannot start new DMs or message requests with you.", dialogContentColor, accentColor)
+                SafetyEffectLine("Story replies or reactions that would create DMs are blocked.", dialogContentColor, accentColor)
+                SafetyEffectLine("Follows, connection requests, mentions, notifications, people search, matching, and feed recommendations are filtered.", dialogContentColor, accentColor)
+                SafetyEffectLine("Unblocking does not remove the report from admin review.", dialogContentColor, accentColor)
+            }
+        }
+
+        if (isLoading) {
+            Spacer(Modifier.height(16.dp))
+            CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                color = accentColor,
+                strokeWidth = 2.dp
+            )
+        }
+
+        Spacer(Modifier.height(18.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(dialogContentColor.copy(alpha = 0.1f))
+                    .clickable { onDismiss() }
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                BasicText(
+                    "Close",
+                    style = TextStyle(dialogContentColor, 15.sp, FontWeight.Medium)
+                )
+            }
+            if (isBlocked) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(accentColor.copy(alpha = if (isLoading) 0.42f else 0.85f))
+                        .clickable(enabled = !isLoading) { onUnblock() }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        "Unblock",
+                        style = TextStyle(Color.White, 15.sp, FontWeight.Medium)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SafetyEffectLine(
+    text: String,
+    dialogContentColor: Color,
+    accentColor: Color
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        BasicText(
+            "-",
+            style = TextStyle(accentColor, 13.sp, FontWeight.SemiBold)
+        )
+        BasicText(
+            text,
+            style = TextStyle(dialogContentColor.copy(alpha = 0.72f), 12.sp),
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
@@ -4856,6 +5404,7 @@ private fun SharedPostCard(
                             Spacer(Modifier.width(4.dp))
                             VerificationBadge(
                                 verified = true,
+                                badgeStyle = author.verificationBadgeStyle(),
                                 size = VerificationBadgeSize.Micro
                             )
                         }
@@ -4925,6 +5474,7 @@ private fun SharedPostCard(
                         Spacer(Modifier.width(4.dp))
                         VerificationBadge(
                             verified = true,
+                            badgeStyle = author.verificationBadgeStyle(),
                             size = VerificationBadgeSize.Micro
                         )
                     }

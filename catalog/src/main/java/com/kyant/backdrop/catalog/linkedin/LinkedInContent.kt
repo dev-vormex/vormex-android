@@ -61,6 +61,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.automirrored.outlined.Login
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.outlined.*
@@ -138,8 +139,11 @@ import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
-import com.kyant.backdrop.catalog.BuildConfig
 import com.kyant.backdrop.catalog.R
+import com.kyant.backdrop.catalog.BuildConfig
+import com.kyant.backdrop.catalog.ads.ManagedFeedAdCard
+import com.kyant.backdrop.catalog.ads.VormexAdsManager
+import com.kyant.backdrop.catalog.ads.VormexNativeFeedAd
 import com.kyant.backdrop.catalog.components.LiquidBottomTab
 import com.kyant.backdrop.catalog.components.LiquidBottomTabs
 import com.kyant.backdrop.catalog.components.LiquidButton
@@ -154,6 +158,9 @@ import com.kyant.backdrop.catalog.network.models.ProfileUpdateRequest
 import com.kyant.backdrop.catalog.network.models.CelebrationType
 import com.kyant.backdrop.catalog.network.models.PollOption
 import com.kyant.backdrop.catalog.network.models.Post
+import com.kyant.backdrop.catalog.network.models.ManagedAdPlacement
+import com.kyant.backdrop.catalog.network.models.CreatorProResponse
+import com.kyant.backdrop.catalog.network.models.CreatorProSettingsRequest
 import com.kyant.backdrop.catalog.network.models.PremiumPlanOption
 import com.kyant.backdrop.catalog.network.models.PremiumSubscriptionResponse
 import com.kyant.backdrop.catalog.network.models.StoryGroup
@@ -163,18 +170,17 @@ import com.kyant.backdrop.catalog.chat.ChatTabContent
 import com.kyant.backdrop.catalog.linkedin.posts.SharePostModal
 import com.kyant.backdrop.catalog.linkedin.posts.FormattedContent
 import com.kyant.backdrop.catalog.linkedin.posts.MentionProfilePreviewPopup
+import com.kyant.backdrop.catalog.network.PostsApiService
 import com.kyant.backdrop.catalog.linkedin.groups.GroupsScreen
+import com.kyant.backdrop.catalog.linkedin.groups.CreateGroupModal
 import com.kyant.backdrop.catalog.linkedin.groups.GroupDetailScreen
 import com.kyant.backdrop.catalog.linkedin.groups.GroupInviteLinkScreen
 import com.kyant.backdrop.catalog.linkedin.groups.GroupSettingsScreen
 import com.kyant.backdrop.catalog.linkedin.groups.GroupChatScreen
 import com.kyant.backdrop.catalog.linkedin.groups.CirclesScreen
-import com.kyant.backdrop.catalog.game.TicTacToeGameScreen
-import com.kyant.backdrop.catalog.game.OnlineTicTacToeGameScreen
-import com.kyant.backdrop.catalog.game.TapDuelGameScreen
 import com.kyant.backdrop.catalog.game.GamesHubScreen
-import com.kyant.backdrop.catalog.game.GameType
 import com.kyant.backdrop.catalog.linkedin.groups.CircleDetailScreen
+import com.kyant.backdrop.catalog.network.GroupsApiService
 import com.kyant.backdrop.catalog.linkedin.reels.ReelsPreviewSection
 import com.kyant.backdrop.catalog.linkedin.reels.ReelsFeedScreen
 import com.kyant.backdrop.catalog.linkedin.reels.ReelCommentsSheet
@@ -182,6 +188,7 @@ import com.kyant.backdrop.catalog.linkedin.reels.ReelCreateSheet
 import com.kyant.backdrop.catalog.linkedin.reels.ReelsViewModel
 import com.kyant.backdrop.catalog.network.models.Reel
 import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
+import com.kyant.backdrop.catalog.notifications.VormexMessagingService
 import com.kyant.backdrop.catalog.onboarding.ProfileSetupWizard
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -476,8 +483,17 @@ fun LinkedInContent(
     val context = LocalContext.current
     val activity = context.findActivity()
     val appScope = rememberCoroutineScope()
+    val hapticFeedback = LocalHapticFeedback.current
     val viewModel: FeedViewModel = viewModel(factory = FeedViewModel.Factory(context))
     val uiState by viewModel.uiState.collectAsState()
+    val startGoogleSignIn = {
+        val hostActivity = activity
+        if (hostActivity != null) {
+            viewModel.googleSignIn(hostActivity)
+        } else {
+            Toast.makeText(context, "Google Sign-In is unavailable here.", Toast.LENGTH_SHORT).show()
+        }
+    }
     val sessionUserKey = uiState.currentUserId
         ?.takeIf { uiState.isLoggedIn && it.isNotBlank() }
         ?: "signed-out"
@@ -508,6 +524,7 @@ fun LinkedInContent(
     var premiumDetailsRequestKey by rememberSaveable { mutableIntStateOf(0) }
     var moreHubAnimationKey by rememberSaveable { mutableIntStateOf(0) }
     var viewingProfileUserId by remember { mutableStateOf<String?>(null) }
+    var pendingSmartMatchDeepLinkUserId by remember { mutableStateOf<String?>(null) }
     var profileOpenedFromReels by remember { mutableStateOf(false) }
     var openChatWithUserId by remember { mutableStateOf<String?>(null) }
     var openChatInitialDraft by remember { mutableStateOf<String?>(null) }
@@ -519,10 +536,14 @@ fun LinkedInContent(
 
     // Messages screen state
     var showMessagesScreen by remember { mutableStateOf(false) }
+    var showMessagesCreateGroupMenu by remember { mutableStateOf(false) }
+    var showMessagesCreateGroupSheet by remember { mutableStateOf(false) }
+    var isCreatingGroupFromMessages by remember { mutableStateOf(false) }
 
     // Groups & Circles navigation state
     var showGroupsScreen by remember { mutableStateOf(false) }
     var showCirclesScreen by remember { mutableStateOf(false) }
+    var openCreateGroupRequestKey by rememberSaveable { mutableIntStateOf(0) }
     var selectedGroupId by remember { mutableStateOf<String?>(null) }
     var selectedGroupInviteCode by remember { mutableStateOf<String?>(null) }
     var selectedCircleId by remember { mutableStateOf<String?>(null) }
@@ -549,6 +570,8 @@ fun LinkedInContent(
     // Shared post detail/comments state (used by feed and profile screens)
     var showCommentsSheet by remember { mutableStateOf(false) }
     var selectedPostForComments by remember { mutableStateOf<String?>(null) }
+    var reportingPostId by remember { mutableStateOf<String?>(null) }
+    var isSubmittingPostReport by remember { mutableStateOf(false) }
 
     // Settings & More screen navigation state
     var showProfileScreen by remember { mutableStateOf(false) }
@@ -566,14 +589,16 @@ fun LinkedInContent(
     var showContactScreen by remember { mutableStateOf(false) }
     var showGrowthHubScreen by remember { mutableStateOf(false) }
     var showGamesScreen by remember { mutableStateOf(false) }
-    var activeGame by remember { mutableStateOf(GameType.NONE) }
+    var showTalentEngineScreen by remember { mutableStateOf(false) }
     var showSkillPassportScreen by remember { mutableStateOf(false) }
     var showSkillSwapScreen by remember { mutableStateOf(false) }
+    var skillSwapInitialTab by remember { mutableStateOf("discover") }
     var showHackathonBoardScreen by remember { mutableStateOf(false) }
     var showAgentSheet by remember { mutableStateOf(false) }
     var minimizeAgentSheetForVoice by remember { mutableStateOf(false) }
     var autoMinimizedAgentSheetForActiveVoice by remember { mutableStateOf(false) }
     var showLogoutDialog by remember { mutableStateOf(false) }
+    var showAccountSwitcherDialog by rememberSaveable { mutableStateOf(false) }
     var logoutDialogTitle by remember { mutableStateOf("Log Out") }
     var logoutDialogMessage by remember {
         mutableStateOf("Are you sure you want to log out? You'll need to sign in again to access your account.")
@@ -615,6 +640,7 @@ fun LinkedInContent(
             showContactScreen ||
             showGrowthHubScreen ||
             showGamesScreen ||
+            showTalentEngineScreen ||
             showSkillPassportScreen ||
             showSkillSwapScreen ||
             showHackathonBoardScreen ||
@@ -624,6 +650,7 @@ fun LinkedInContent(
         selectedTab = 0
         showFullMoreScreen = false
         viewingProfileUserId = null
+        pendingSmartMatchDeepLinkUserId = null
         profileOpenedFromReels = false
         openChatWithUserId = null
         openChatInitialDraft = null
@@ -668,13 +695,15 @@ fun LinkedInContent(
         showContactScreen = false
         showGrowthHubScreen = false
         showGamesScreen = false
-        activeGame = GameType.NONE
+        showTalentEngineScreen = false
         showSkillPassportScreen = false
         showSkillSwapScreen = false
+        skillSwapInitialTab = "discover"
         showHackathonBoardScreen = false
         showAgentSheet = false
         minimizeAgentSheetForVoice = false
         autoMinimizedAgentSheetForActiveVoice = false
+        showAccountSwitcherDialog = false
     }
 
     fun openPremiumDetails() {
@@ -685,6 +714,10 @@ fun LinkedInContent(
     }
 
     fun showAccountExitDialog(switchAccount: Boolean) {
+        if (switchAccount) {
+            showAccountSwitcherDialog = true
+            return
+        }
         logoutDialogTitle = if (switchAccount) "Switch Account" else "Log Out"
         logoutDialogMessage = if (switchAccount) {
             "Sign out of this account so you can choose another one."
@@ -753,13 +786,8 @@ fun LinkedInContent(
             showAboutScreen -> showAboutScreen = false
             showContactScreen -> showContactScreen = false
             showGrowthHubScreen -> showGrowthHubScreen = false
-            showGamesScreen -> {
-                if (activeGame != GameType.NONE) {
-                    activeGame = GameType.NONE
-                } else {
-                    showGamesScreen = false
-                }
-            }
+            showGamesScreen -> showGamesScreen = false
+            showTalentEngineScreen -> showTalentEngineScreen = false
             showSkillPassportScreen -> showSkillPassportScreen = false
             showSkillSwapScreen -> showSkillSwapScreen = false
             showHackathonBoardScreen -> showHackathonBoardScreen = false
@@ -788,11 +816,40 @@ fun LinkedInContent(
                 "We'll show fewer posts like this",
                 Toast.LENGTH_SHORT
             ).show()
-            "report" -> Toast.makeText(
-                context,
-                "Thanks for the report",
-                Toast.LENGTH_SHORT
-            ).show()
+            "report" -> reportingPostId = postId
+        }
+    }
+
+    fun submitPostReport(reason: String, details: String, blockAuthor: Boolean) {
+        val postId = reportingPostId ?: return
+        if (isSubmittingPostReport) return
+        appScope.launch {
+            isSubmittingPostReport = true
+            PostsApiService.reportPost(
+                context = context,
+                postId = postId,
+                reason = reason,
+                description = details.ifBlank { null },
+                blockUser = blockAuthor
+            ).onSuccess {
+                Toast.makeText(
+                    context,
+                    if (blockAuthor) {
+                        "Report sent and author blocked."
+                    } else {
+                        "Thanks - we received your report."
+                    },
+                    Toast.LENGTH_LONG
+                ).show()
+                reportingPostId = null
+            }.onFailure { error ->
+                Toast.makeText(
+                    context,
+                    error.message ?: "Could not submit report",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            isSubmittingPostReport = false
         }
     }
 
@@ -895,6 +952,17 @@ fun LinkedInContent(
                         showGroupChat = true
                     }
                 }
+                VormexMessagingService.ACTION_HACKATHONS -> {
+                    selectedTab = 3
+                    showFullMoreScreen = false
+                    showHackathonBoardScreen = true
+                }
+                VormexMessagingService.ACTION_SKILL_SWAP -> {
+                    selectedTab = 3
+                    showFullMoreScreen = false
+                    skillSwapInitialTab = link.tab ?: "requests"
+                    showSkillSwapScreen = true
+                }
                 VormexDeepLinks.ACTION_GROUP_INVITE_LINK -> {
                     link.groupInviteCode?.let { inviteCode ->
                         selectedTab = 3
@@ -967,6 +1035,11 @@ fun LinkedInContent(
                 }
                 com.kyant.backdrop.catalog.notifications.VormexMessagingService.ACTION_FIND_PEOPLE -> {
                     selectedTab = 1 // Find People tab
+                    showFullMoreScreen = false
+                    link.userId?.takeIf { it.isNotBlank() }?.let { matchedUserId ->
+                        pendingSmartMatchDeepLinkUserId = matchedUserId
+                        viewingProfileUserId = matchedUserId
+                    }
                 }
                 com.kyant.backdrop.catalog.notifications.VormexMessagingService.ACTION_STREAK -> {
                     showStreakDetailsScreen = true
@@ -995,6 +1068,13 @@ fun LinkedInContent(
         factory = FindPeopleViewModel.Factory(context)
     )
     val rewardsState by findPeopleViewModel.uiState.collectAsState()
+    LaunchedEffect(pendingSmartMatchDeepLinkUserId) {
+        pendingSmartMatchDeepLinkUserId ?: return@LaunchedEffect
+        findPeopleViewModel.selectTab(FindPeopleTab.SMART_MATCHES)
+        findPeopleViewModel.setSmartMatchFilter(SmartMatchFilter.ALL)
+        findPeopleViewModel.loadSmartMatches(forceRefresh = true)
+        pendingSmartMatchDeepLinkUserId = null
+    }
     val premiumRefreshSignal by PremiumCheckoutManager.refreshSignal.collectAsState()
     val rewardCardsViewModel: RewardCardsViewModel = viewModel(factory = RewardCardsViewModel.Factory(context))
     val rewardCardsState by rewardCardsViewModel.uiState.collectAsState()
@@ -1063,6 +1143,7 @@ fun LinkedInContent(
     val agentViewModel: AgentViewModel = viewModel(factory = AgentViewModel.Factory(context))
     val agentState by agentViewModel.uiState.collectAsState()
     val canUseAgent = uiState.currentUser?.canUseAgent == true
+    val canAccessProfileCustomization = uiState.currentUser?.canAccessProfileCustomization == true
     val canOpenAgent = uiState.isLoggedIn
     val isAgentVoiceLive =
         agentState.isVoiceSessionConnecting ||
@@ -1081,6 +1162,7 @@ fun LinkedInContent(
     )
 
     val agentSurface = when {
+        showTalentEngineScreen -> "talent_engine"
         showGrowthHubScreen -> "growth_hub"
         showNotificationsInbox -> "notifications"
         showProfileViewersScreen -> "profile_views"
@@ -1131,13 +1213,8 @@ fun LinkedInContent(
             showNotificationsInbox ||
             showProfileViewersScreen ||
             showHackathonBoardScreen ||
+            showTalentEngineScreen ||
             showGrowthHubScreen
-    val shouldShowInlineResultsOverlay =
-        uiState.isLoggedIn &&
-            !showAgentSheet &&
-            !shouldHideInlineResultsOverlay &&
-            visibleInlinePeople.isNotEmpty()
-
     LaunchedEffect(selectedTab, uiState.isLoggedIn) {
         if (uiState.isLoggedIn && selectedTab == 3) {
             findPeopleViewModel.loadPendingConnectionRequests()
@@ -1166,7 +1243,19 @@ fun LinkedInContent(
     LaunchedEffect(premiumRefreshSignal, uiState.isLoggedIn) {
         if (uiState.isLoggedIn && premiumRefreshSignal != 0L) {
             viewModel.refreshCurrentUser()
+            findPeopleViewModel.refreshDiscoveryPremiumState()
             ownProfileViewModel.loadProfile(userId = null, forceRefresh = true)
+        }
+    }
+
+    LaunchedEffect(
+        canAccessProfileCustomization,
+        showProfileCustomizationsScreen
+    ) {
+        if (!canAccessProfileCustomization) {
+            if (showProfileCustomizationsScreen) {
+                showProfileCustomizationsScreen = false
+            }
         }
     }
 
@@ -1232,8 +1321,13 @@ fun LinkedInContent(
         }
     }
 
-    LaunchedEffect(showAgentSheet, isAgentVoiceLive, reduceAnimations) {
-        if (showAgentSheet && isAgentVoiceLive && !autoMinimizedAgentSheetForActiveVoice) {
+    LaunchedEffect(showAgentSheet, isAgentVoiceLive, agentState.activeInlineResults, reduceAnimations) {
+        if (
+            showAgentSheet &&
+            isAgentVoiceLive &&
+            agentState.activeInlineResults == null &&
+            !autoMinimizedAgentSheetForActiveVoice
+        ) {
             autoMinimizedAgentSheetForActiveVoice = true
             minimizeAgentSheetForVoice = true
             if (!reduceAnimations) {
@@ -1253,6 +1347,7 @@ fun LinkedInContent(
         suspend fun resetOverlayNavigation() {
             val hadOverlay =
                 showGrowthHubScreen ||
+                    showTalentEngineScreen ||
                     showNotificationsInbox ||
                     showProfileViewersScreen ||
                     showMessagesScreen ||
@@ -1267,6 +1362,7 @@ fun LinkedInContent(
                     showGroupSettingsScreen ||
                     viewingProfileUserId != null
             showGrowthHubScreen = false
+            showTalentEngineScreen = false
             showNotificationsInbox = false
             showProfileViewersScreen = false
             showMessagesScreen = false
@@ -1375,12 +1471,8 @@ fun LinkedInContent(
             )
         }
 
-        if (uiState.isRestoringSession) {
-            SessionRestoreScreen(
-                contentColor = contentColor,
-                accentColor = accentColor
-            )
-        } else if (!uiState.isLoggedIn) {
+        if (!uiState.isLoggedIn && !uiState.isRestoringSession) {
+            val authScreenError = if (uiState.pendingVerificationEmail == null) uiState.error else null
             when (uiState.authScreen) {
                 AuthScreen.LOGIN -> LoginScreen(
                     backdrop = backdrop,
@@ -1388,9 +1480,10 @@ fun LinkedInContent(
                     accentColor = accentColor,
                     isLoading = uiState.isLoading,
                     isGoogleLoading = uiState.isGoogleLoading,
-                    error = uiState.error,
+                    error = authScreenError,
+                    savedAccountsCount = uiState.savedAccounts.size,
                     onLogin = { email, password -> viewModel.login(email, password) },
-                    onGoogleSignIn = { activity?.let { viewModel.googleSignIn(it) } },
+                    onGoogleSignIn = startGoogleSignIn,
                     onForgotPassword = { email ->
                         appScope.launch {
                             ApiClient.forgotPassword(email)
@@ -1413,22 +1506,26 @@ fun LinkedInContent(
                         }
                     },
                     onSignUpClick = { viewModel.showSignUp() },
+                    onOpenSavedAccounts = { showAccountSwitcherDialog = true },
                     onClearError = { viewModel.clearError() }
                 )
-                AuthScreen.SIGNUP -> SignUpScreen(
+                AuthScreen.SIGNUP,
+                AuthScreen.EMAIL_VERIFICATION -> SignUpScreen(
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     isLoading = uiState.isLoading,
                     isGoogleLoading = uiState.isGoogleLoading,
-                    error = uiState.error,
+                    error = authScreenError,
+                    savedAccountsCount = uiState.savedAccounts.size,
                     onSignUp = { email, password, name, username -> viewModel.register(email, password, name, username) },
-                    onGoogleSignIn = { activity?.let { viewModel.googleSignIn(it) } },
+                    onGoogleSignIn = startGoogleSignIn,
                     onLoginClick = { viewModel.showLogin() },
+                    onOpenSavedAccounts = { showAccountSwitcherDialog = true },
                     onClearError = { viewModel.clearError() }
                 )
             }
-        } else if (uiState.showOnboarding) {
+        } else if (!uiState.isRestoringSession && uiState.showOnboarding) {
             // Show onboarding wizard for new users
             ProfileSetupWizard(
                 onComplete = {
@@ -1519,6 +1616,7 @@ fun LinkedInContent(
                                     accentColor = accentColor,
                                     glassBackgroundKey = glassBackgroundKey,
                                     posts = uiState.posts,
+                                    managedAdPlacements = uiState.feedAdPlacements,
                                     storyGroups = uiState.storyGroups,
                                     // Reels data
                                     showReelsOnHome = showReelsOnHome,
@@ -1575,6 +1673,8 @@ fun LinkedInContent(
                                     viewingProfileUserId = userId
                                 },
                                 onMenuAction = handlePostMenuAction,
+                                onManagedAdImpression = { ad -> viewModel.trackManagedAdImpression(ad) },
+                                onManagedAdClick = { ad -> viewModel.trackManagedAdClick(ad) },
                                 onStoryClick = { groupIndex ->
                                     viewModel.openStoryViewer(groupIndex)
                                 },
@@ -1781,10 +1881,11 @@ fun LinkedInContent(
                             premiumDetailsRequestKey = premiumDetailsRequestKey,
                             quickHubAnimationKey = moreHubAnimationKey,
                             onOpenFullMoreScreen = { showFullMoreScreen = true },
+                            onCloseFullMoreScreen = { showFullMoreScreen = false },
                             onNavigateToProfile = { selectedTab = 4 },
                             onNavigateToConnectionRequests = { showConnectionRequestsScreen = true },
                             onNavigateToProfileCustomizations = {
-                                if (uiState.currentUser?.canAccessProfileCustomization == true) {
+                                if (canAccessProfileCustomization) {
                                     showProfileCustomizationsScreen = true
                                 } else {
                                     openPremiumDetails()
@@ -1800,22 +1901,30 @@ fun LinkedInContent(
                             onNavigateToTopNetworkers = { showTopNetworkersScreen = true },
                             onNavigateToOnboarding = { showOnboardingScreen = true },
                             onNavigateToSavedPosts = { showSavedPostsScreen = true },
+                            onNavigateToProfileInsights = { showProfileViewersScreen = true },
                             onNavigateToGrowthHub = { showGrowthHubScreen = true },
                             onNavigateToGames = { showGamesScreen = true },
+                            onNavigateToTalentEngine = { showTalentEngineScreen = true },
                             onNavigateToSkillPassport = { showSkillPassportScreen = true },
-                            onNavigateToSkillSwap = { showSkillSwapScreen = true },
+                            onNavigateToSkillSwap = {
+                                skillSwapInitialTab = "discover"
+                                showSkillSwapScreen = true
+                            },
                             onNavigateToHackathons = { showHackathonBoardScreen = true },
                             onOpenAiChat = openAgentPanel,
                             onOpenAgent = openAgentPanel,
 
                             onNavigateToNotificationSettings = { showNotificationSettingsScreen = true },
                             onNavigateToPrivacySettings = { showPrivacySettingsScreen = true },
+                            onNavigateToIdentitySafety = {
+                                context.startActivity(Intent(context, IdentitySafetyActivity::class.java))
+                            },
                             onNavigateToAppearanceSettings = { showAppearanceSettingsScreen = true },
                             onNavigateToHelp = { showHelpScreen = true },
                             onNavigateToInviteFriends = { showInviteFriendsScreen = true },
                             onNavigateToAbout = { showAboutScreen = true },
                             onNavigateToContact = { showContactScreen = true },
-                            onSwitchAccount = { showAccountExitDialog(switchAccount = true) },
+                            onSwitchAccount = { showAccountSwitcherDialog = true },
                             onLogout = { showAccountExitDialog(switchAccount = false) }
                         )
                         4 -> {
@@ -2013,7 +2122,17 @@ fun LinkedInContent(
                                 }
                             }
                         }
-                        LiquidBottomTab(onClick = { selectedTab = 4 }) {
+                        LiquidBottomTab(
+                            onClick = { selectedTab = 4 },
+                            onLongClick = {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                showAccountSwitcherDialog = true
+                            },
+                            onDoubleClick = {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                showAccountSwitcherDialog = true
+                            }
+                        ) {
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
@@ -2107,46 +2226,6 @@ fun LinkedInContent(
                 showGroupSettingsScreen = false
                 viewingProfileUserId = null
                 selectedTab = 1
-            }
-
-            if (shouldShowInlineResultsOverlay && canUseAgent) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .padding(
-                            bottom = when {
-                                isAgentVoiceLive -> 154.dp
-                                isInChatThread -> 110.dp
-                                else -> 154.dp
-                            }
-                        )
-                ) {
-                    agentState.activeInlineResults?.let { inlinePanel ->
-                        AgentInlineResultsSurface(
-                            panel = inlinePanel,
-                            dismissedIds = agentState.dismissedInlineResultIds,
-                            actionInProgress = agentState.inlineResultActionInProgress,
-                            contentColor = contentColor,
-                            accentColor = accentColor,
-                            isDarkTheme = isDarkTheme,
-                            modifier = Modifier.fillMaxWidth(),
-                            onViewProfile = {
-                                agentViewModel.dismissInlineResults()
-                                openInlineProfile(it)
-                            },
-                            onMessage = {
-                                agentViewModel.dismissInlineResults()
-                                openInlineChat(it)
-                            },
-                            onConnect = agentViewModel::sendInlineConnectionRequest,
-                            onCloseItem = agentViewModel::dismissInlineResultItem,
-                            onClosePanel = agentViewModel::dismissInlineResults,
-                            onSeeMore = openInlineFind
-                        )
-                    }
-                }
             }
 
             AnimatedVisibility(
@@ -2258,8 +2337,14 @@ fun LinkedInContent(
                     reelsState.previewReels
 
                 if (reelsToShow.isNotEmpty()) {
+                    val reelsManagedAdPlacements = if (reelsState.feedReels.isNotEmpty()) {
+                        reelsState.feedAdPlacements
+                    } else {
+                        emptyList()
+                    }
                     ReelsFeedScreen(
                         reels = reelsToShow,
+                        managedAdPlacements = reelsManagedAdPlacements,
                         initialIndex = reelsState.currentReelIndex,
                         onDismiss = {
                             val wasDraftPreview = reelsState.activeDraftPreviewId != null
@@ -2282,6 +2367,7 @@ fun LinkedInContent(
                             reelsViewModel.trackView(reelId, watchTime, completed)
                         },
                         onReelChanged = { index -> reelsViewModel.onReelChanged(index) },
+                        onFirstFrameRendered = { reelId -> reelsViewModel.recordFirstFrameRendered(reelId) },
                         playerForIndex = { index -> reelsViewModel.playerForIndex(index) },
                         onPlaybackError = { index -> reelsViewModel.handlePlaybackError(index) },
                         onRetryPlayback = { index -> reelsViewModel.retryPlayback(index) },
@@ -2289,6 +2375,8 @@ fun LinkedInContent(
                         onResumePlayback = { index -> reelsViewModel.resumePlayback(index) },
                         onReleasePlayback = { reelsViewModel.releasePlayback() },
                         onLoadMore = { reelsViewModel.loadMoreReels() },
+                        onManagedAdImpression = { ad -> reelsViewModel.trackManagedAdImpression(ad) },
+                        onManagedAdClick = { ad -> reelsViewModel.trackManagedAdClick(ad) },
                         isDraftPreview = reelsState.activeDraftPreviewId != null,
                         isPublishingDraft = reelsState.publishingDraftId != null,
                         onPublishDraftPreview = { reelId ->
@@ -2299,7 +2387,8 @@ fun LinkedInContent(
                                 reelsViewModel.closeReelsViewer()
                             }
                         },
-                        onCreateClick = openReelCreateSheet
+                        onCreateClick = openReelCreateSheet,
+                        showNativeAds = true
                     )
 
                     if (reelsState.showCommentsSheet) {
@@ -2567,42 +2656,6 @@ fun LinkedInContent(
                     applyStatusBarPadding = false
                 ) {
                     Column(Modifier.fillMaxSize()) {
-                        // Header with back button - hidden when in chat thread
-                        if (!isInChatThread) {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .statusBarsPadding()
-                                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    Modifier
-                                        .size(36.dp)
-                                        .clip(CircleShape)
-                                        .clickable { showMessagesScreen = false },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    BasicText(
-                                        "←",
-                                        style = TextStyle(
-                                            color = messagesContentColor,
-                                            fontSize = 22.sp
-                                        )
-                                    )
-                                }
-                                Spacer(Modifier.width(10.dp))
-                                BasicText(
-                                    "Messages",
-                                    style = TextStyle(
-                                        color = messagesContentColor,
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                )
-                            }
-                        }
-
                         // Chat content
                         ChatTabContent(
                             backdrop = backdrop,
@@ -2628,8 +2681,80 @@ fun LinkedInContent(
                                 chatViewModel.selectConversation(null)
                                 selectedTab = 0
                                 reelsViewModel.openSharedReel(sharedReel)
+                            },
+                            onOpenGroupShortcut = { groupId ->
+                                showMessagesScreen = false
+                                isInChatThread = false
+                                chatViewModel.selectConversation(null)
+                                openChatWithUserId = null
+                                openChatInitialDraft = null
+                                deepLinkConversationId = null
+                                viewingProfileUserId = null
+                                selectedTab = 3
+                                showGroupsScreen = false
+                                selectedGroupInviteCode = null
+                                selectedGroupId = groupId
+                                showGroupSettingsScreen = false
+                                showGroupChat = true
+                            },
+                            onCreateGroup = {
+                                showMessagesCreateGroupSheet = true
                             }
                         )
+
+                        if (showMessagesCreateGroupSheet) {
+                            CreateGroupModal(
+                                backdrop = backdrop,
+                                contentColor = messagesContentColor,
+                                accentColor = messagesAccentColor,
+                                isCreating = isCreatingGroupFromMessages,
+                                onDismiss = {
+                                    if (!isCreatingGroupFromMessages) {
+                                        showMessagesCreateGroupSheet = false
+                                    }
+                                },
+                                onCreate = { name, description, privacy, category, rules ->
+                                    if (isCreatingGroupFromMessages) return@CreateGroupModal
+                                    appScope.launch {
+                                        isCreatingGroupFromMessages = true
+                                        GroupsApiService.createGroup(
+                                            context = context,
+                                            name = name,
+                                            description = description,
+                                            privacy = privacy,
+                                            category = category,
+                                            rules = rules
+                                        ).fold(
+                                            onSuccess = {
+                                                isCreatingGroupFromMessages = false
+                                                showMessagesCreateGroupSheet = false
+                                                showMessagesScreen = false
+                                                isInChatThread = false
+                                                chatViewModel.selectConversation(null)
+                                                openChatWithUserId = null
+                                                openChatInitialDraft = null
+                                                deepLinkConversationId = null
+                                                viewingProfileUserId = null
+                                                selectedTab = 3
+                                                selectedGroupId = null
+                                                selectedGroupInviteCode = null
+                                                showGroupChat = false
+                                                showGroupSettingsScreen = false
+                                                showGroupsScreen = true
+                                            },
+                                            onFailure = { error ->
+                                                isCreatingGroupFromMessages = false
+                                                Toast.makeText(
+                                                    context,
+                                                    error.message ?: "Failed to create group",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        )
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -2729,11 +2854,13 @@ fun LinkedInContent(
                         backdrop = backdrop,
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        openCreateRequestKey = openCreateGroupRequestKey,
+                        onMessageShortcutChanged = { chatViewModel.refreshGroupShortcuts() },
                         onNavigateBack = { showGroupsScreen = false },
                         onNavigateToGroupDetail = { groupId -> selectedGroupId = groupId },
                         onNavigateToGroupChat = { groupId ->
                             selectedGroupId = groupId
-                            // Could show group chat here
+                            showGroupChat = true
                         }
                     )
                 }
@@ -2801,7 +2928,8 @@ fun LinkedInContent(
                             },
                             onNavigateToChat = { showGroupChat = true },
                             onNavigateToSettings = { showGroupSettingsScreen = true },
-                            onNavigateToProfile = { userId -> viewingProfileUserId = userId }
+                            onNavigateToProfile = { userId -> viewingProfileUserId = userId },
+                            onMessageShortcutChanged = { chatViewModel.refreshGroupShortcuts() }
                         )
                     }
                 }
@@ -2861,7 +2989,15 @@ fun LinkedInContent(
                             accentColor = accentColor,
                             currentUserId = uiState.currentUser?.id,
                             onNavigateBack = { showGroupChat = false },
-                            onNavigateToProfile = { userId -> viewingProfileUserId = userId }
+                            onNavigateToProfile = { userId -> viewingProfileUserId = userId },
+                            onNavigateToGroupDetail = {
+                                showGroupSettingsScreen = false
+                                showGroupChat = false
+                            },
+                            onNavigateToSettings = {
+                                showGroupChat = false
+                                showGroupSettingsScreen = true
+                            }
                         )
                     }
                 }
@@ -3056,6 +3192,10 @@ fun LinkedInContent(
                             showSavedPostsScreen = false
                             selectedTab = 0
                             reelsViewModel.loadReelById(reelId)
+                        },
+                        onNavigateToProfile = { userId ->
+                            showSavedPostsScreen = false
+                            viewingProfileUserId = userId
                         }
                     )
                 }
@@ -3230,6 +3370,13 @@ fun LinkedInContent(
                         onOpenGrowthHub = {
                             showNotificationsInbox = false
                             showGrowthHubScreen = true
+                        },
+                        onOpenSkillSwap = { tab ->
+                            showNotificationsInbox = false
+                            selectedTab = 3
+                            showFullMoreScreen = false
+                            skillSwapInitialTab = tab ?: "requests"
+                            showSkillSwapScreen = true
                         }
                     )
                 }
@@ -3275,16 +3422,10 @@ fun LinkedInContent(
                     glassMotionStyleKey = glassMotionStyleKey,
                     reduceAnimations = reduceAnimations
                 ) {
-                    when (activeGame) {
-                        GameType.NONE -> GamesHubScreen(
-                            contentColor = contentColor,
-                            onNavigateBack = { showGamesScreen = false },
-                            onSelectGame = { activeGame = it }
-                        )
-                        GameType.TIC_TAC_TOE -> TicTacToeGameScreen(contentColor = contentColor, onNavigateBack = { activeGame = GameType.NONE })
-                        GameType.TIC_TAC_TOE_ONLINE -> OnlineTicTacToeGameScreen(contentColor = contentColor, onNavigateBack = { activeGame = GameType.NONE })
-                        GameType.TAP_DUEL -> TapDuelGameScreen(contentColor = contentColor, onNavigateBack = { activeGame = GameType.NONE })
-                    }
+                    GamesHubScreen(
+                        contentColor = contentColor,
+                        onNavigateBack = { showGamesScreen = false }
+                    )
                 }
             }
 
@@ -3306,29 +3447,30 @@ fun LinkedInContent(
                         backdrop = backdrop,
                         contentColor = contentColor,
                         accentColor = accentColor,
-                        onNavigateBack = { showGrowthHubScreen = false },
-                        onOpenHookAction = { hook ->
-                            showGrowthHubScreen = false
-                            when {
-                                hook.action.label.contains("create post", ignoreCase = true) -> {
-                                    selectedTab = 2
-                                }
-                                hook.action.href.equals("/find-people", ignoreCase = true) -> {
-                                    selectedTab = 1
-                                }
-                                hook.action.href.equals("/onboarding", ignoreCase = true) ||
-                                    hook.action.href.equals("/profile/edit", ignoreCase = true) -> {
-                                    showOnboardingScreen = true
-                                }
-                                else -> {
-                                    selectedTab = 0
-                                }
-                            }
-                        },
-                        onOpenProfile = { userId ->
-                            showGrowthHubScreen = false
-                            viewingProfileUserId = userId
-                        }
+                        onNavigateBack = { showGrowthHubScreen = false }
+                    )
+                }
+            }
+
+            // Talent Engine Overlay
+            AnimatedVisibility(
+                visible = showTalentEngineScreen,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+            ) {
+                SectionOverlayContainer(
+                    backdrop = backdrop,
+                    themeMode = themeMode,
+                    glassBackgroundKey = glassBackgroundKey,
+                    accentColor = accentColor,
+                    glassMotionStyleKey = glassMotionStyleKey,
+                    reduceAnimations = reduceAnimations
+                ) {
+                    TalentEngineScreen(
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onNavigateBack = { showTalentEngineScreen = false }
                     )
                 }
             }
@@ -3355,6 +3497,7 @@ fun LinkedInContent(
                         onNavigateBack = { showSkillPassportScreen = false },
                         onOpenSkillSwap = {
                             showSkillPassportScreen = false
+                            skillSwapInitialTab = "discover"
                             showSkillSwapScreen = true
                         },
                         onOpenProfile = { userId ->
@@ -3383,6 +3526,7 @@ fun LinkedInContent(
                         backdrop = backdrop,
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        initialTab = skillSwapInitialTab,
                         onNavigateBack = { showSkillSwapScreen = false },
                         onOpenProfile = { userId ->
                             showSkillSwapScreen = false
@@ -3485,6 +3629,7 @@ fun LinkedInContent(
                         backdrop = backdrop,
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        canAccessProfileCustomization = canAccessProfileCustomization,
                         onNavigateBack = { showAppearanceSettingsScreen = false }
                     )
                 }
@@ -3609,9 +3754,389 @@ fun LinkedInContent(
                 onDismiss = { showSessionSummary = false }
             )
         }
+
+        uiState.pendingVerificationEmail?.takeIf { it.isNotBlank() }?.let { verificationEmail ->
+            EmailVerificationSheet(
+                contentColor = contentColor,
+                accentColor = accentColor,
+                email = verificationEmail,
+                isLoading = uiState.isLoading,
+                isSuccess = uiState.isEmailVerificationSuccess,
+                error = uiState.error,
+                onVerify = { code -> viewModel.verifyEmailOtp(code) },
+                onResend = { viewModel.resendVerificationCode() },
+                onLoginClick = { viewModel.showLogin() },
+                onClearError = { viewModel.clearError() },
+                onSuccessAnimationFinished = { viewModel.completeEmailVerificationAnimation() }
+            )
+        }
+
+        if (reportingPostId != null) {
+            SafetyReportDialog(
+                title = "Report post",
+                subtitle = "Tell Trust & Safety what is wrong with this post.",
+                contentColor = contentColor,
+                accentColor = accentColor,
+                blockLabel = "Also block this author",
+                isSubmitting = isSubmittingPostReport,
+                onDismiss = {
+                    if (!isSubmittingPostReport) reportingPostId = null
+                },
+                onSubmit = ::submitPostReport
+            )
+        }
+
+        if (showAccountSwitcherDialog) {
+            AccountSwitcherDialog(
+                accounts = uiState.savedAccounts,
+                currentUserId = uiState.currentUserId,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                onSwitchAccount = { userId ->
+                    resetAccountScopedNavigation()
+                    viewModel.switchToSavedAccount(userId)
+                },
+                onAddExistingAccount = {
+                    resetAccountScopedNavigation()
+                    viewModel.addExistingAccount()
+                },
+                onAddNewAccount = {
+                    resetAccountScopedNavigation()
+                    viewModel.addNewAccount()
+                },
+                onDismiss = { showAccountSwitcherDialog = false }
+            )
+        }
     }
     }
 }
+
+@Composable
+private fun AccountSwitcherDialog(
+    accounts: List<ApiClient.SavedAccountSession>,
+    currentUserId: String?,
+    contentColor: Color,
+    accentColor: Color,
+    onSwitchAccount: (String) -> Unit,
+    onAddExistingAccount: () -> Unit,
+    onAddNewAccount: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val isDarkDialog = contentColor.luminance() > 0.5f
+    val surfaceColor = if (isDarkDialog) Color(0xFF111827) else Color.White
+    val textColor = if (isDarkDialog) Color.White else Color(0xFF101828)
+    val secondaryTextColor = textColor.copy(alpha = 0.62f)
+    val dividerColor = textColor.copy(alpha = if (isDarkDialog) 0.12f else 0.08f)
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 22.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 430.dp)
+                    .wrapContentHeight()
+                    .clip(RoundedCornerShape(26.dp))
+                    .background(surfaceColor.copy(alpha = 0.98f))
+                    .border(1.dp, dividerColor, RoundedCornerShape(26.dp))
+                    .padding(18.dp)
+            ) {
+                BasicText(
+                    "Switch account",
+                    style = TextStyle(
+                        color = textColor,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+                Spacer(Modifier.height(4.dp))
+                BasicText(
+                    "Choose a saved account on this device.",
+                    style = TextStyle(
+                        color = secondaryTextColor,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
+                    )
+                )
+
+                Spacer(Modifier.height(16.dp))
+
+                if (accounts.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(textColor.copy(alpha = if (isDarkDialog) 0.06f else 0.04f))
+                            .padding(14.dp)
+                    ) {
+                        BasicText(
+                            "No saved accounts yet. Add one below to start switching faster.",
+                            style = TextStyle(
+                                color = secondaryTextColor,
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp
+                            )
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 292.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(accounts, key = { it.userId }) { account ->
+                            AccountSwitcherAccountRow(
+                                account = account,
+                                isCurrent = account.userId == currentUserId,
+                                textColor = textColor,
+                                secondaryTextColor = secondaryTextColor,
+                                accentColor = accentColor,
+                                isDarkDialog = isDarkDialog,
+                                onClick = { onSwitchAccount(account.userId) }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(14.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(dividerColor)
+                )
+                Spacer(Modifier.height(10.dp))
+
+                AccountSwitcherActionRow(
+                    title = "Add existing account",
+                    subtitle = "Sign in to another Vormex account",
+                    icon = Icons.AutoMirrored.Outlined.Login,
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    accentColor = accentColor,
+                    onClick = onAddExistingAccount
+                )
+                AccountSwitcherActionRow(
+                    title = "Add new account",
+                    subtitle = "Create a fresh Vormex account",
+                    icon = Icons.Outlined.PersonAddAlt1,
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    accentColor = accentColor,
+                    onClick = onAddNewAccount
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountSwitcherAccountRow(
+    account: ApiClient.SavedAccountSession,
+    isCurrent: Boolean,
+    textColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    isDarkDialog: Boolean,
+    onClick: () -> Unit
+) {
+    val context = LocalContext.current
+    val displayName = savedAccountDisplayName(account)
+    val subtitle = savedAccountSubtitle(account)
+    val profileImage = account.profileImage?.takeIf { it.isNotBlank() }
+    val rowColor = if (isCurrent) {
+        accentColor.copy(alpha = if (isDarkDialog) 0.22f else 0.14f)
+    } else {
+        textColor.copy(alpha = if (isDarkDialog) 0.06f else 0.04f)
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(rowColor)
+            .clickable(enabled = !isCurrent, onClick = onClick)
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(accentColor.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (profileImage != null) {
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(profileImage)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = displayName,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                )
+            } else {
+                BasicText(
+                    savedAccountInitials(displayName),
+                    style = TextStyle(
+                        color = accentColor,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+            }
+        }
+
+        Spacer(Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            BasicText(
+                displayName,
+                style = TextStyle(
+                    color = textColor,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(3.dp))
+            BasicText(
+                subtitle,
+                style = TextStyle(
+                    color = secondaryTextColor,
+                    fontSize = 12.sp
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        if (isCurrent) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.CheckCircle,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(17.dp)
+                )
+                BasicText(
+                    "Current",
+                    style = TextStyle(
+                        color = accentColor,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+            }
+        } else {
+            Icon(
+                imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
+                contentDescription = null,
+                tint = secondaryTextColor,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AccountSwitcherActionRow(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    textColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(accentColor.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = accentColor,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            BasicText(
+                title,
+                style = TextStyle(
+                    color = textColor,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+            Spacer(Modifier.height(2.dp))
+            BasicText(
+                subtitle,
+                style = TextStyle(
+                    color = secondaryTextColor,
+                    fontSize = 12.sp
+                )
+            )
+        }
+        Icon(
+            imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
+            contentDescription = null,
+            tint = secondaryTextColor,
+            modifier = Modifier.size(18.dp)
+        )
+    }
+}
+
+private fun savedAccountDisplayName(account: ApiClient.SavedAccountSession): String =
+    account.name?.takeIf { it.isNotBlank() }
+        ?: account.username?.takeIf { it.isNotBlank() }
+        ?: account.email?.takeIf { it.isNotBlank() }
+        ?: "Vormex account"
+
+private fun savedAccountSubtitle(account: ApiClient.SavedAccountSession): String {
+    val username = account.username?.takeIf { it.isNotBlank() }?.let { "@$it" }
+    val email = account.email?.takeIf { it.isNotBlank() }
+    return when {
+        username != null && email != null -> "$username - $email"
+        username != null -> username
+        email != null -> email
+        else -> "Saved on this device"
+    }
+}
+
+private fun savedAccountInitials(displayName: String): String =
+    displayName
+        .split(Regex("\\s+"))
+        .mapNotNull { token -> token.firstOrNull()?.uppercase() }
+        .take(2)
+        .joinToString("")
+        .ifBlank { "V" }
 
 @Composable
 private fun LinkedInTopBar(
@@ -3742,47 +4267,6 @@ private fun LinkedInTopBar(
     }
 }
 
-@Composable
-private fun SessionRestoreScreen(
-    contentColor: Color,
-    accentColor: Color
-) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(18.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(72.dp)
-                    .clip(CircleShape)
-                    .background(accentColor.copy(alpha = 0.12f))
-                    .border(1.dp, accentColor.copy(alpha = 0.32f), CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                BasicText(
-                    "V",
-                    style = TextStyle(
-                        color = accentColor,
-                        fontSize = 34.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
-                    )
-                )
-            }
-            CircularProgressIndicator(
-                modifier = Modifier.size(28.dp),
-                color = accentColor,
-                trackColor = contentColor.copy(alpha = 0.12f),
-                strokeWidth = 2.dp
-            )
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FeedScreen(
@@ -3791,6 +4275,7 @@ private fun FeedScreen(
     accentColor: Color,
     glassBackgroundKey: String = DefaultGlassBackgroundPresetKey,
     posts: List<Post> = emptyList(),
+    managedAdPlacements: List<ManagedAdPlacement> = emptyList(),
     storyGroups: List<StoryGroup> = emptyList(),
     // Reels data
     showReelsOnHome: Boolean = false,
@@ -3822,6 +4307,8 @@ private fun FeedScreen(
     onVotePoll: (String, String) -> Unit = { _, _ -> },
     onProfileClick: (String) -> Unit = {},
     onMenuAction: (String, String) -> Unit = { _, _ -> },
+    onManagedAdImpression: (ManagedAdPlacement) -> Unit = {},
+    onManagedAdClick: (ManagedAdPlacement) -> Unit = {},
     // Story callbacks
     onStoryClick: (Int) -> Unit = {},
     onAddStoryClick: () -> Unit = {},
@@ -3850,6 +4337,9 @@ private fun FeedScreen(
         derivedStateOf { listState.isScrollInProgress }
     }
     val reduceFeedCardMotion = reduceAnimations || isFeedScrolling
+    val canRequestNativeAds by VormexAdsManager.canRequestAds.collectAsState()
+    val showNativeAds = BuildConfig.ADS_ENABLED && canRequestNativeAds
+    val activeManagedAdPlacements = if (BuildConfig.ADS_ENABLED) managedAdPlacements else emptyList()
 
     // Widget positions for distributing engagement widgets in feed
     // Random positions within ranges: ensures varied feed experience on each app open
@@ -3864,8 +4354,14 @@ private fun FeedScreen(
         )
     }
 
-    val feedRows = remember(posts, retentionState, widgetPositions) {
-        buildHomeFeedRows(posts, retentionState, widgetPositions)
+    val feedRows = remember(posts, retentionState, widgetPositions, activeManagedAdPlacements, showNativeAds) {
+        buildHomeFeedRows(
+            posts = posts,
+            retentionState = retentionState,
+            widgetPositions = widgetPositions,
+            managedAdPlacements = activeManagedAdPlacements,
+            includeNativeAds = showNativeAds
+        )
     }
 
     // System default fling matches native RecyclerView-style physics and avoids custom decay work during scroll.
@@ -4080,6 +4576,24 @@ private fun FeedScreen(
                         onMenuAction = onMenuAction,
                         reduceAnimations = reduceFeedCardMotion,
                         playDefaultVideos = !reduceAnimations
+                    )
+                }
+                is FeedListRow.NativeAdItem -> {
+                    VormexNativeFeedAd(
+                        slotKey = row.slotKey,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isLightTheme = isLightTheme
+                    )
+                }
+                is FeedListRow.ManagedAdItem -> {
+                    ManagedFeedAdCard(
+                        ad = row.ad,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isLightTheme = isLightTheme,
+                        onImpression = onManagedAdImpression,
+                        onClick = onManagedAdClick
                     )
                 }
                 FeedListRow.WidgetPeopleLikeYou,
@@ -5034,6 +5548,7 @@ private fun MoreScreen(
     premiumDetailsRequestKey: Int = 0,
     quickHubAnimationKey: Int = 0,
     onOpenFullMoreScreen: () -> Unit = {},
+    onCloseFullMoreScreen: () -> Unit = {},
     onNavigateToProfile: () -> Unit = {},
     onNavigateToConnectionRequests: () -> Unit = {},
     onNavigateToProfileCustomizations: () -> Unit = {},
@@ -5045,8 +5560,10 @@ private fun MoreScreen(
     onNavigateToTopNetworkers: () -> Unit = {},
     onNavigateToOnboarding: () -> Unit = {},
     onNavigateToSavedPosts: () -> Unit = {},
+    onNavigateToProfileInsights: () -> Unit = {},
     onNavigateToGrowthHub: () -> Unit = {},
     onNavigateToGames: () -> Unit = {},
+    onNavigateToTalentEngine: () -> Unit = {},
     onNavigateToSkillPassport: () -> Unit = {},
     onNavigateToSkillSwap: () -> Unit = {},
     onNavigateToHackathons: () -> Unit = {},
@@ -5055,6 +5572,7 @@ private fun MoreScreen(
 
     onNavigateToNotificationSettings: () -> Unit = {},
     onNavigateToPrivacySettings: () -> Unit = {},
+    onNavigateToIdentitySafety: () -> Unit = {},
     onNavigateToAppearanceSettings: () -> Unit = {},
     onNavigateToHelp: () -> Unit = {},
     onNavigateToInviteFriends: () -> Unit = {},
@@ -5064,6 +5582,7 @@ private fun MoreScreen(
     onLogout: () -> Unit = {}
 ) {
     var showPremiumDetailsScreen by rememberSaveable { mutableStateOf(false) }
+    var showCreatorProDetailsScreen by rememberSaveable { mutableStateOf(false) }
     val pendingRequestsCount = connectionRequests.size
     val pendingRequestsBadge = when {
         pendingRequestsCount <= 0 -> null
@@ -5079,14 +5598,6 @@ private fun MoreScreen(
                 badgeLabel = pendingRequestsBadge,
                 showIndicatorDot = pendingRequestsCount > 0,
                 onClick = onNavigateToConnectionRequests
-            )
-        )
-        add(
-            MoreQuickAction(
-                title = "vormex",
-                label = "vormex",
-                icon = Icons.Outlined.ChatBubbleOutline,
-                onClick = onOpenAiChat
             )
         )
         add(
@@ -5116,22 +5627,6 @@ private fun MoreScreen(
         )
         add(
             MoreQuickAction(
-                title = "Skill Passport",
-                label = "Passport",
-                icon = Icons.Outlined.Verified,
-                onClick = onNavigateToSkillPassport
-            )
-        )
-        add(
-            MoreQuickAction(
-                title = "Skill Swap",
-                label = "Swap",
-                icon = Icons.Outlined.Groups,
-                onClick = onNavigateToSkillSwap
-            )
-        )
-        add(
-            MoreQuickAction(
                 title = "Hackathons",
                 label = "Hacks",
                 icon = Icons.Outlined.EmojiEvents,
@@ -5141,17 +5636,9 @@ private fun MoreScreen(
         add(
             MoreQuickAction(
                 title = "Growth hub",
-                label = "Growth",
+                label = "Soon",
                 icon = Icons.Outlined.School,
                 onClick = onNavigateToGrowthHub
-            )
-        )
-        add(
-            MoreQuickAction(
-                title = "Notifications",
-                label = "Alerts",
-                icon = Icons.Outlined.NotificationsNone,
-                onClick = onNavigateToNotificationSettings
             )
         )
     }
@@ -5160,13 +5647,26 @@ private fun MoreScreen(
         showPremiumDetailsScreen = false
     }
 
+    BackHandler(enabled = showCreatorProDetailsScreen) {
+        showCreatorProDetailsScreen = false
+    }
+
     LaunchedEffect(premiumDetailsRequestKey) {
         if (premiumDetailsRequestKey > 0) {
             showPremiumDetailsScreen = true
         }
     }
 
-    if (showPremiumDetailsScreen) {
+    if (showCreatorProDetailsScreen) {
+        MoreCreatorProDetailsScreen(
+            backdrop = backdrop,
+            contentColor = contentColor,
+            accentColor = accentColor,
+            isGlassTheme = isGlassTheme,
+            currentUserId = currentUser?.id,
+            onNavigateBack = { showCreatorProDetailsScreen = false }
+        )
+    } else if (showPremiumDetailsScreen) {
         MorePremiumDetailsScreen(
             backdrop = backdrop,
             contentColor = contentColor,
@@ -5190,7 +5690,9 @@ private fun MoreScreen(
             connectionRequestsError = connectionRequestsError,
             hasPendingGroupMessages = hasPendingGroupMessages,
             hiddenQuickActionTitles = emptySet(),
+            onNavigateBack = onCloseFullMoreScreen,
             onOpenPremiumDetails = { showPremiumDetailsScreen = true },
+            onOpenCreatorProDetails = { showCreatorProDetailsScreen = true },
             onNavigateToProfile = onNavigateToProfile,
             onNavigateToConnectionRequests = onNavigateToConnectionRequests,
             onNavigateToProfileCustomizations = onNavigateToProfileCustomizations,
@@ -5202,8 +5704,10 @@ private fun MoreScreen(
             onNavigateToTopNetworkers = onNavigateToTopNetworkers,
             onNavigateToOnboarding = onNavigateToOnboarding,
             onNavigateToSavedPosts = onNavigateToSavedPosts,
+            onNavigateToProfileInsights = onNavigateToProfileInsights,
             onNavigateToGrowthHub = onNavigateToGrowthHub,
             onNavigateToGames = onNavigateToGames,
+            onNavigateToTalentEngine = onNavigateToTalentEngine,
             onNavigateToSkillPassport = onNavigateToSkillPassport,
             onNavigateToSkillSwap = onNavigateToSkillSwap,
             onNavigateToHackathons = onNavigateToHackathons,
@@ -5211,6 +5715,7 @@ private fun MoreScreen(
             onOpenAgent = onOpenAgent,
             onNavigateToNotificationSettings = onNavigateToNotificationSettings,
             onNavigateToPrivacySettings = onNavigateToPrivacySettings,
+            onNavigateToIdentitySafety = onNavigateToIdentitySafety,
             onNavigateToAppearanceSettings = onNavigateToAppearanceSettings,
             onNavigateToHelp = onNavigateToHelp,
             onNavigateToInviteFriends = onNavigateToInviteFriends,
@@ -5245,7 +5750,9 @@ private fun MoreFullScreen(
     connectionRequestsError: String? = null,
     hasPendingGroupMessages: Boolean = false,
     hiddenQuickActionTitles: Set<String> = emptySet(),
+    onNavigateBack: () -> Unit = {},
     onOpenPremiumDetails: () -> Unit = {},
+    onOpenCreatorProDetails: () -> Unit = {},
     onNavigateToProfile: () -> Unit = {},
     onNavigateToConnectionRequests: () -> Unit = {},
     onNavigateToProfileCustomizations: () -> Unit = {},
@@ -5257,8 +5764,10 @@ private fun MoreFullScreen(
     onNavigateToTopNetworkers: () -> Unit = {},
     onNavigateToOnboarding: () -> Unit = {},
     onNavigateToSavedPosts: () -> Unit = {},
+    onNavigateToProfileInsights: () -> Unit = {},
     onNavigateToGrowthHub: () -> Unit = {},
     onNavigateToGames: () -> Unit = {},
+    onNavigateToTalentEngine: () -> Unit = {},
     onNavigateToSkillPassport: () -> Unit = {},
     onNavigateToSkillSwap: () -> Unit = {},
     onNavigateToHackathons: () -> Unit = {},
@@ -5266,6 +5775,7 @@ private fun MoreFullScreen(
     onOpenAgent: () -> Unit = {},
     onNavigateToNotificationSettings: () -> Unit = {},
     onNavigateToPrivacySettings: () -> Unit = {},
+    onNavigateToIdentitySafety: () -> Unit = {},
     onNavigateToAppearanceSettings: () -> Unit = {},
     onNavigateToHelp: () -> Unit = {},
     onNavigateToInviteFriends: () -> Unit = {},
@@ -5283,25 +5793,25 @@ private fun MoreFullScreen(
     val isDarkSurface = rememberMoreUsesDarkSurface(isGlassTheme = isGlassTheme)
     val pageBackground = Color.Transparent
     val sectionSurfaceColor = if (isDarkSurface) {
-        Color.White.copy(alpha = if (isGlassTheme) 0.06f else 0.05f)
+        Color.White.copy(alpha = if (isGlassTheme) 0.03f else 0.02f)
     } else {
-        Color.White.copy(alpha = if (isGlassTheme) 0.22f else 0.68f)
-    }
-    val searchSurfaceColor = if (isDarkSurface) {
-        Color.White.copy(alpha = if (isGlassTheme) 0.08f else 0.06f)
-    } else {
-        Color.White.copy(alpha = if (isGlassTheme) 0.26f else 0.58f)
+        Color.White.copy(alpha = if (isGlassTheme) 0.08f else 0.18f)
     }
     val dividerColor = if (isDarkSurface) {
         Color.White.copy(alpha = if (isGlassTheme) 0.10f else 0.08f)
     } else {
         Color.Black.copy(alpha = if (isGlassTheme) 0.10f else 0.07f)
     }
+    val groupDividerColor = if (isDarkSurface) {
+        Color.White.copy(alpha = if (isGlassTheme) 0.12f else 0.08f)
+    } else {
+        Color.Black.copy(alpha = if (isGlassTheme) 0.10f else 0.06f)
+    }
     val secondaryTextColor = contentColor.copy(alpha = if (isDarkSurface) 0.66f else 0.58f)
-    val sectionHeaderColor = contentColor.copy(alpha = if (isDarkSurface) 0.72f else 0.48f)
+    val sectionHeaderColor = contentColor.copy(alpha = if (isDarkSurface) 0.68f else 0.56f)
     val destructiveColor = if (isDarkSurface) Color(0xFFFF7A7A) else Color(0xFFD33A3A)
-    var searchQuery by rememberSaveable { mutableStateOf("") }
     val pendingRequestsCount = connectionRequests.size
+    val hasPremiumAccess = currentUser?.isPremium == true
     val canAccessProfileCustomization = currentUser?.canAccessProfileCustomization == true
     val connectionRequestsSubtitle = when {
         isLoadingConnectionRequests && pendingRequestsCount == 0 -> "Checking for incoming requests"
@@ -5310,50 +5820,41 @@ private fun MoreFullScreen(
         pendingRequestsCount == 1 -> "1 person is waiting for your reply"
         else -> "$pendingRequestsCount people are waiting for your reply"
     }
-
-    val accountItems = mutableListOf<MoreSettingsItem>().apply {
-        if (currentUser == null) {
-            add(
-                MoreSettingsItem(
-                    title = "Profile",
-                    subtitle = "View and edit your profile",
-                    icon = Icons.Outlined.PersonOutline,
-                    onClick = onNavigateToProfile
-                )
-            )
-        }
-        add(
-            MoreSettingsItem(
-                title = "Saved",
-                subtitle = "Posts you've bookmarked",
-                icon = Icons.Outlined.BookmarkBorder,
-                onClick = onNavigateToSavedPosts
-            )
-        )
-        add(
-            MoreSettingsItem(
-                title = "Profile preferences",
-                subtitle = "Goals, interests and matching settings",
-                icon = Icons.Outlined.Description,
-                onClick = onNavigateToOnboarding
-            )
-        )
-    }
+    val accountCenterSubtitle = currentUser?.let { user ->
+        listOfNotNull(
+            user.name?.takeIf { it.isNotBlank() },
+            user.username?.takeIf { it.isNotBlank() }?.let { "@$it" }
+        ).joinToString(" • ").ifBlank { "Profile and account details" }
+    } ?: "Profile, security, saved accounts and preferences"
 
     val sections = listOf(
         MoreSettingsSection(
             title = "Your account",
-            items = accountItems
-        ),
-        MoreSettingsSection(
-            title = "Profile customizations",
-            items = if (canAccessProfileCustomization) {
-                listOf(
+            items = buildList {
+                add(
+                    MoreSettingsItem(
+                        title = "Account center",
+                        subtitle = accountCenterSubtitle,
+                        icon = Icons.Outlined.PersonOutline,
+                        onClick = onNavigateToProfile,
+                        searchTerms = listOf("profile", "account", "security", "details", "saved accounts")
+                    )
+                )
+                add(
+                    MoreSettingsItem(
+                        title = "Profile preferences",
+                        subtitle = "Goals, interests and matching settings",
+                        icon = Icons.Outlined.Description,
+                        onClick = onNavigateToOnboarding
+                    )
+                )
+                add(
                     MoreSettingsItem(
                         title = "Customize your profile",
-                        subtitle = "Frames, avatar preview, Big Bad Wolfie and Morty Dance loaders",
+                        subtitle = "Frames, avatar preview and profile loaders",
                         icon = Icons.Outlined.Palette,
                         onClick = onNavigateToProfileCustomizations,
+                        trailingLabel = if (canAccessProfileCustomization) null else "Premium",
                         searchTerms = listOf(
                             "profile customization",
                             "custom",
@@ -5372,13 +5873,17 @@ private fun MoreFullScreen(
                         )
                     )
                 )
-            } else {
-                emptyList()
             }
         ),
         MoreSettingsSection(
-            title = "Connections",
+            title = "How you use Vormex",
             items = listOf(
+                MoreSettingsItem(
+                    title = "Saved",
+                    subtitle = "Profiles, posts and reels you've bookmarked",
+                    icon = Icons.Outlined.BookmarkBorder,
+                    onClick = onNavigateToSavedPosts
+                ),
                 MoreSettingsItem(
                     title = "Connection requests",
                     subtitle = connectionRequestsSubtitle,
@@ -5386,12 +5891,19 @@ private fun MoreFullScreen(
                     onClick = onNavigateToConnectionRequests,
                     trailingLabel = pendingRequestsCount.takeIf { it > 0 }?.toString(),
                     showIndicatorDot = pendingRequestsCount > 0
-                )
-            )
-        ),
-        MoreSettingsSection(
-            title = "How you use Vormex",
-            items = listOf(
+                ),
+                MoreSettingsItem(
+                    title = "Streaks & activity",
+                    subtitle = "Networking, login, posting, messaging",
+                    icon = Icons.Outlined.Schedule,
+                    onClick = onNavigateToStreakDetails
+                ),
+                MoreSettingsItem(
+                    title = "Permissions & notifications",
+                    subtitle = "System access, push alerts, location",
+                    icon = Icons.Outlined.AdminPanelSettings,
+                    onClick = onNavigateToNotificationSettings
+                ),
                 MoreSettingsItem(
                     title = "Weekly goals",
                     subtitle = goalsProgressText,
@@ -5401,22 +5913,16 @@ private fun MoreFullScreen(
                     showIndicatorDot = goalsData.streakAtRisk
                 ),
                 MoreSettingsItem(
-                    title = "Streaks & activity",
-                    subtitle = "Networking, login, posting, messaging",
-                    icon = Icons.Outlined.Schedule,
-                    onClick = onNavigateToStreakDetails
+                    title = "Reels",
+                    subtitle = "Watch short videos",
+                    icon = Icons.Outlined.SmartDisplay,
+                    onClick = onNavigateToReels
                 ),
                 MoreSettingsItem(
-                    title = "Top networkers",
-                    subtitle = "Weekly and monthly leaderboard",
-                    icon = Icons.Outlined.EmojiEvents,
-                    onClick = onNavigateToTopNetworkers
-                ),
-                MoreSettingsItem(
-                    title = "Notifications",
-                    subtitle = "Push, digest and alerts",
-                    icon = Icons.Outlined.NotificationsNone,
-                    onClick = onNavigateToNotificationSettings
+                    title = "Games",
+                    subtitle = "Games section",
+                    icon = Icons.Outlined.SportsEsports,
+                    onClick = onNavigateToGames
                 )
             )
         ),
@@ -5425,11 +5931,69 @@ private fun MoreFullScreen(
             items = buildList {
                 add(
                     MoreSettingsItem(
+                        title = "Premium",
+                        subtitle = "Priority reach, profile tools and AI assistance",
+                        icon = Icons.Outlined.WorkspacePremium,
+                        onClick = onOpenPremiumDetails,
+                        trailingLabel = if (hasPremiumAccess) "Active" else "Not subscribed",
+                        searchTerms = listOf("premium", "pro", "upgrade", "subscription", "member", "gift")
+                    )
+                )
+                add(
+                    MoreSettingsItem(
+                        title = "Creator Pro",
+                        subtitle = "Audience analytics, paid sessions and creator amplification",
+                        icon = Icons.Outlined.WorkspacePremium,
+                        onClick = onOpenCreatorProDetails,
+                        searchTerms = listOf(
+                            "creator",
+                            "creator pro",
+                            "monetized",
+                            "paid dm",
+                            "paid sessions",
+                            "analytics",
+                            "portfolio",
+                            "showcase"
+                        )
+                    )
+                )
+                add(
+                    MoreSettingsItem(
+                        title = "Profile insights",
+                        subtitle = "Who viewed you, saved you and matched with you",
+                        icon = Icons.Outlined.Insights,
+                        onClick = if (hasPremiumAccess) onNavigateToProfileInsights else onOpenPremiumDetails,
+                        trailingLabel = if (hasPremiumAccess) null else "Premium",
+                        searchTerms = listOf("insights", "analytics", "profile views", "saved", "bookmarked", "match rate")
+                    )
+                )
+                add(
+                    MoreSettingsItem(
                         title = "vormex",
                         subtitle = "Ask vormex to help inside the app",
                         icon = Icons.Outlined.ChatBubbleOutline,
                         onClick = onOpenAiChat,
                         searchTerms = listOf("ai", "agent", "vormex", "chat", "assistant")
+                    )
+                )
+                add(
+                    MoreSettingsItem(
+                        title = "Talent Engine",
+                        subtitle = "Selected -> trained -> tasked -> placed",
+                        icon = Icons.Outlined.TrackChanges,
+                        onClick = onNavigateToTalentEngine,
+                        trailingLabel = "New",
+                        showIndicatorDot = true,
+                        searchTerms = listOf(
+                            "talent",
+                            "talent engine",
+                            "training",
+                            "tasks",
+                            "opportunities",
+                            "placement",
+                            "cohort",
+                            "vormex team"
+                        )
                     )
                 )
                 add(
@@ -5444,9 +6008,11 @@ private fun MoreFullScreen(
                 add(
                     MoreSettingsItem(
                         title = "Growth hub",
-                        subtitle = "Jobs, learning, AI coach, rewards",
+                        subtitle = "Career growth tools open soon",
                         icon = Icons.Outlined.School,
-                        onClick = onNavigateToGrowthHub
+                        onClick = onNavigateToGrowthHub,
+                        trailingLabel = "Locked",
+                        searchTerms = listOf("growth", "career", "jobs", "learning", "ai coach", "rewards", "opens soon")
                     )
                 )
                 add(
@@ -5469,48 +6035,57 @@ private fun MoreFullScreen(
                 )
                 add(
                     MoreSettingsItem(
-                        title = "Groups",
-                        subtitle = "Connect with communities",
-                        icon = Icons.Outlined.Groups,
-                        showIndicatorDot = hasPendingGroupMessages,
-                        onClick = onNavigateToGroups
-                    )
-                )
-                add(
-                    MoreSettingsItem(
-                        title = "Circles",
-                        subtitle = "Share with close friends",
-                        icon = Icons.Default.FavoriteBorder,
-                        onClick = onNavigateToCircles
-                    )
-                )
-                add(
-                    MoreSettingsItem(
-                        title = "Reels",
-                        subtitle = "Watch short videos",
-                        icon = Icons.Outlined.SmartDisplay,
-                        onClick = onNavigateToReels
-                    )
-                )
-                add(
-                    MoreSettingsItem(
-                        title = "Games",
-                        subtitle = "Play Vormex Connect",
-                        icon = Icons.Outlined.SportsEsports,
-                        onClick = onNavigateToGames
+                        title = "Top networkers",
+                        subtitle = "Weekly and monthly leaderboard",
+                        icon = Icons.Outlined.EmojiEvents,
+                        onClick = onNavigateToTopNetworkers
                     )
                 )
             }
         ),
         MoreSettingsSection(
-            title = "Who can see your content",
+            title = "Communities",
             items = listOf(
                 MoreSettingsItem(
-                    title = "Privacy",
-                    subtitle = "Profile visibility and messaging",
-                    icon = Icons.Outlined.Lock,
-                    onClick = onNavigateToPrivacySettings
+                    title = "Groups",
+                    subtitle = "Connect with communities",
+                    icon = Icons.Outlined.Groups,
+                    showIndicatorDot = hasPendingGroupMessages,
+                    onClick = onNavigateToGroups
                 ),
+                MoreSettingsItem(
+                    title = "Circles",
+                    subtitle = "Share with close friends",
+                    icon = Icons.Default.FavoriteBorder,
+                    onClick = onNavigateToCircles
+                )
+            )
+        ),
+        MoreSettingsSection(
+            title = "Who can see your content",
+            items = buildList {
+                add(
+                    MoreSettingsItem(
+                        title = "Privacy",
+                        subtitle = "Profile visibility and messaging",
+                        icon = Icons.Outlined.Lock,
+                        onClick = onNavigateToPrivacySettings
+                    )
+                )
+                add(
+                    MoreSettingsItem(
+                        title = "Identity & Safety",
+                        subtitle = "Student verification, ID review, reports and blocks",
+                        icon = Icons.Outlined.Shield,
+                        onClick = onNavigateToIdentitySafety,
+                        searchTerms = listOf("identity", "safety", "student", "verify", "verification", "id", "block", "report")
+                    )
+                )
+            }
+        ),
+        MoreSettingsSection(
+            title = "App settings",
+            items = listOf(
                 MoreSettingsItem(
                     title = "Appearance",
                     subtitle = "Theme, font and accessibility",
@@ -5553,7 +6128,7 @@ private fun MoreFullScreen(
             items = listOf(
                 MoreSettingsItem(
                     title = "Switch account",
-                    subtitle = "Sign out and choose another account",
+                    subtitle = "Choose a saved account on this device",
                     icon = Icons.Outlined.PersonOutline,
                     onClick = onSwitchAccount
                 ),
@@ -5577,162 +6152,66 @@ private fun MoreFullScreen(
         }
     }
 
-    val normalizedQuery = searchQuery.trim()
-    val showPremiumSection = normalizedQuery.isBlank() ||
-        normalizedQuery.contains("premium", ignoreCase = true) ||
-        normalizedQuery.contains("pro", ignoreCase = true) ||
-        normalizedQuery.contains("upgrade", ignoreCase = true) ||
-        normalizedQuery.contains("subscription", ignoreCase = true) ||
-        normalizedQuery.contains("member", ignoreCase = true) ||
-        normalizedQuery.contains("gift", ignoreCase = true)
-    val filteredSections = visibleSections.mapNotNull { section ->
-        val filteredItems = if (normalizedQuery.isBlank()) {
-            section.items
-        } else {
-            section.items.filter { item ->
-                item.title.contains(normalizedQuery, ignoreCase = true) ||
-                    item.subtitle.contains(normalizedQuery, ignoreCase = true) ||
-                    item.searchTerms.any { term ->
-                        term.contains(normalizedQuery, ignoreCase = true)
-                    }
-            }
-        }
-        if (filteredItems.isNotEmpty()) {
-            section.copy(items = filteredItems)
-        } else {
-            null
-        }
-    }
-
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .background(pageBackground)
     ) {
+        MoreFullScreenTopBar(
+            title = "Settings and activity",
+            contentColor = contentColor,
+            onBack = onNavigateBack
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(dividerColor)
+        )
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 18.dp)
                 .padding(bottom = 110.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                BasicText(
-                    "Settings and activity",
-                    style = TextStyle(
-                        color = contentColor,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+            visibleSections.forEachIndexed { index, section ->
+                if (index > 0) {
+                    MoreSettingsGroupDivider(groupDividerColor)
+                }
+
+                MoreSettingsListSectionHeader(
+                    title = section.title,
+                    contentColor = sectionHeaderColor,
+                    trailingLabel = if (section.title == "Your account") "Vormex" else null
                 )
-            }
-
-            MoreSearchBar(
-                query = searchQuery,
-                onQueryChange = { searchQuery = it },
-                backdrop = backdrop,
-                isGlassTheme = isGlassTheme,
-                surfaceColor = searchSurfaceColor,
-                contentColor = contentColor,
-                placeholderColor = secondaryTextColor,
-                cursorColor = accentColor
-            )
-
-            if (showPremiumSection) {
-                MorePremiumSection(
+                MoreSettingsSectionCard(
+                    items = section.items,
                     backdrop = backdrop,
                     isGlassTheme = isGlassTheme,
-                    sectionSurfaceColor = sectionSurfaceColor,
-                    dividerColor = dividerColor,
+                    surfaceColor = sectionSurfaceColor,
+                    borderColor = dividerColor,
                     contentColor = contentColor,
                     secondaryTextColor = secondaryTextColor,
                     accentColor = accentColor,
-                    sectionHeaderColor = sectionHeaderColor,
-                    currentUser = currentUser,
-                    onOpenPremiumDetails = onOpenPremiumDetails
+                    destructiveColor = destructiveColor
                 )
             }
 
-            filteredSections.forEach { section ->
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MoreSectionHeader(section.title, sectionHeaderColor)
+            MoreTestPremiumOverrideSection(
+                backdrop = backdrop,
+                isGlassTheme = isGlassTheme,
+                surfaceColor = sectionSurfaceColor,
+                borderColor = dividerColor,
+                groupDividerColor = groupDividerColor,
+                contentColor = contentColor,
+                secondaryTextColor = secondaryTextColor,
+                sectionHeaderColor = sectionHeaderColor,
+                accentColor = accentColor,
+                currentUser = currentUser
+            )
 
-                    if (section.title == "Your account" && currentUser != null && normalizedQuery.isBlank()) {
-                        MoreCurrentUserCard(
-                            user = currentUser,
-                            backdrop = backdrop,
-                            isGlassTheme = isGlassTheme,
-                            surfaceColor = sectionSurfaceColor,
-                            borderColor = dividerColor,
-                            contentColor = contentColor,
-                            secondaryTextColor = secondaryTextColor,
-                            onClick = onNavigateToProfile
-                        )
-                    }
-
-                    MoreSettingsSectionCard(
-                        items = section.items,
-                        backdrop = backdrop,
-                        isGlassTheme = isGlassTheme,
-                        surfaceColor = sectionSurfaceColor,
-                        borderColor = dividerColor,
-                        contentColor = contentColor,
-                        secondaryTextColor = secondaryTextColor,
-                        accentColor = accentColor,
-                        destructiveColor = destructiveColor
-                    )
-                }
-            }
-
-            if (filteredSections.isEmpty() && !showPremiumSection) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(18.dp))
-                        .then(
-                            if (isGlassTheme) {
-                                Modifier.drawBackdrop(
-                                    backdrop = backdrop,
-                                    shape = { RoundedRectangle(18.dp) },
-                                    effects = {
-                                        vibrancy()
-                                        blur(14f.dp.toPx())
-                                        lens(6f.dp.toPx(), 12f.dp.toPx())
-                                    },
-                                    onDrawSurface = {
-                                        drawRect(sectionSurfaceColor)
-                                    }
-                                )
-                            } else {
-                                Modifier.background(sectionSurfaceColor)
-                            }
-                        )
-                        .border(1.dp, dividerColor, RoundedCornerShape(18.dp))
-                        .padding(horizontal = 18.dp, vertical = 20.dp)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        BasicText(
-                            "No settings found",
-                            style = TextStyle(
-                                color = contentColor,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        )
-                        BasicText(
-                            "Try a different search term.",
-                            style = TextStyle(
-                                color = secondaryTextColor,
-                                fontSize = 12.sp
-                            )
-                        )
-                    }
-                }
-            }
+            Spacer(Modifier.height(18.dp))
         }
     }
 }
@@ -5906,17 +6385,57 @@ private fun MorePremiumSection(
     onOpenPremiumDetails: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val premiumRefreshSignal by PremiumCheckoutManager.refreshSignal.collectAsState()
     var premiumState by remember(currentUser?.id) { mutableStateOf<PremiumSubscriptionResponse?>(null) }
+    var isUpdatingTestPremium by remember(currentUser?.id) { mutableStateOf(false) }
+    var testPremiumError by remember(currentUser?.id) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(currentUser?.id, premiumRefreshSignal) {
         if (currentUser == null) {
             premiumState = null
+            testPremiumError = null
             return@LaunchedEffect
         }
 
         ApiClient.getPremiumSubscription(context)
-            .onSuccess { premiumState = it }
+            .onSuccess {
+                premiumState = it
+                testPremiumError = null
+            }
+            .onFailure { error ->
+                testPremiumError = error.message
+            }
+    }
+
+    fun setTestPremium(enabled: Boolean) {
+        if (currentUser == null || isUpdatingTestPremium) return
+
+        scope.launch {
+            isUpdatingTestPremium = true
+            testPremiumError = null
+            ApiClient.setDeveloperPremiumOverride(context, enabled)
+                .onSuccess { response ->
+                    premiumState = response.subscription ?: premiumState
+                    PremiumCheckoutManager.notifyPremiumStateChanged()
+                    Toast.makeText(
+                        context,
+                        response.message.ifBlank {
+                            if (enabled) "Test premium is on." else "Test premium is off."
+                        },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                .onFailure { error ->
+                    testPremiumError = error.message ?: "Could not update test premium."
+                    Toast.makeText(
+                        context,
+                        testPremiumError ?: "Could not update test premium.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            isUpdatingTestPremium = false
+        }
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -5929,6 +6448,596 @@ private fun MorePremiumSection(
             accentColor = accentColor,
             onOpenPremiumDetails = onOpenPremiumDetails
         )
+        if (premiumState?.developerPremiumOverrideAvailable == true) {
+            MorePremiumTestToggleCard(
+                backdrop = backdrop,
+                isGlassTheme = isGlassTheme,
+                surfaceColor = sectionSurfaceColor,
+                borderColor = dividerColor,
+                contentColor = contentColor,
+                secondaryTextColor = secondaryTextColor,
+                accentColor = accentColor,
+                checked = premiumState?.developerPremiumOverrideActive == true || premiumState?.isPremium == true,
+                isUpdating = isUpdatingTestPremium,
+                error = testPremiumError,
+                onCheckedChange = ::setTestPremium
+            )
+        }
+    }
+}
+
+@Composable
+private fun MorePremiumTestToggleCard(
+    backdrop: LayerBackdrop,
+    isGlassTheme: Boolean,
+    surfaceColor: Color,
+    borderColor: Color,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    checked: Boolean,
+    isUpdating: Boolean,
+    error: String?,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .then(
+                if (isGlassTheme) {
+                    Modifier.drawBackdrop(
+                        backdrop = backdrop,
+                        shape = { RoundedRectangle(18.dp) },
+                        effects = {
+                            vibrancy()
+                            blur(14f.dp.toPx())
+                            lens(6f.dp.toPx(), 12f.dp.toPx())
+                        },
+                        onDrawSurface = {
+                            drawRect(surfaceColor)
+                        }
+                    )
+                } else {
+                    Modifier.background(surfaceColor)
+                }
+            )
+            .border(1.dp, borderColor, RoundedCornerShape(18.dp))
+            .clickable(enabled = !isUpdating) { onCheckedChange(!checked) }
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(accentColor.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.WorkspacePremium,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                BasicText(
+                    "Test premium",
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+                BasicText(
+                    when {
+                        isUpdating -> "Updating premium access"
+                        checked -> "Premium is enabled for this account"
+                        else -> "Premium is disabled for this account"
+                    },
+                    style = TextStyle(
+                        color = secondaryTextColor,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp
+                    )
+                )
+                error?.takeIf { it.isNotBlank() }?.let { message ->
+                    BasicText(
+                        message,
+                        style = TextStyle(
+                            color = Color(0xFFFF7A7A),
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp
+                        ),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            if (isUpdating) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.dp,
+                    color = accentColor
+                )
+            } else {
+                LiquidToggle(
+                    selected = { checked },
+                    onSelect = onCheckedChange,
+                    backdrop = backdrop,
+                    accentColor = accentColor
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MoreCreatorProDetailsScreen(
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    isGlassTheme: Boolean,
+    currentUserId: String?,
+    onNavigateBack: () -> Unit
+) {
+    val palette = rememberPremiumMembershipPalette(
+        isGlassTheme = isGlassTheme,
+        baseContentColor = contentColor,
+        baseAccentColor = accentColor
+    )
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val premiumRefreshSignal by PremiumCheckoutManager.refreshSignal.collectAsState()
+    val checkoutState by PremiumCheckoutManager.checkoutState.collectAsState()
+    var premiumState by remember { mutableStateOf<PremiumSubscriptionResponse?>(null) }
+    var creatorProState by remember { mutableStateOf<CreatorProResponse?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var isUpdatingOverride by remember { mutableStateOf(false) }
+    var isUpdatingSettings by remember { mutableStateOf(false) }
+    var selectedBillingCycle by rememberSaveable { mutableStateOf("monthly") }
+
+    fun launchCreatorProCheckout() {
+        val activity = context.findComponentActivity()
+        if (activity == null) {
+            Toast.makeText(
+                context,
+                "Creator Pro checkout needs an activity context.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        PremiumCheckoutManager.startCheckout(
+            activity = activity,
+            billingCycle = selectedBillingCycle,
+            userId = currentUserId,
+            plan = "creator_pro"
+        )
+    }
+
+    fun setCreatorProOverride(enabled: Boolean) {
+        if (isUpdatingOverride) return
+        scope.launch {
+            isUpdatingOverride = true
+            ApiClient.setDeveloperCreatorProOverride(context, enabled)
+                .onSuccess { response ->
+                    creatorProState = response
+                    response.subscription?.let { premiumState = it }
+                    PremiumCheckoutManager.notifyPremiumStateChanged()
+                    Toast.makeText(
+                        context,
+                        response.message.ifBlank {
+                            if (enabled) "Creator Pro test mode is on." else "Creator Pro test mode is off."
+                        },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                .onFailure { error ->
+                    Toast.makeText(
+                        context,
+                        error.message ?: "Unable to update Creator Pro test mode.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            isUpdatingOverride = false
+        }
+    }
+
+    fun updateCreatorProSettings(request: CreatorProSettingsRequest) {
+        if (isUpdatingSettings) return
+        scope.launch {
+            isUpdatingSettings = true
+            ApiClient.updateCreatorProSettings(context, request)
+                .onSuccess { response ->
+                    creatorProState = response
+                    response.subscription?.let { premiumState = it }
+                }
+                .onFailure { error ->
+                    Toast.makeText(
+                        context,
+                        error.message ?: "Unable to update Creator Pro settings.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            isUpdatingSettings = false
+        }
+    }
+
+    LaunchedEffect(premiumRefreshSignal) {
+        isLoading = true
+        ApiClient.getPremiumSubscription(context)
+            .onSuccess { premiumState = it }
+            .onFailure { premiumState = null }
+        ApiClient.getCreatorPro(context)
+            .onSuccess { response ->
+                creatorProState = response
+                response.subscription?.let { premiumState = it }
+            }
+            .onFailure { creatorProState = null }
+        isLoading = false
+    }
+
+    LaunchedEffect(Unit) {
+        PremiumCheckoutManager.preload(context)
+    }
+
+    LaunchedEffect(creatorProState?.access?.planOptions) {
+        val availableCycles = creatorProState?.access?.planOptions
+            ?.map { it.billingCycle }
+            ?.filter { it.isNotBlank() }
+            .orEmpty()
+        if (availableCycles.isNotEmpty() && selectedBillingCycle !in availableCycles) {
+            selectedBillingCycle = availableCycles.first()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(palette.pageBackground)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 18.dp)
+                .padding(bottom = 110.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(34.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(palette.closeBackgroundColor)
+                        .clickable(onClick = onNavigateBack),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = "Close",
+                        tint = palette.closeIconColor,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+                BasicText(
+                    "CREATOR PRO",
+                    modifier = Modifier.align(Alignment.Center),
+                    style = TextStyle(
+                        color = palette.headerTextColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                )
+            }
+
+            MoreCreatorProHeroCard(
+                isActive = creatorProState?.access?.canUseCreatorPro == true || premiumState?.isCreatorPro == true,
+                isLoading = isLoading || checkoutState.isProcessingPurchase,
+                contentColor = palette.contentColor,
+                secondaryTextColor = palette.secondaryTextColor,
+                accentColor = palette.accentColor,
+                borderColor = palette.dividerColor
+            )
+
+            MoreCreatorProPanel(
+                backdrop = backdrop,
+                isGlassTheme = isGlassTheme,
+                palette = palette,
+                contentColor = palette.contentColor,
+                secondaryTextColor = palette.secondaryTextColor,
+                accentColor = palette.accentColor,
+                dividerColor = palette.dividerColor,
+                creatorProState = creatorProState,
+                premiumState = premiumState,
+                selectedBillingCycle = selectedBillingCycle,
+                isLoading = isLoading || checkoutState.isProcessingPurchase,
+                isUpdatingOverride = isUpdatingOverride,
+                isUpdatingSettings = isUpdatingSettings,
+                onBillingCycleChange = { selectedBillingCycle = it },
+                onStartCheckout = ::launchCreatorProCheckout,
+                onToggleCreatorProTest = ::setCreatorProOverride,
+                onUpdateSettings = ::updateCreatorProSettings
+            )
+
+            creatorProState?.analytics?.let { analytics ->
+                CreatorProAnalyticsBoard(
+                    analytics = analytics,
+                    settings = creatorProState?.settings,
+                    contentColor = palette.contentColor,
+                    secondaryTextColor = palette.secondaryTextColor,
+                    accentColor = palette.accentColor,
+                    borderColor = palette.dividerColor,
+                    surfaceColor = palette.planSurfaceColor
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MoreCreatorProHeroCard(
+    isActive: Boolean,
+    isLoading: Boolean,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    borderColor: Color
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(accentColor.copy(alpha = 0.10f))
+            .border(1.dp, accentColor.copy(alpha = 0.34f), RoundedCornerShape(24.dp))
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .background(accentColor.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.WorkspacePremium,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                BasicText(
+                    if (isActive) "Creator Pro is live" else "Creator Pro",
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 25.sp,
+                        lineHeight = 28.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                )
+                BasicText(
+                    if (isLoading) {
+                        "Checking creator access..."
+                    } else {
+                        "Audience analytics, collab priority, paid DMs, paid 1:1 sessions, and portfolio amplification."
+                    },
+                    style = TextStyle(
+                        color = secondaryTextColor,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CreatorProCapabilityPill("Analytics", contentColor, borderColor, Modifier.weight(1f))
+            CreatorProCapabilityPill("Paid DMs", contentColor, borderColor, Modifier.weight(1f))
+            CreatorProCapabilityPill("Amplify", contentColor, borderColor, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun CreatorProCapabilityPill(
+    label: String,
+    contentColor: Color,
+    borderColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .height(34.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(999.dp))
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            label,
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun CreatorProAnalyticsBoard(
+    analytics: com.kyant.backdrop.catalog.network.models.CreatorProAnalytics,
+    settings: com.kyant.backdrop.catalog.network.models.CreatorProSettings?,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    borderColor: Color,
+    surfaceColor: Color
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(surfaceColor)
+            .border(1.dp, borderColor, RoundedCornerShape(22.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        BasicText(
+            "Creator dashboard",
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Black
+            )
+        )
+
+        CreatorProDashboardSection(
+            title = "Audience",
+            contentColor = contentColor,
+            secondaryTextColor = secondaryTextColor,
+            borderColor = borderColor,
+            items = listOf(
+                "Views" to analytics.audience.profileViewsTotal.toString(),
+                "Unique" to analytics.audience.uniqueViewers.toString(),
+                "Saved" to analytics.audience.profileSavesTotal.toString(),
+                "Requests" to analytics.audience.connectionRequestsLast30Days.toString()
+            )
+        )
+
+        CreatorProDashboardSection(
+            title = "Content",
+            contentColor = contentColor,
+            secondaryTextColor = secondaryTextColor,
+            borderColor = borderColor,
+            items = listOf(
+                "Reels" to analytics.content.reels.count.toString(),
+                "Reel views" to analytics.content.reels.views.toString(),
+                "Posts" to analytics.content.posts.count.toString(),
+                "Collabs" to analytics.content.collaborations.accepted.toString()
+            )
+        )
+
+        CreatorProDashboardSection(
+            title = "Monetization",
+            contentColor = contentColor,
+            secondaryTextColor = secondaryTextColor,
+            borderColor = borderColor,
+            items = listOf(
+                "DMs" to if (settings?.monetizedDmEnabled == true) settings.dmDisplayPrice else "Off",
+                "Sessions" to if (settings?.sessionBookingEnabled == true) settings.sessionDisplayPrice else "Off",
+                "You keep" to (settings?.sessionCreatorReceivesDisplay ?: "-"),
+                "Fee" to "${analytics.monetization.platformFeeBps / 100.0}%"
+            )
+        )
+
+        val tags = analytics.showcase.topTags.take(4)
+        if (tags.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                BasicText(
+                    "Top match tags",
+                    style = TextStyle(
+                        color = secondaryTextColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    tags.take(3).forEach { tag ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(34.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(accentColor.copy(alpha = 0.12f))
+                                .border(1.dp, accentColor.copy(alpha = 0.22f), RoundedCornerShape(999.dp))
+                                .padding(horizontal = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            BasicText(
+                                tag.label,
+                                style = TextStyle(
+                                    color = contentColor,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CreatorProDashboardSection(
+    title: String,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    borderColor: Color,
+    items: List<Pair<String, String>>
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        BasicText(
+            title,
+            style = TextStyle(
+                color = secondaryTextColor,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold
+            )
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items.take(4).forEach { (label, value) ->
+                CreatorProMetricPill(
+                    label = label,
+                    value = value,
+                    contentColor = contentColor,
+                    secondaryTextColor = secondaryTextColor,
+                    borderColor = borderColor,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
     }
 }
 
@@ -5952,50 +7061,20 @@ private fun MorePremiumDetailsScreen(
     val scope = rememberCoroutineScope()
     val premiumRefreshSignal by PremiumCheckoutManager.refreshSignal.collectAsState()
     val celebrationSignal by PremiumCheckoutManager.celebrationSignal.collectAsState()
-    val billingState by PremiumCheckoutManager.billingState.collectAsState()
-    val playBillingDiagnostic = remember(billingState) {
-        if (!BuildConfig.DEBUG) {
-            null
-        } else {
-            buildString {
-                append("Play Billing: ")
-                append(if (billingState.isReady) "connected" else "not connected")
-                append(" • offers ")
-                append(billingState.plans.size)
-                billingState.lastResponseCode?.let { responseCode ->
-                    append(" • code ")
-                    append(responseCode)
-                }
-                billingState.lastDebugMessage
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { debugMessage ->
-                        append(" • ")
-                        append(debugMessage)
-                    }
-            }
-        }
-    }
+    val checkoutState by PremiumCheckoutManager.checkoutState.collectAsState()
     var premiumState by remember { mutableStateOf<PremiumSubscriptionResponse?>(null) }
+    var creatorProState by remember { mutableStateOf<CreatorProResponse?>(null) }
     var isLoadingPremiumState by remember { mutableStateOf(true) }
+    var isLoadingCreatorProState by remember { mutableStateOf(true) }
     var isCancellingPremium by remember { mutableStateOf(false) }
+    var isActivatingBoost by remember { mutableStateOf(false) }
+    var isUpdatingCreatorPro by remember { mutableStateOf(false) }
+    var isUpdatingCreatorProSettings by remember { mutableStateOf(false) }
 
     var showCelebration by remember { mutableStateOf(false) }
     var selectedBillingCycle by rememberSaveable { mutableStateOf("yearly") }
-    val playPlanOptions = remember(billingState.plans, premiumState?.planOptions) {
-        val backendOptions = premiumState?.planOptions.orEmpty()
-        billingState.plans.map { offer ->
-            val backendOption = backendOptions.firstOrNull { it.billingCycle == offer.billingCycle }
-            PremiumPlanOption(
-                billingCycle = offer.billingCycle,
-                amountMinor = (offer.priceAmountMicros / 10_000L).toInt(),
-                currency = offer.priceCurrencyCode,
-                displayAmount = offer.formattedPrice,
-                durationDays = backendOption?.durationDays ?: if (offer.billingCycle == "yearly") 365 else 31,
-                label = backendOption?.label ?: offer.billingCycle.replaceFirstChar { it.uppercase() },
-                savingsLabel = backendOption?.savingsLabel
-            )
-        }
-    }
+    var selectedCreatorProBillingCycle by rememberSaveable { mutableStateOf("monthly") }
+    val checkoutPlanOptions = premiumState?.planOptions.orEmpty()
 
     fun launchPremiumCheckout() {
         val activity = context.findComponentActivity()
@@ -6024,10 +7103,22 @@ private fun MorePremiumDetailsScreen(
         )
     }
 
-    fun managePremiumAccess() {
-        PremiumCheckoutManager.openGooglePlayManagement(
-            context = context,
-            productId = premiumState?.googlePlayProductId
+    fun launchCreatorProCheckout() {
+        val activity = context.findComponentActivity()
+        if (activity == null) {
+            Toast.makeText(
+                context,
+                "Creator Pro checkout needs an activity context.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        PremiumCheckoutManager.startCheckout(
+            activity = activity,
+            billingCycle = selectedCreatorProBillingCycle,
+            userId = currentUserId,
+            plan = "creator_pro"
         )
     }
 
@@ -6057,6 +7148,81 @@ private fun MorePremiumDetailsScreen(
         }
     }
 
+    fun activateProfileBoost() {
+        scope.launch {
+            isActivatingBoost = true
+            val boostResult = ApiClient.activateProfileBoost(context)
+            isActivatingBoost = false
+
+            boostResult
+                .onSuccess { response ->
+                    premiumState = response.subscription
+                        ?: premiumState?.copy(profileBoost = response.profileBoost)
+                    PremiumCheckoutManager.notifyPremiumStateChanged()
+                    Toast.makeText(
+                        context,
+                        response.message.ifBlank { "Profile boost is live." },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                .onFailure { error ->
+                    Toast.makeText(
+                        context,
+                        error.message ?: "Unable to activate profile boost right now.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+        }
+    }
+
+    fun setCreatorProOverride(enabled: Boolean) {
+        if (isUpdatingCreatorPro) return
+        scope.launch {
+            isUpdatingCreatorPro = true
+            ApiClient.setDeveloperCreatorProOverride(context, enabled)
+                .onSuccess { response ->
+                    creatorProState = response
+                    response.subscription?.let { premiumState = it }
+                    PremiumCheckoutManager.notifyPremiumStateChanged()
+                    Toast.makeText(
+                        context,
+                        response.message.ifBlank {
+                            if (enabled) "Creator Pro test mode is on." else "Creator Pro test mode is off."
+                        },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                .onFailure { error ->
+                    Toast.makeText(
+                        context,
+                        error.message ?: "Unable to update Creator Pro test mode.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            isUpdatingCreatorPro = false
+        }
+    }
+
+    fun updateCreatorProSettings(request: CreatorProSettingsRequest) {
+        if (isUpdatingCreatorProSettings) return
+        scope.launch {
+            isUpdatingCreatorProSettings = true
+            ApiClient.updateCreatorProSettings(context, request)
+                .onSuccess { response ->
+                    creatorProState = response
+                    response.subscription?.let { premiumState = it }
+                }
+                .onFailure { error ->
+                    Toast.makeText(
+                        context,
+                        error.message ?: "Unable to update Creator Pro settings.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            isUpdatingCreatorProSettings = false
+        }
+    }
+
 
 
     LaunchedEffect(premiumRefreshSignal) {
@@ -6065,19 +7231,37 @@ private fun MorePremiumDetailsScreen(
             .onSuccess { premiumState = it }
             .onFailure { premiumState = null }
         isLoadingPremiumState = false
+
+        isLoadingCreatorProState = true
+        ApiClient.getCreatorPro(context)
+            .onSuccess { response ->
+                creatorProState = response
+                response.subscription?.let { premiumState = it }
+            }
+            .onFailure { creatorProState = null }
+        isLoadingCreatorProState = false
     }
 
     LaunchedEffect(Unit) {
-        PremiumCheckoutManager.loadPremiumPlans(context)
-        PremiumCheckoutManager.restorePurchases(context)
+        PremiumCheckoutManager.preload(context)
     }
 
-    LaunchedEffect(playPlanOptions, premiumState?.planOptions) {
-        val availableCycles = (playPlanOptions.takeIf { it.isNotEmpty() } ?: premiumState?.planOptions.orEmpty())
+    LaunchedEffect(checkoutPlanOptions) {
+        val availableCycles = checkoutPlanOptions
             .map { it.billingCycle }
             .filter { it.isNotBlank() }
         if (availableCycles.isNotEmpty() && selectedBillingCycle !in availableCycles) {
             selectedBillingCycle = availableCycles.first()
+        }
+    }
+
+    LaunchedEffect(creatorProState?.access?.planOptions) {
+        val availableCycles = creatorProState?.access?.planOptions
+            ?.map { it.billingCycle }
+            ?.filter { it.isNotBlank() }
+            .orEmpty()
+        if (availableCycles.isNotEmpty() && selectedCreatorProBillingCycle !in availableCycles) {
+            selectedCreatorProBillingCycle = availableCycles.first()
         }
     }
 
@@ -6143,24 +7327,687 @@ private fun MorePremiumDetailsScreen(
                 accentColor = premiumPalette.accentColor,
                 palette = premiumPalette,
                 premiumState = premiumState,
-                playPlanOptions = playPlanOptions,
+                checkoutPlanOptions = checkoutPlanOptions,
                 selectedBillingCycle = selectedBillingCycle,
                 isLoadingPremiumState = isLoadingPremiumState,
-                isLoadingPlayPlans = billingState.isLoadingPlans,
-                isLaunchingCheckout = billingState.isProcessingPurchase,
+                isLaunchingCheckout = checkoutState.isProcessingPurchase,
                 isCancellingPremium = isCancellingPremium,
-                playBillingErrorMessage = billingState.errorMessage,
-                playPendingMessage = billingState.pendingMessage,
-                playBillingDiagnostic = playBillingDiagnostic,
-                canUsePlayCheckout = billingState.isAvailable,
+                isActivatingBoost = isActivatingBoost,
+                checkoutErrorMessage = checkoutState.errorMessage,
+                checkoutPendingMessage = checkoutState.pendingMessage,
                 showCelebration = showCelebration,
                 onBillingCycleChange = { selectedBillingCycle = it },
                 onStartCheckout = ::launchPremiumCheckout,
                 onCancelPremium = ::cancelPremiumAccess,
-                onManagePremium = ::managePremiumAccess,
+                onActivateBoost = ::activateProfileBoost,
                 onOpenAgent = onOpenAgent
             )
+
+            MoreCreatorProPanel(
+                backdrop = backdrop,
+                isGlassTheme = isGlassTheme,
+                palette = premiumPalette,
+                contentColor = premiumPalette.contentColor,
+                secondaryTextColor = premiumPalette.secondaryTextColor,
+                accentColor = premiumPalette.accentColor,
+                dividerColor = premiumPalette.dividerColor,
+                creatorProState = creatorProState,
+                premiumState = premiumState,
+                selectedBillingCycle = selectedCreatorProBillingCycle,
+                isLoading = isLoadingCreatorProState,
+                isUpdatingOverride = isUpdatingCreatorPro,
+                isUpdatingSettings = isUpdatingCreatorProSettings,
+                onBillingCycleChange = { selectedCreatorProBillingCycle = it },
+                onStartCheckout = ::launchCreatorProCheckout,
+                onToggleCreatorProTest = ::setCreatorProOverride,
+                onUpdateSettings = ::updateCreatorProSettings
+            )
         }
+    }
+}
+
+@Composable
+private fun MoreCreatorProPanel(
+    backdrop: LayerBackdrop,
+    isGlassTheme: Boolean,
+    palette: PremiumMembershipPalette,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    dividerColor: Color,
+    creatorProState: CreatorProResponse?,
+    premiumState: PremiumSubscriptionResponse?,
+    selectedBillingCycle: String,
+    isLoading: Boolean,
+    isUpdatingOverride: Boolean,
+    isUpdatingSettings: Boolean,
+    onBillingCycleChange: (String) -> Unit,
+    onStartCheckout: () -> Unit,
+    onToggleCreatorProTest: (Boolean) -> Unit,
+    onUpdateSettings: (CreatorProSettingsRequest) -> Unit
+) {
+    val access = creatorProState?.access
+    val settings = creatorProState?.settings
+    val analytics = creatorProState?.analytics
+    val isCreatorProActive = access?.canUseCreatorPro == true || premiumState?.isCreatorPro == true
+    val canUseDebugToggle = premiumState?.developerPremiumOverrideAvailable == true
+    val planOptions = access?.planOptions?.takeIf { it.isNotEmpty() }
+        ?: premiumState?.creatorPro?.planOptions.orEmpty()
+    val orderedPlanOptions = planOptions.takeIf { it.isNotEmpty() }?.let(::premiumOrderedPlanOptions).orEmpty()
+    val selectedPlan = orderedPlanOptions.firstOrNull { it.billingCycle == selectedBillingCycle }
+        ?: orderedPlanOptions.firstOrNull()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (isGlassTheme) {
+                    Modifier
+                        .vormexSurface(
+                            backdrop = backdrop,
+                            cornerRadius = 24.dp,
+                            blurRadius = 18.dp,
+                            lensRadius = 6.dp,
+                            lensDepth = 14.dp,
+                            surfaceColor = palette.glassPanelSurfaceColor,
+                            borderColor = palette.glassPanelBorderColor
+                        )
+                        .padding(16.dp)
+                } else {
+                    Modifier
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(palette.planSurfaceColor)
+                        .border(1.dp, dividerColor, RoundedCornerShape(24.dp))
+                        .padding(16.dp)
+                }
+            ),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(accentColor.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.WorkspacePremium,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                BasicText(
+                    if (isCreatorProActive) "Creator Pro active" else "Creator Pro",
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 20.sp,
+                        lineHeight = 24.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                )
+                BasicText(
+                    when {
+                        isLoading -> "Loading creator tools..."
+                        isCreatorProActive -> "Analytics, monetization, and amplification are unlocked."
+                        else -> access?.description?.takeIf { it.isNotBlank() }
+                            ?: "Audience analytics, collab priority, paid sessions, and portfolio amplification."
+                    },
+                    style = TextStyle(
+                        color = secondaryTextColor,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+            }
+            if (isLoading || isUpdatingOverride || isUpdatingSettings) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.dp,
+                    color = accentColor
+                )
+            }
+        }
+
+        if (analytics != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CreatorProMetricPill(
+                    label = "Views 30d",
+                    value = analytics.audience.profileViewsLast30Days.toString(),
+                    contentColor = contentColor,
+                    secondaryTextColor = secondaryTextColor,
+                    borderColor = dividerColor,
+                    modifier = Modifier.weight(1f)
+                )
+                CreatorProMetricPill(
+                    label = "Search",
+                    value = analytics.audience.searchAppearancesLast30Days.toString(),
+                    contentColor = contentColor,
+                    secondaryTextColor = secondaryTextColor,
+                    borderColor = dividerColor,
+                    modifier = Modifier.weight(1f)
+                )
+                CreatorProMetricPill(
+                    label = "Match",
+                    value = analytics.audience.matchRateDisplay,
+                    contentColor = contentColor,
+                    secondaryTextColor = secondaryTextColor,
+                    borderColor = dividerColor,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        if (isCreatorProActive && settings != null) {
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                CreatorProSettingRow(
+                    title = "Collab priority",
+                    detail = "Rank higher for creator/team matches",
+                    checked = settings.collabPriorityEnabled,
+                    enabled = !isUpdatingSettings,
+                    contentColor = contentColor,
+                    secondaryTextColor = secondaryTextColor,
+                    accentColor = accentColor,
+                    borderColor = dividerColor,
+                    backdrop = backdrop,
+                    onChange = {
+                        onUpdateSettings(CreatorProSettingsRequest(collabPriorityEnabled = it))
+                    }
+                )
+                CreatorProSettingRow(
+                    title = "Showcase amplify",
+                    detail = "Boost portfolio and showcase surfaces",
+                    checked = settings.showcaseAmplificationEnabled,
+                    enabled = !isUpdatingSettings,
+                    contentColor = contentColor,
+                    secondaryTextColor = secondaryTextColor,
+                    accentColor = accentColor,
+                    borderColor = dividerColor,
+                    backdrop = backdrop,
+                    onChange = {
+                        onUpdateSettings(CreatorProSettingsRequest(showcaseAmplificationEnabled = it))
+                    }
+                )
+                CreatorProSettingRow(
+                    title = "Portfolio amplify",
+                    detail = "Push portfolio links and proof-of-work higher",
+                    checked = settings.portfolioAmplificationEnabled,
+                    enabled = !isUpdatingSettings,
+                    contentColor = contentColor,
+                    secondaryTextColor = secondaryTextColor,
+                    accentColor = accentColor,
+                    borderColor = dividerColor,
+                    backdrop = backdrop,
+                    onChange = {
+                        onUpdateSettings(CreatorProSettingsRequest(portfolioAmplificationEnabled = it))
+                    }
+                )
+                CreatorProSettingRow(
+                    title = "Monetized DMs",
+                    detail = if (settings.monetizedDmEnabled) {
+                        "${settings.dmDisplayPrice} DM · you get ${settings.dmCreatorReceivesDisplay}"
+                    } else {
+                        "Set a paid DM intro offer"
+                    },
+                    checked = settings.monetizedDmEnabled,
+                    enabled = !isUpdatingSettings,
+                    contentColor = contentColor,
+                    secondaryTextColor = secondaryTextColor,
+                    accentColor = accentColor,
+                    borderColor = dividerColor,
+                    backdrop = backdrop,
+                    onChange = { enabled ->
+                        onUpdateSettings(
+                            CreatorProSettingsRequest(
+                                monetizedDmEnabled = enabled,
+                                dmPriceMinor = if (enabled && settings.dmPriceMinor <= 0) 9900 else settings.dmPriceMinor
+                            )
+                        )
+                    }
+                )
+                if (settings.monetizedDmEnabled) {
+                    CreatorProPresetRow(
+                        title = "DM price",
+                        currentLabel = settings.dmDisplayPrice,
+                        selectedValue = settings.dmPriceMinor,
+                        options = listOf(
+                            "₹99" to 9900,
+                            "₹199" to 19900,
+                            "₹499" to 49900
+                        ),
+                        enabled = !isUpdatingSettings,
+                        contentColor = contentColor,
+                        secondaryTextColor = secondaryTextColor,
+                        accentColor = accentColor,
+                        borderColor = dividerColor,
+                        onSelect = {
+                            onUpdateSettings(CreatorProSettingsRequest(dmPriceMinor = it))
+                        }
+                    )
+                }
+                CreatorProSettingRow(
+                    title = "Paid 1:1 sessions",
+                    detail = if (settings.sessionBookingEnabled) {
+                        "${settings.sessionDisplayPrice} · ${settings.sessionDurationMinutes} min"
+                    } else {
+                        "Offer paid creator calls"
+                    },
+                    checked = settings.sessionBookingEnabled,
+                    enabled = !isUpdatingSettings,
+                    contentColor = contentColor,
+                    secondaryTextColor = secondaryTextColor,
+                    accentColor = accentColor,
+                    borderColor = dividerColor,
+                    backdrop = backdrop,
+                    onChange = { enabled ->
+                        onUpdateSettings(
+                            CreatorProSettingsRequest(
+                                sessionBookingEnabled = enabled,
+                                sessionPriceMinor = if (enabled && settings.sessionPriceMinor <= 0) 24900 else settings.sessionPriceMinor,
+                                sessionDurationMinutes = settings.sessionDurationMinutes
+                            )
+                        )
+                    }
+                )
+                if (settings.sessionBookingEnabled) {
+                    CreatorProPresetRow(
+                        title = "Session price",
+                        currentLabel = settings.sessionDisplayPrice,
+                        selectedValue = settings.sessionPriceMinor,
+                        options = listOf(
+                            "₹249" to 24900,
+                            "₹499" to 49900,
+                            "₹999" to 99900
+                        ),
+                        enabled = !isUpdatingSettings,
+                        contentColor = contentColor,
+                        secondaryTextColor = secondaryTextColor,
+                        accentColor = accentColor,
+                        borderColor = dividerColor,
+                        onSelect = {
+                            onUpdateSettings(CreatorProSettingsRequest(sessionPriceMinor = it))
+                        }
+                    )
+                    CreatorProPresetRow(
+                        title = "Session length",
+                        currentLabel = "${settings.sessionDurationMinutes} min",
+                        selectedValue = settings.sessionDurationMinutes,
+                        options = listOf(
+                            "30m" to 30,
+                            "45m" to 45,
+                            "60m" to 60
+                        ),
+                        enabled = !isUpdatingSettings,
+                        contentColor = contentColor,
+                        secondaryTextColor = secondaryTextColor,
+                        accentColor = accentColor,
+                        borderColor = dividerColor,
+                        onSelect = {
+                            onUpdateSettings(CreatorProSettingsRequest(sessionDurationMinutes = it))
+                        }
+                    )
+                    CreatorProAvailabilityEditor(
+                        initialNote = settings.availabilityNote.orEmpty(),
+                        enabled = !isUpdatingSettings,
+                        contentColor = contentColor,
+                        secondaryTextColor = secondaryTextColor,
+                        accentColor = accentColor,
+                        borderColor = dividerColor,
+                        onSave = {
+                            onUpdateSettings(CreatorProSettingsRequest(availabilityNote = it))
+                        }
+                    )
+                }
+            }
+        } else {
+            val features = access?.features?.takeIf { it.isNotEmpty() }
+                ?: premiumState?.creatorPro?.features.orEmpty()
+            if (features.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    features.take(4).forEach { feature ->
+                        BasicText(
+                            feature,
+                            style = TextStyle(
+                                color = contentColor,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                    }
+                }
+            }
+            if (orderedPlanOptions.isNotEmpty()) {
+                MorePremiumEditorialPlanSelector(
+                    planOptions = orderedPlanOptions,
+                    selectedBillingCycle = selectedPlan?.billingCycle ?: selectedBillingCycle,
+                    onBillingCycleChange = onBillingCycleChange,
+                    contentColor = contentColor,
+                    secondaryTextColor = secondaryTextColor,
+                    accentColor = accentColor,
+                    borderColor = dividerColor,
+                    surfaceColor = palette.planSurfaceColor,
+                    selectedSurfaceColor = palette.planSelectedSurfaceColor,
+                    selectedTextColor = palette.planSelectedTextColor,
+                    unselectedTextColor = palette.planUnselectedTextColor,
+                    fontFamily = FontFamily.SansSerif
+                )
+            }
+            MorePremiumPrimaryCta(
+                label = if (isLoading) "Checking Creator Pro" else "Upgrade to Creator Pro",
+                priceLabel = selectedPlan?.let { premiumCompactAmountLabel(it) } ?: "",
+                enabled = !isLoading,
+                onClick = onStartCheckout,
+                backgroundColor = palette.ctaSurfaceColor,
+                contentColor = palette.ctaContentColor,
+                fontFamily = FontFamily.SansSerif
+            )
+        }
+
+        if (canUseDebugToggle) {
+            CreatorProSettingRow(
+                title = "Test Creator Pro",
+                detail = if (isCreatorProActive) "Creator Pro is enabled for this account" else "Enable Creator Pro without payment",
+                checked = isCreatorProActive,
+                enabled = !isUpdatingOverride,
+                contentColor = contentColor,
+                secondaryTextColor = secondaryTextColor,
+                accentColor = accentColor,
+                borderColor = dividerColor,
+                backdrop = backdrop,
+                onChange = onToggleCreatorProTest
+            )
+        }
+    }
+}
+
+@Composable
+private fun CreatorProMetricPill(
+    label: String,
+    value: String,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    borderColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(14.dp))
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        BasicText(
+            value,
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        BasicText(
+            label,
+            style = TextStyle(
+                color = secondaryTextColor,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.SemiBold
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun CreatorProPresetRow(
+    title: String,
+    currentLabel: String,
+    selectedValue: Int,
+    options: List<Pair<String, Int>>,
+    enabled: Boolean,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    borderColor: Color,
+    onSelect: (Int) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(16.dp))
+            .padding(horizontal = 13.dp, vertical = 11.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText(
+                title,
+                modifier = Modifier.weight(1f),
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            BasicText(
+                currentLabel,
+                style = TextStyle(
+                    color = secondaryTextColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            options.forEach { (label, value) ->
+                val selected = selectedValue == value
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(34.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (selected) accentColor else Color.Transparent)
+                        .border(
+                            1.dp,
+                            if (selected) accentColor else borderColor,
+                            RoundedCornerShape(999.dp)
+                        )
+                        .clickable(enabled = enabled && !selected) { onSelect(value) }
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        label,
+                        style = TextStyle(
+                            color = if (selected && accentColor.luminance() > 0.55f) Color.Black else if (selected) Color.White else contentColor,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CreatorProAvailabilityEditor(
+    initialNote: String,
+    enabled: Boolean,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    borderColor: Color,
+    onSave: (String) -> Unit
+) {
+    var note by remember(initialNote) { mutableStateOf(initialNote) }
+    val changed = note.trim() != initialNote.trim()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(16.dp))
+            .padding(horizontal = 13.dp, vertical = 11.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            BasicText(
+                "Availability note",
+                modifier = Modifier.weight(1f),
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+            Box(
+                modifier = Modifier
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(if (changed && enabled) accentColor else Color.Transparent)
+                    .border(
+                        1.dp,
+                        if (changed && enabled) accentColor else borderColor,
+                        RoundedCornerShape(999.dp)
+                    )
+                    .clickable(enabled = enabled && changed) { onSave(note.trim()) }
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                BasicText(
+                    "Save",
+                    style = TextStyle(
+                        color = if (changed && enabled && accentColor.luminance() > 0.55f) Color.Black else if (changed && enabled) Color.White else secondaryTextColor,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+            }
+        }
+        BasicTextField(
+            value = note,
+            onValueChange = { value ->
+                note = value.take(180)
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 54.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(contentColor.copy(alpha = 0.06f))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            textStyle = TextStyle(
+                color = contentColor,
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            cursorBrush = SolidColor(accentColor),
+            decorationBox = { innerTextField ->
+                Box {
+                    if (note.isBlank()) {
+                        BasicText(
+                            "Weekdays after 7 PM, 30 min calls preferred",
+                            style = TextStyle(
+                                color = secondaryTextColor,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+                        )
+                    }
+                    innerTextField()
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun CreatorProSettingRow(
+    title: String,
+    detail: String,
+    checked: Boolean,
+    enabled: Boolean,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    borderColor: Color,
+    backdrop: LayerBackdrop,
+    onChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(16.dp))
+            .clickable(enabled = enabled) { onChange(!checked) }
+            .padding(horizontal = 13.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            BasicText(
+                title,
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            BasicText(
+                detail,
+                style = TextStyle(
+                    color = secondaryTextColor,
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    fontWeight = FontWeight.Medium
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        LiquidToggle(
+            selected = { checked },
+            onSelect = { if (enabled) onChange(it) },
+            backdrop = backdrop,
+            accentColor = accentColor
+        )
     }
 }
 
@@ -6266,21 +8113,19 @@ private fun MorePremiumPromoCard(
     accentColor: Color,
     palette: PremiumMembershipPalette,
     premiumState: PremiumSubscriptionResponse?,
-    playPlanOptions: List<PremiumPlanOption>,
+    checkoutPlanOptions: List<PremiumPlanOption>,
     selectedBillingCycle: String,
     isLoadingPremiumState: Boolean,
-    isLoadingPlayPlans: Boolean,
     isLaunchingCheckout: Boolean,
     isCancellingPremium: Boolean,
-    playBillingErrorMessage: String?,
-    playPendingMessage: String?,
-    playBillingDiagnostic: String?,
-    canUsePlayCheckout: Boolean,
+    isActivatingBoost: Boolean,
+    checkoutErrorMessage: String?,
+    checkoutPendingMessage: String?,
     showCelebration: Boolean,
     onBillingCycleChange: (String) -> Unit,
     onStartCheckout: () -> Unit,
     onCancelPremium: () -> Unit,
-    onManagePremium: () -> Unit,
+    onActivateBoost: () -> Unit,
     onOpenAgent: () -> Unit
 ) {
     val context = LocalContext.current
@@ -6294,12 +8139,14 @@ private fun MorePremiumPromoCard(
         isPlaying = showCelebration
     )
     val backendPlanOptions = premiumState?.planOptions?.takeIf { it.isNotEmpty() }
-    val planOptions = playPlanOptions.takeIf { it.isNotEmpty() } ?: backendPlanOptions ?: premiumDefaultPlanOptions()
+    val planOptions = checkoutPlanOptions.takeIf { it.isNotEmpty() } ?: backendPlanOptions ?: premiumDefaultPlanOptions()
     val orderedPlanOptions = premiumOrderedPlanOptions(planOptions)
     val selectedPlan = orderedPlanOptions.firstOrNull { it.billingCycle == selectedBillingCycle }
         ?: orderedPlanOptions.first()
     val monthlyPlan = orderedPlanOptions.firstOrNull { it.billingCycle == "monthly" }
     val isPremiumActive = premiumState?.isPremium == true
+    val profileBoost = premiumState?.profileBoost
+    val isProfileBoostActive = profileBoost?.active == true
     val customPriceApplied = premiumState?.customPriceApplied == true
     val checkoutEnabled = premiumState?.checkoutEnabled != false
     val canStartCheckout =
@@ -6310,8 +8157,8 @@ private fun MorePremiumPromoCard(
             !isPremiumActive
     val primaryCtaLabel = when {
         isLoadingPremiumState -> "Checking access"
-        isLoadingPlayPlans -> "Loading prices"
         isLaunchingCheckout -> "Opening checkout"
+        isActivatingBoost -> "Activating boost"
         isCancellingPremium -> "Updating premium"
         isPremiumActive && premiumState.canUseAgent -> "Open AI Agent"
         isPremiumActive -> "Premium active"
@@ -6326,13 +8173,14 @@ private fun MorePremiumPromoCard(
         else -> premiumCompactAmountLabel(selectedPlan)
     }
     val statusMessage = when {
-        !playPendingMessage.isNullOrBlank() -> playPendingMessage
-        !playBillingErrorMessage.isNullOrBlank() && !isPremiumActive -> playBillingErrorMessage
+        !checkoutPendingMessage.isNullOrBlank() -> checkoutPendingMessage
+        !checkoutErrorMessage.isNullOrBlank() && !isPremiumActive -> checkoutErrorMessage
         isLoadingPremiumState -> "Checking your premium access..."
-        isLoadingPlayPlans -> "Loading Google Play prices..."
-        isLaunchingCheckout -> "Opening Google Play checkout..."
+        isLaunchingCheckout -> "Opening Razorpay checkout..."
+        isActivatingBoost -> "Activating your profile boost..."
+        isProfileBoostActive -> "Your profile boost is active and ranking higher in discovery."
         isCancellingPremium -> "Updating premium access..."
-        !canUsePlayCheckout && !isPremiumActive -> "Google Play prices are not ready yet. Tap to retry."
+        !checkoutEnabled && !isPremiumActive -> "Razorpay checkout is not ready yet. Tap to retry."
         customPriceApplied -> "A special premium price is active for this account."
         else -> null
     }
@@ -6619,16 +8467,19 @@ private fun MorePremiumPromoCard(
 
         if (isPremiumActive) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (premiumState.canManageInGooglePlay) {
-                    MorePremiumSecondaryButton(
-                        label = "Manage in Google Play",
-                        contentColor = contentColor,
-                        dividerColor = dividerColor,
-                        fontFamily = premiumFontFamily,
-                        enabled = true,
-                        onClick = onManagePremium
-                    )
-                } else if (premiumState.canCancel) {
+                MorePremiumSecondaryButton(
+                    label = when {
+                        isActivatingBoost -> "Activating boost..."
+                        isProfileBoostActive -> "Profile boost active"
+                        else -> "Activate ${profileBoost?.durationHours ?: 4}h profile boost"
+                    },
+                    contentColor = contentColor,
+                    dividerColor = dividerColor,
+                    fontFamily = premiumFontFamily,
+                    enabled = !isActivatingBoost,
+                    onClick = onActivateBoost
+                )
+                if (premiumState.canCancel) {
                     MorePremiumSecondaryButton(
                         label = if (isCancellingPremium) "Cancelling..." else "Cancel premium now",
                         contentColor = contentColor,
@@ -7919,7 +9770,9 @@ private data class MoreSettingsItem(
     val trailingLabel: String? = null,
     val showIndicatorDot: Boolean = false,
     val searchTerms: List<String> = emptyList(),
-    val isDestructive: Boolean = false
+    val isDestructive: Boolean = false,
+    val isSpotlight: Boolean = false,
+    val spotlightLabel: String? = null
 )
 
 private data class MoreSettingsSection(
@@ -8494,6 +10347,298 @@ private fun MoreProfileCustomizationCard(
 }
 
 @Composable
+private fun MoreFullScreenTopBar(
+    title: String,
+    contentColor: Color,
+    onBack: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(58.dp)
+            .padding(horizontal = 10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .size(44.dp)
+                .clip(CircleShape)
+                .noRippleClickable(onClick = onBack),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                contentDescription = "Back",
+                tint = contentColor,
+                modifier = Modifier.size(25.dp)
+            )
+        }
+
+        BasicText(
+            title,
+            modifier = Modifier.align(Alignment.Center),
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun MoreSettingsGroupDivider(color: Color) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(7.dp)
+            .background(color)
+    )
+}
+
+@Composable
+private fun MoreSettingsListSectionHeader(
+    title: String,
+    contentColor: Color,
+    trailingLabel: String? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        BasicText(
+            title,
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+
+        trailingLabel?.let { label ->
+            BasicText(
+                label,
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun MoreTestPremiumOverrideSection(
+    backdrop: LayerBackdrop,
+    isGlassTheme: Boolean,
+    surfaceColor: Color,
+    borderColor: Color,
+    groupDividerColor: Color,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    sectionHeaderColor: Color,
+    accentColor: Color,
+    currentUser: com.kyant.backdrop.catalog.network.models.User?
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val premiumRefreshSignal by PremiumCheckoutManager.refreshSignal.collectAsState()
+    var premiumState by remember(currentUser?.id) { mutableStateOf<PremiumSubscriptionResponse?>(null) }
+    var isUpdatingTestPremium by remember(currentUser?.id) { mutableStateOf(false) }
+    var testPremiumError by remember(currentUser?.id) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(currentUser?.id, premiumRefreshSignal) {
+        if (currentUser == null) {
+            premiumState = null
+            testPremiumError = null
+            return@LaunchedEffect
+        }
+
+        ApiClient.getPremiumSubscription(context)
+            .onSuccess {
+                premiumState = it
+                testPremiumError = null
+            }
+            .onFailure { error ->
+                testPremiumError = error.message
+            }
+    }
+
+    fun setTestPremium(enabled: Boolean) {
+        if (currentUser == null || isUpdatingTestPremium) return
+
+        scope.launch {
+            isUpdatingTestPremium = true
+            testPremiumError = null
+            ApiClient.setDeveloperPremiumOverride(context, enabled)
+                .onSuccess { response ->
+                    premiumState = response.subscription ?: premiumState
+                    PremiumCheckoutManager.notifyPremiumStateChanged()
+                    Toast.makeText(
+                        context,
+                        response.message.ifBlank {
+                            if (enabled) "Test premium is on." else "Test premium is off."
+                        },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                .onFailure { error ->
+                    testPremiumError = error.message ?: "Could not update test premium."
+                    Toast.makeText(
+                        context,
+                        testPremiumError ?: "Could not update test premium.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            isUpdatingTestPremium = false
+        }
+    }
+
+    if (premiumState?.developerPremiumOverrideAvailable != true) return
+
+    val checked = premiumState?.developerPremiumOverrideActive == true || premiumState?.isPremium == true
+
+    MoreSettingsGroupDivider(groupDividerColor)
+    MoreSettingsListSectionHeader(
+        title = "Developer tools",
+        contentColor = sectionHeaderColor
+    )
+    MoreTestPremiumOverrideRow(
+        backdrop = backdrop,
+        isGlassTheme = isGlassTheme,
+        surfaceColor = surfaceColor,
+        borderColor = borderColor,
+        contentColor = contentColor,
+        secondaryTextColor = secondaryTextColor,
+        accentColor = accentColor,
+        checked = checked,
+        isUpdating = isUpdatingTestPremium,
+        error = testPremiumError,
+        onCheckedChange = ::setTestPremium
+    )
+}
+
+@Composable
+private fun MoreTestPremiumOverrideRow(
+    backdrop: LayerBackdrop,
+    isGlassTheme: Boolean,
+    surfaceColor: Color,
+    borderColor: Color,
+    contentColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    checked: Boolean,
+    isUpdating: Boolean,
+    error: String?,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val subtitle = when {
+        isUpdating -> "Updating premium access"
+        checked -> "Premium is enabled for this account"
+        else -> "Premium is disabled for this account"
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (isGlassTheme) surfaceColor else Color.Transparent)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .noRippleClickable(enabled = !isUpdating) { onCheckedChange(!checked) }
+                .padding(horizontal = 18.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Box(
+                modifier = Modifier.size(26.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.WorkspacePremium,
+                    contentDescription = null,
+                    tint = contentColor.copy(alpha = 0.9f),
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                BasicText(
+                    "Test premium",
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                BasicText(
+                    subtitle,
+                    style = TextStyle(
+                        color = secondaryTextColor,
+                        fontSize = 13.sp,
+                        lineHeight = 17.sp
+                    ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                error?.takeIf { it.isNotBlank() }?.let { message ->
+                    BasicText(
+                        message,
+                        style = TextStyle(
+                            color = Color(0xFFFF7A7A),
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        ),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            if (isUpdating) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.dp,
+                    color = accentColor
+                )
+            } else {
+                LiquidToggle(
+                    selected = { checked },
+                    onSelect = onCheckedChange,
+                    backdrop = backdrop,
+                    accentColor = accentColor
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 58.dp, end = 18.dp)
+                .height(1.dp)
+                .background(borderColor)
+        )
+    }
+}
+
+@Composable
 private fun MoreSearchBar(
     query: String,
     onQueryChange: (String) -> Unit,
@@ -8695,29 +10840,11 @@ private fun MoreSettingsSectionCard(
     accentColor: Color,
     destructiveColor: Color
 ) {
+    val sectionBackground = if (isGlassTheme) surfaceColor else Color.Transparent
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .then(
-                if (isGlassTheme) {
-                    Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { RoundedRectangle(18.dp) },
-                        effects = {
-                            vibrancy()
-                            blur(14f.dp.toPx())
-                            lens(6f.dp.toPx(), 12f.dp.toPx())
-                        },
-                        onDrawSurface = {
-                            drawRect(surfaceColor)
-                        }
-                    )
-                } else {
-                    Modifier.background(surfaceColor)
-                }
-            )
-            .border(1.dp, borderColor, RoundedCornerShape(18.dp))
+            .background(sectionBackground)
     ) {
         items.forEachIndexed { index, item ->
             MoreSettingsRow(
@@ -8732,7 +10859,7 @@ private fun MoreSettingsSectionCard(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 58.dp)
+                        .padding(start = 58.dp, end = 18.dp)
                         .height(1.dp)
                         .background(borderColor)
                 )
@@ -8759,35 +10886,14 @@ private fun MoreConnectionRequestsCard(
     onReject: (String, String) -> Unit
 ) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .then(
-                if (isGlassTheme) {
-                    Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { RoundedRectangle(18.dp) },
-                        effects = {
-                            vibrancy()
-                            blur(14f.dp.toPx())
-                            lens(6f.dp.toPx(), 12f.dp.toPx())
-                        },
-                        onDrawSurface = {
-                            drawRect(surfaceColor)
-                        }
-                    )
-                } else {
-                    Modifier.background(surfaceColor)
-                }
-            )
-            .border(1.dp, borderColor, RoundedCornerShape(18.dp))
+        modifier = Modifier.fillMaxWidth()
     ) {
         when {
             isLoading && requests.isEmpty() -> {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 18.dp),
+                        .padding(horizontal = 2.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -8801,7 +10907,7 @@ private fun MoreConnectionRequestsCard(
                             "Checking for new requests",
                             style = TextStyle(
                                 color = contentColor,
-                                fontSize = 14.sp,
+                                fontSize = 13.sp,
                                 fontWeight = FontWeight.Medium
                             )
                         )
@@ -8809,7 +10915,7 @@ private fun MoreConnectionRequestsCard(
                             "People who want to connect will show up here.",
                             style = TextStyle(
                                 color = secondaryTextColor,
-                                fontSize = 11.sp
+                                fontSize = 10.sp
                             )
                         )
                     }
@@ -8820,14 +10926,14 @@ private fun MoreConnectionRequestsCard(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 18.dp),
+                        .padding(horizontal = 2.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     BasicText(
                         "Could not load connection requests",
                         style = TextStyle(
                             color = contentColor,
-                            fontSize = 14.sp,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.Medium
                         )
                     )
@@ -8835,7 +10941,7 @@ private fun MoreConnectionRequestsCard(
                         error,
                         style = TextStyle(
                             color = secondaryTextColor,
-                            fontSize = 11.sp
+                            fontSize = 10.sp
                         )
                     )
                 }
@@ -8845,14 +10951,14 @@ private fun MoreConnectionRequestsCard(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 18.dp),
+                        .padding(horizontal = 2.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     BasicText(
                         "No connection requests right now",
                         style = TextStyle(
                             color = contentColor,
-                            fontSize = 14.sp,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.Medium
                         )
                     )
@@ -8860,7 +10966,7 @@ private fun MoreConnectionRequestsCard(
                         "When someone sends you a request, you’ll see them here.",
                         style = TextStyle(
                             color = secondaryTextColor,
-                            fontSize = 11.sp
+                            fontSize = 10.sp
                         )
                     )
                 }
@@ -8884,7 +10990,7 @@ private fun MoreConnectionRequestsCard(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 74.dp)
+                                .padding(start = 64.dp)
                                 .height(1.dp)
                                 .background(borderColor)
                         )
@@ -8908,6 +11014,7 @@ private fun MoreConnectionRequestRow(
     onReject: (String, String) -> Unit
 ) {
     val user = request.user
+    val displayName = user.name?.takeIf { it.isNotBlank() } ?: user.username ?: "Vormex user"
     val subtitle = listOfNotNull(
         user.headline?.takeIf { it.isNotBlank() },
         user.college?.takeIf { it.isNotBlank() }
@@ -8917,17 +11024,24 @@ private fun MoreConnectionRequestRow(
             ?: user.username?.firstOrNull()?.toString()
             ?: "U"
         ).uppercase()
+    val priorityLabel = request.priorityLabel
+        ?: when {
+            user.profileBoostActive -> "Boosted request"
+            user.isPremium -> "Premium request"
+            else -> null
+        }
+    val showActionsBeside = displayName.length <= 16
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 2.dp, vertical = 10.dp),
         verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Box(
             modifier = Modifier
-                .size(46.dp)
+                .size(38.dp)
                 .clip(CircleShape)
                 .background(contentColor.copy(alpha = 0.08f)),
             contentAlignment = Alignment.Center
@@ -8946,7 +11060,7 @@ private fun MoreConnectionRequestRow(
                     avatarLetter,
                     style = TextStyle(
                         color = contentColor,
-                        fontSize = 16.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
                 )
@@ -8955,17 +11069,17 @@ private fun MoreConnectionRequestRow(
 
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(7.dp)
         ) {
             Column(
                 modifier = Modifier.clickable { onOpenProfile(user.id) },
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                verticalArrangement = Arrangement.spacedBy(1.dp)
             ) {
                 BasicText(
-                    user.name?.takeIf { it.isNotBlank() } ?: user.username ?: "Vormex user",
+                    displayName,
                     style = TextStyle(
                         color = contentColor,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold
                     ),
                     maxLines = 1,
@@ -8976,61 +11090,122 @@ private fun MoreConnectionRequestRow(
                         "@${user.username}",
                         style = TextStyle(
                             color = secondaryTextColor,
-                            fontSize = 11.sp
+                            fontSize = 10.sp
                         ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+                priorityLabel?.let { label ->
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(accentColor.copy(alpha = 0.13f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        BasicText(
+                            label,
+                            style = TextStyle(
+                                color = accentColor,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
                 BasicText(
                     subtitle,
                     style = TextStyle(
                         color = secondaryTextColor,
-                        fontSize = 11.sp
+                        fontSize = 10.sp,
+                        lineHeight = 14.sp
                     ),
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
 
-            if (isActionInProgress) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = accentColor
-                    )
-                    BasicText(
-                        "Updating request",
-                        style = TextStyle(
-                            color = secondaryTextColor,
-                            fontSize = 11.sp
-                        )
-                    )
-                }
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MoreConnectionRequestActionButton(
-                        label = "Ignore",
-                        filled = false,
-                        accentColor = accentColor,
-                        contentColor = contentColor,
-                        borderColor = borderColor,
-                        onClick = { onReject(user.id, request.id) }
-                    )
-                    MoreConnectionRequestActionButton(
-                        label = "Accept",
-                        filled = true,
-                        accentColor = accentColor,
-                        contentColor = contentColor,
-                        borderColor = borderColor,
-                        onClick = { onAccept(user.id, request.id) }
-                    )
-                }
+            if (!showActionsBeside) {
+                MoreConnectionRequestActions(
+                    isActionInProgress = isActionInProgress,
+                    secondaryTextColor = secondaryTextColor,
+                    accentColor = accentColor,
+                    contentColor = contentColor,
+                    borderColor = borderColor,
+                    onAccept = { onAccept(user.id, request.id) },
+                    onReject = { onReject(user.id, request.id) }
+                )
             }
+        }
+
+        if (showActionsBeside) {
+            MoreConnectionRequestActions(
+                isActionInProgress = isActionInProgress,
+                secondaryTextColor = secondaryTextColor,
+                accentColor = accentColor,
+                contentColor = contentColor,
+                borderColor = borderColor,
+                onAccept = { onAccept(user.id, request.id) },
+                onReject = { onReject(user.id, request.id) },
+                modifier = Modifier.padding(top = 1.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MoreConnectionRequestActions(
+    isActionInProgress: Boolean,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    contentColor: Color,
+    borderColor: Color,
+    onAccept: () -> Unit,
+    onReject: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (isActionInProgress) {
+        Row(
+            modifier = modifier,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = accentColor
+            )
+            BasicText(
+                "Updating",
+                style = TextStyle(
+                    color = secondaryTextColor,
+                    fontSize = 10.sp
+                )
+            )
+        }
+    } else {
+        Row(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            MoreConnectionRequestActionButton(
+                label = "Accept",
+                filled = true,
+                accentColor = accentColor,
+                contentColor = contentColor,
+                borderColor = borderColor,
+                onClick = onAccept
+            )
+            MoreConnectionRequestActionButton(
+                label = "Ignore",
+                filled = false,
+                accentColor = accentColor,
+                contentColor = contentColor,
+                borderColor = borderColor,
+                onClick = onReject
+            )
         }
     }
 }
@@ -9054,13 +11229,13 @@ private fun MoreConnectionRequestActionButton(
                 shape = RoundedCornerShape(999.dp)
             )
             .noRippleClickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
         BasicText(
             label,
             style = TextStyle(
                 color = if (filled) Color.White else contentColor,
-                fontSize = 12.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold
             )
         )
@@ -9081,46 +11256,126 @@ private fun MoreSettingsRow(
     } else {
         secondaryTextColor
     }
-
-    Row(
-        modifier = Modifier
+    val spotlightTransition = if (item.isSpotlight) {
+        rememberInfiniteTransition(label = "more_talent_engine_spotlight")
+    } else {
+        null
+    }
+    val spotlightPulse = spotlightTransition?.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "more_talent_engine_spotlight_pulse"
+    )?.value ?: 0f
+    val rowShape = RoundedCornerShape(if (item.isSpotlight) 18.dp else 0.dp)
+    val spotlightBackground = Brush.linearGradient(
+        colors = listOf(
+            accentColor.copy(alpha = 0.24f + spotlightPulse * 0.08f),
+            Color(0xFF22C55E).copy(alpha = 0.14f + spotlightPulse * 0.05f),
+            Color(0xFFF59E0B).copy(alpha = 0.12f + spotlightPulse * 0.04f)
+        )
+    )
+    val rowModifier = if (item.isSpotlight) {
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+            .clip(rowShape)
+            .background(spotlightBackground)
+            .border(
+                width = 1.dp,
+                color = accentColor.copy(alpha = 0.34f + spotlightPulse * 0.24f),
+                shape = rowShape
+            )
+            .noRippleClickable(onClick = item.onClick)
+            .padding(horizontal = 12.dp, vertical = 12.dp)
+    } else {
+        Modifier
             .fillMaxWidth()
             .noRippleClickable(onClick = item.onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 18.dp, vertical = 13.dp)
+    }
+
+    Row(
+        modifier = rowModifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Row(
             modifier = Modifier.weight(1f),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Box(
-                modifier = Modifier.size(30.dp),
+                modifier = Modifier
+                    .size(if (item.isSpotlight) 40.dp else 26.dp)
+                    .then(
+                        if (item.isSpotlight) {
+                            Modifier
+                                .clip(CircleShape)
+                                .background(accentColor.copy(alpha = 0.18f + spotlightPulse * 0.08f))
+                                .graphicsLayer {
+                                    scaleX = 1f + spotlightPulse * 0.04f
+                                    scaleY = 1f + spotlightPulse * 0.04f
+                                }
+                        } else {
+                            Modifier
+                        }
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = item.icon,
                     contentDescription = null,
-                    tint = rowColor.copy(alpha = if (item.isDestructive) 1f else 0.9f),
-                    modifier = Modifier.size(21.dp)
+                    tint = if (item.isSpotlight) accentColor else rowColor.copy(alpha = if (item.isDestructive) 1f else 0.9f),
+                    modifier = Modifier.size(if (item.isSpotlight) 23.dp else 24.dp)
                 )
             }
 
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                BasicText(
-                    item.title,
-                    style = TextStyle(
-                        color = rowColor,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    BasicText(
+                        item.title,
+                        style = TextStyle(
+                            color = rowColor,
+                            fontSize = if (item.isSpotlight) 15.sp else 16.sp,
+                            fontWeight = if (item.isSpotlight) FontWeight.Bold else FontWeight.Medium
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                )
+                    item.spotlightLabel?.let { label ->
+                        BasicText(
+                            label,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(accentColor.copy(alpha = 0.18f + spotlightPulse * 0.08f))
+                                .padding(horizontal = 7.dp, vertical = 3.dp),
+                            style = TextStyle(
+                                color = accentColor,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
                 BasicText(
                     item.subtitle,
                     style = TextStyle(
-                        color = rowSecondaryColor,
-                        fontSize = 11.sp
+                        color = if (item.isSpotlight) contentColor.copy(alpha = 0.74f) else rowSecondaryColor,
+                        fontSize = if (item.isSpotlight) 12.sp else 13.sp,
+                        lineHeight = if (item.isSpotlight) 16.sp else 17.sp,
+                        fontWeight = if (item.isSpotlight) FontWeight.SemiBold else FontWeight.Normal
                     ),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -9135,10 +11390,14 @@ private fun MoreSettingsRow(
             item.trailingLabel?.let { label ->
                 BasicText(
                     label,
+                    modifier = Modifier.widthIn(max = 118.dp),
                     style = TextStyle(
                         color = if (item.isDestructive) destructiveColor else secondaryTextColor,
-                        fontSize = 11.sp
-                    )
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.End
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
@@ -9155,7 +11414,7 @@ private fun MoreSettingsRow(
                 "›",
                 style = TextStyle(
                     color = rowSecondaryColor,
-                    fontSize = 18.sp
+                    fontSize = 24.sp
                 )
             )
         }
@@ -9194,16 +11453,6 @@ private fun ConnectionRequestsScreen(
     onReject: (String, String) -> Unit
 ) {
     val isDarkSurface = rememberMoreUsesDarkSurface(isGlassTheme = isGlassTheme)
-    val summarySurfaceColor = if (isDarkSurface) {
-        accentColor.copy(alpha = 0.10f)
-    } else {
-        accentColor.copy(alpha = 0.12f)
-    }
-    val summaryBorderColor = if (isDarkSurface) {
-        accentColor.copy(alpha = 0.18f)
-    } else {
-        accentColor.copy(alpha = 0.12f)
-    }
     val sectionSurfaceColor = if (isDarkSurface) {
         Color.White.copy(alpha = 0.06f)
     } else {
@@ -9236,26 +11485,22 @@ private fun ConnectionRequestsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Box(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(summarySurfaceColor)
-                    .border(1.dp, summaryBorderColor, RoundedCornerShape(18.dp))
-                    .padding(horizontal = 16.dp, vertical = 14.dp)
+                    .padding(start = 2.dp, end = 2.dp, bottom = 2.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    BasicText(
-                        requestCountText,
-                        style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold)
-                    )
-                    BasicText(
-                        "Review the people who sent you connection requests and respond from here.",
-                        style = TextStyle(secondaryTextColor, 12.sp)
-                    )
-                }
+                BasicText(
+                    requestCountText,
+                    style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold)
+                )
+                BasicText(
+                    "Review requests and respond from here.",
+                    style = TextStyle(secondaryTextColor, 12.sp)
+                )
             }
 
             MoreConnectionRequestsCard(
@@ -9403,7 +11648,7 @@ private fun MoreWorkspaceCard(
                 MoreWorkspaceMetric(
                     modifier = Modifier.weight(1f),
                     label = "Room",
-                    value = "${remainingConnections.coerceAtLeast(0)} left",
+                    value = "${remainingConnections.coerceAtLeast(0)} today",
                     accentColor = accentColor,
                     contentColor = contentColor
                 )
@@ -10046,6 +12291,7 @@ private fun OldProfileScreen(
 
                             VerificationBadge(
                                 verified = user.hasVerificationBadge(),
+                                badgeStyle = user.verificationBadgeStyle(),
                                 modifier = Modifier.align(Alignment.BottomEnd),
                                 size = VerificationBadgeSize.Large
                             )
@@ -10659,10 +12905,12 @@ private fun LoginScreen(
     isLoading: Boolean,
     isGoogleLoading: Boolean,
     error: String?,
+    savedAccountsCount: Int,
     onLogin: (String, String) -> Unit,
     onGoogleSignIn: () -> Unit,
     onForgotPassword: (String) -> Unit,
     onSignUpClick: () -> Unit,
+    onOpenSavedAccounts: () -> Unit,
     onClearError: () -> Unit
 ) {
     LiquidGlassLoginScreen(
@@ -10672,10 +12920,12 @@ private fun LoginScreen(
         isLoading = isLoading,
         isGoogleLoading = isGoogleLoading,
         error = error,
+        savedAccountsCount = savedAccountsCount,
         onLogin = onLogin,
         onGoogleSignIn = onGoogleSignIn,
         onForgotPassword = onForgotPassword,
         onSignUpClick = onSignUpClick,
+        onOpenSavedAccounts = onOpenSavedAccounts,
         onClearError = onClearError
     )
 }
@@ -10688,9 +12938,11 @@ private fun SignUpScreen(
     isLoading: Boolean,
     isGoogleLoading: Boolean,
     error: String?,
+    savedAccountsCount: Int,
     onSignUp: (email: String, password: String, name: String, username: String) -> Unit,
     onGoogleSignIn: () -> Unit,
     onLoginClick: () -> Unit,
+    onOpenSavedAccounts: () -> Unit,
     onClearError: () -> Unit
 ) {
     LiquidGlassSignUpScreen(
@@ -10700,10 +12952,68 @@ private fun SignUpScreen(
         isLoading = isLoading,
         isGoogleLoading = isGoogleLoading,
         error = error,
+        savedAccountsCount = savedAccountsCount,
         onSignUp = onSignUp,
         onGoogleSignIn = onGoogleSignIn,
         onLoginClick = onLoginClick,
+        onOpenSavedAccounts = onOpenSavedAccounts,
         onClearError = onClearError
+    )
+}
+
+@Composable
+private fun EmailVerificationScreen(
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    email: String,
+    isLoading: Boolean,
+    error: String?,
+    onVerify: (String) -> Unit,
+    onResend: () -> Unit,
+    onLoginClick: () -> Unit,
+    onClearError: () -> Unit
+) {
+    LiquidGlassEmailVerificationScreen(
+        backdrop = backdrop,
+        contentColor = contentColor,
+        accentColor = accentColor,
+        email = email,
+        isLoading = isLoading,
+        error = error,
+        onVerify = onVerify,
+        onResend = onResend,
+        onLoginClick = onLoginClick,
+        onClearError = onClearError
+    )
+}
+
+@Composable
+private fun EmailVerificationSheet(
+    contentColor: Color,
+    accentColor: Color,
+    email: String,
+    isLoading: Boolean,
+    isSuccess: Boolean,
+    error: String?,
+    onVerify: (String) -> Unit,
+    onResend: () -> Unit,
+    onLoginClick: () -> Unit,
+    onClearError: () -> Unit,
+    onSuccessAnimationFinished: () -> Unit
+) {
+    LiquidGlassEmailVerificationSheet(
+        contentColor = contentColor,
+        accentColor = accentColor,
+        email = email,
+        isLoading = isLoading,
+        isSuccess = isSuccess,
+        error = error,
+        onVerify = onVerify,
+        onResend = onResend,
+        onLoginClick = onLoginClick,
+        onClearError = onClearError,
+        onSuccessAnimationFinished = onSuccessAnimationFinished
     )
 }
 
@@ -10992,6 +13302,11 @@ private fun ApiPostCard(
                 } else {
                     post.author.hasVerificationBadge()
                 }
+                val authorBadgeStyle = if (isCollaborativePost) {
+                    collabAuthors.firstNotNullOfOrNull { it.verificationBadgeStyle() }
+                } else {
+                    post.author.verificationBadgeStyle()
+                }
 
                 // Clickable author section (avatar + name)
                 Row(
@@ -11026,6 +13341,7 @@ private fun ApiPostCard(
                             )
                             VerificationBadge(
                                 verified = showAuthorVerified,
+                                badgeStyle = authorBadgeStyle,
                                 size = VerificationBadgeSize.Small
                             )
                             BasicText(

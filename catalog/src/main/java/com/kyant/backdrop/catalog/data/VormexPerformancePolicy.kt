@@ -3,6 +3,8 @@ package com.kyant.backdrop.catalog.data
 object VormexPerformancePolicy {
     const val FeedCacheTtlMillis = 2 * 60 * 1000L
     const val PersistentFeedCacheMaxAgeMillis = 24 * 60 * 60 * 1000L
+    const val PersistentHomeStoriesCacheMaxAgeMillis = 24 * 60 * 60 * 1000L
+    const val PersistentCurrentUserCacheMaxAgeMillis = 24 * 60 * 60 * 1000L
     const val ProfileCacheTtlMillis = 2 * 60 * 1000L
     const val PersistentProfileCacheMaxAgeMillis = 24 * 60 * 60 * 1000L
     const val SupportingDataTtlMillis = 5 * 60 * 1000L

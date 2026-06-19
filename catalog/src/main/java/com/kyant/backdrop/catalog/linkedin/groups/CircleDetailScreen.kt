@@ -66,6 +66,7 @@ import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.catalog.linkedin.VerificationBadge
 import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -780,6 +781,7 @@ private fun CirclePostCard(
                         )
                         VerificationBadge(
                             verified = post.author?.hasVerificationBadge() == true,
+                            badgeStyle = post.author?.verificationBadgeStyle(),
                             size = VerificationBadgeSize.Small
                         )
                     }
@@ -928,6 +930,7 @@ private fun CircleMemberCard(
                 )
                 VerificationBadge(
                     verified = member.hasVerificationBadge(),
+                    badgeStyle = member.verificationBadgeStyle(),
                     size = VerificationBadgeSize.Small
                 )
                 

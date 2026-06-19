@@ -3,13 +3,18 @@
 package com.kyant.backdrop.catalog.linkedin.reels.player
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Handler
+import android.os.Looper
 import androidx.annotation.MainThread
 import androidx.media3.exoplayer.ExoPlayer
 import com.kyant.backdrop.catalog.network.models.Reel
 import kotlin.math.abs
 
 object PlayerPool {
-    private const val POOL_SIZE = 3
+    internal const val MAX_PREPARED_PLAYERS = 4
+    private val RETRY_DELAYS_MS = longArrayOf(1_000L, 2_000L, 5_000L)
 
     @Volatile
     private var engine: Engine? = null
@@ -67,7 +72,9 @@ object PlayerPool {
     private class Engine(context: Context) {
         private val appContext = context.applicationContext
         private val preloadController = PreloadController(appContext)
-        private val players = List(POOL_SIZE) { slot ->
+        private val mainHandler = Handler(Looper.getMainLooper())
+        private val retryAttemptsByIndex = mutableMapOf<Int, Int>()
+        private val players = List(MAX_PREPARED_PLAYERS) { slot ->
             preloadController.buildPlayer(slotName = "reels-slot-$slot")
         }
 
@@ -81,7 +88,8 @@ object PlayerPool {
 
             preloadController.updateWindow(reels, currentIndex)
 
-            val targetIndices = buildTargetIndices(currentIndex, reels.lastIndex)
+            val networkProfile = appContext.reelsNetworkProfile()
+            val targetIndices = targetIndicesFor(currentIndex, reels.lastIndex, networkProfile)
 
             val currentBindings = boundSlots.keys.toList()
             currentBindings
@@ -108,12 +116,22 @@ object PlayerPool {
             val reel = currentFeed.getOrNull(index) ?: return false
             val slot = boundSlots[index] ?: return false
             val canFallback = slot.variant == PlaybackVariant.PRIMARY && preloadController.hasFallback(reel)
-            if (!canFallback) return false
-
-            bind(index, reel, preferredVariant = PlaybackVariant.FALLBACK_MP4)
-            if (index == currentIndex) {
-                resume(currentIndex)
+            if (canFallback) {
+                retryAttemptsByIndex.remove(index)
+                bind(index, reel, preferredVariant = PlaybackVariant.FALLBACK_MP4)
+                if (index == currentIndex) {
+                    resume(currentIndex)
+                }
+                return true
             }
+
+            val attempt = retryAttemptsByIndex[index] ?: 0
+            if (attempt >= RETRY_DELAYS_MS.size) return false
+
+            retryAttemptsByIndex[index] = attempt + 1
+            mainHandler.postDelayed({
+                retry(index)
+            }, RETRY_DELAYS_MS[attempt])
             return true
         }
 
@@ -199,11 +217,12 @@ object PlayerPool {
             }
             if (unboundPlayer != null) return unboundPlayer
 
-            val entryToRecycle = boundSlots.entries
-                .maxByOrNull { (index, _) -> abs(index - targetIndex) }
+            val recycleIndex = evictionCandidateIndex(boundSlots.keys, currentIndex, targetIndex)
                 ?: error("Player pool exhausted without a recyclable slot")
+            val entryToRecycle = boundSlots.entries.first { it.key == recycleIndex }
 
             boundSlots.remove(entryToRecycle.key)
+            retryAttemptsByIndex.remove(entryToRecycle.key)
             entryToRecycle.value.player.playWhenReady = false
             entryToRecycle.value.player.pause()
             entryToRecycle.value.player.stop()
@@ -212,13 +231,8 @@ object PlayerPool {
             return entryToRecycle.value.player
         }
 
-        private fun buildTargetIndices(currentIndex: Int, lastIndex: Int): List<Int> {
-            return listOf(
-                currentIndex,
-                currentIndex + 1,
-                currentIndex - 1
-            ).filter { it in 0..lastIndex }
-        }
+        private fun buildTargetIndices(currentIndex: Int, lastIndex: Int): List<Int> =
+            targetIndicesFor(currentIndex, lastIndex, appContext.reelsNetworkProfile())
     }
 
     private data class BoundSlot(
@@ -226,4 +240,52 @@ object PlayerPool {
         val reelId: String,
         val variant: PlaybackVariant
     )
+}
+
+internal enum class ReelsNetworkProfile {
+    FAST,
+    SLOW
+}
+
+internal fun targetIndicesFor(
+    currentIndex: Int,
+    lastIndex: Int,
+    networkProfile: ReelsNetworkProfile
+): List<Int> {
+    if (lastIndex < 0) return emptyList()
+    val offsets = when (networkProfile) {
+        ReelsNetworkProfile.FAST -> listOf(0, 1, 2, -1)
+        ReelsNetworkProfile.SLOW -> listOf(0, 1)
+    }
+    return offsets
+        .map { currentIndex + it }
+        .filter { it in 0..lastIndex }
+        .distinct()
+}
+
+internal fun evictionCandidateIndex(
+    boundIndices: Set<Int>,
+    currentIndex: Int,
+    targetIndex: Int
+): Int? {
+    return boundIndices
+        .filterNot { it == currentIndex }
+        .maxWithOrNull(
+            compareBy<Int> { abs(it - targetIndex) }
+                .thenBy { if (it < currentIndex) 1 else 0 }
+                .thenBy { it }
+        )
+}
+
+private fun Context.reelsNetworkProfile(): ReelsNetworkProfile {
+    val connectivityManager = getSystemService(ConnectivityManager::class.java) ?: return ReelsNetworkProfile.FAST
+    val activeNetwork = connectivityManager.activeNetwork ?: return ReelsNetworkProfile.SLOW
+    val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return ReelsNetworkProfile.SLOW
+    return when {
+        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> ReelsNetworkProfile.FAST
+        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> ReelsNetworkProfile.FAST
+        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+            capabilities.linkDownstreamBandwidthKbps >= 5_000 -> ReelsNetworkProfile.FAST
+        else -> ReelsNetworkProfile.SLOW
+    }
 }

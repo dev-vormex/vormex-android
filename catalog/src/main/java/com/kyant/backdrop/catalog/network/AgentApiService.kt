@@ -24,6 +24,10 @@ import com.kyant.backdrop.catalog.network.models.AgentTurnRequest
 import com.kyant.backdrop.catalog.network.models.AgentTurnResponse
 import com.kyant.backdrop.catalog.network.models.AgentVoiceTurnResponse
 import com.kyant.backdrop.catalog.network.models.ApiError
+import com.kyant.backdrop.catalog.network.models.AiEntitlementsResponse
+import com.kyant.backdrop.catalog.network.models.AssistantChatHistoryItem
+import com.kyant.backdrop.catalog.network.models.AssistantChatRequest
+import com.kyant.backdrop.catalog.network.models.AssistantChatResponse
 import com.kyant.backdrop.catalog.network.models.ConversationStartersRequest
 import com.kyant.backdrop.catalog.network.models.ConversationStartersResponse
 import com.kyant.backdrop.catalog.network.models.SmartRepliesRequest
@@ -57,6 +61,37 @@ import kotlinx.serialization.json.Json
 
 private val Context.agentDataStore: DataStore<Preferences> by preferencesDataStore(name = "vormex_agent_prefs")
 
+private const val ASSISTANT_HISTORY_MAX_TURNS = 10
+private const val ASSISTANT_HISTORY_MESSAGE_LIMIT = 500
+
+internal fun sanitizeAssistantConversationHistory(
+    conversationHistory: List<AssistantChatHistoryItem>
+): List<AssistantChatHistoryItem> {
+    return conversationHistory
+        .takeLast(ASSISTANT_HISTORY_MAX_TURNS)
+        .mapNotNull { item ->
+            val safeRole = when (item.role.lowercase()) {
+                "assistant" -> "assistant"
+                "user" -> "user"
+                else -> return@mapNotNull null
+            }
+            val clippedContent = item.content.trim().take(ASSISTANT_HISTORY_MESSAGE_LIMIT)
+            val safeContent = runCatching {
+                InputSecurity.text(
+                    clippedContent,
+                    "conversationHistory",
+                    ASSISTANT_HISTORY_MESSAGE_LIMIT,
+                    allowBlank = true,
+                    allowPromptInjection = true
+                )
+            }.getOrNull()
+
+            safeContent
+                ?.takeIf { it.isNotBlank() }
+                ?.let { AssistantChatHistoryItem(role = safeRole, content = it) }
+        }
+}
+
 object AgentApiService {
     private val baseUrl = BuildConfig.API_BASE_URL
     private val agentSessionKey = stringPreferencesKey("agent_session_id")
@@ -89,7 +124,7 @@ object AgentApiService {
                         Log.d("AgentApiService", message)
                     }
                 }
-                level = LogLevel.BODY
+                level = LogLevel.HEADERS
             }
         }
         install(HttpTimeout) {
@@ -152,6 +187,57 @@ object AgentApiService {
     private suspend fun saveSessionId(context: Context, sessionId: String) {
         context.agentDataStore.edit { prefs ->
             prefs[agentSessionKey] = sessionId
+        }
+    }
+
+    suspend fun getAiEntitlements(context: Context): Result<AiEntitlementsResponse> {
+        return try {
+            val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$baseUrl/ai/entitlements") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.value in 200..299) {
+                Result.success(response.body())
+            } else {
+                Result.failure(Exception(parseError(response)))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun sendAssistantMessage(
+        context: Context,
+        message: String,
+        conversationHistory: List<AssistantChatHistoryItem> = emptyList(),
+        intent: String? = null,
+        surface: String = "global"
+    ): Result<AssistantChatResponse> {
+        return try {
+            val token = authToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeMessage = InputSecurity.prompt(message, "message", 2_000)
+            val safeSurface = InputSecurity.identifier(surface, "surface")
+            val safeIntent = intent?.let { InputSecurity.optionalText(it, "intent", 120) }
+            val safeHistory = sanitizeAssistantConversationHistory(conversationHistory)
+            val response = client.post("$baseUrl/ai/chat/assistant") {
+                header("Authorization", "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    AssistantChatRequest(
+                        message = safeMessage,
+                        conversationHistory = safeHistory,
+                        intent = safeIntent,
+                        surface = safeSurface
+                    )
+                )
+            }
+            if (response.status.value in 200..299) {
+                Result.success(response.body())
+            } else {
+                Result.failure(Exception(parseError(response)))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 

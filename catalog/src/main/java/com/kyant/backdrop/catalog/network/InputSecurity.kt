@@ -31,6 +31,7 @@ object InputSecurity {
     )
 
     private val safeIdentifier = Regex("^[A-Za-z0-9@._:-]{1,160}$")
+    private val safePaginationCursor = Regex("^[A-Za-z0-9._:-]{1,512}$")
     private val safeFileName = Regex("^[A-Za-z0-9._ ()@-]{1,180}$")
     private val emailPattern = Regex("^[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}$", RegexOption.IGNORE_CASE)
     private val allowedImageMimes = setOf("image/jpeg", "image/png", "image/gif", "image/webp")
@@ -72,6 +73,16 @@ object InputSecurity {
 
     fun optionalIdentifier(value: String?, label: String = "identifier"): String? {
         return value?.takeIf { it.isNotBlank() }?.let { identifier(it, label) }
+    }
+
+    fun paginationCursor(value: String?, label: String = "cursor"): String {
+        val cleaned = text(value, label, 512, allowBlank = false)
+        requireValid(safePaginationCursor.matches(cleaned), "$label has invalid characters")
+        return cleaned
+    }
+
+    fun optionalPaginationCursor(value: String?, label: String = "cursor"): String? {
+        return value?.takeIf { it.isNotBlank() }?.let { paginationCursor(it, label) }
     }
 
     fun email(value: String?, label: String = "email"): String {

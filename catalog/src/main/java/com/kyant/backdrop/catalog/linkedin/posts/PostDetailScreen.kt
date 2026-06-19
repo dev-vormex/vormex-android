@@ -22,6 +22,7 @@ import com.kyant.backdrop.catalog.linkedin.VerificationBadge
 import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.network.models.*
 
 /**
@@ -399,6 +400,7 @@ private fun CommentPreviewItem(
                     )
                     VerificationBadge(
                         verified = comment.author.hasVerificationBadge(),
+                        badgeStyle = comment.author.verificationBadgeStyle(),
                         size = VerificationBadgeSize.Small
                     )
                     BasicText(

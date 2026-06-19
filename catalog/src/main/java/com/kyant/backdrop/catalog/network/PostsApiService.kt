@@ -84,7 +84,7 @@ object PostsApiService {
         if (BuildConfig.DEBUG) {
             install(Logging) {
                 logger = Logger.ANDROID
-                level = LogLevel.BODY
+                level = LogLevel.HEADERS
             }
         }
         install(HttpTimeout) {
@@ -126,7 +126,7 @@ object PostsApiService {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 50)
-            val safeCursor = InputSecurity.optionalIdentifier(cursor, "cursor")
+            val safeCursor = InputSecurity.optionalPaginationCursor(cursor, "cursor")
             val response = client.get("$BASE_URL/posts/feed") {
                 header("Authorization", "Bearer $token")
                 parameter("limit", safeLimit)
@@ -720,7 +720,7 @@ object PostsApiService {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 50)
-            val safeCursor = InputSecurity.optionalIdentifier(cursor, "cursor")
+            val safeCursor = InputSecurity.optionalPaginationCursor(cursor, "cursor")
             val response = client.get("$BASE_URL/saved") {
                 header("Authorization", "Bearer $token")
                 parameter("limit", safeLimit)
@@ -903,7 +903,8 @@ object PostsApiService {
         context: Context,
         postId: String,
         reason: String,
-        description: String? = null
+        description: String? = null,
+        blockUser: Boolean = false
     ): Result<ReportResponse> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
@@ -912,7 +913,7 @@ object PostsApiService {
             val safeDescription = InputSecurity.optionalText(description, "description", 1_000)
             val response = client.post("$BASE_URL/reports/post/$safePostId") {
                 header("Authorization", "Bearer $token")
-                setBody(ReportPostRequest(safeReason, safeDescription))
+                setBody(ReportPostRequest(safeReason, safeDescription, blockUser))
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())

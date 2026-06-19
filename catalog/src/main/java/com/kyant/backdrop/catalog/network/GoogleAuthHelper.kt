@@ -1,13 +1,17 @@
 package com.kyant.backdrop.catalog.network
 
 import android.app.Activity
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import androidx.credentials.CredentialManager
+import androidx.credentials.CredentialOption
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.GetCredentialResponse
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
-import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.kyant.backdrop.catalog.BuildConfig
 import com.kyant.backdrop.catalog.R
@@ -36,29 +40,42 @@ object GoogleAuthHelper {
      */
     suspend fun signIn(activity: Activity): GoogleSignInResult = withContext(Dispatchers.Main) {
         try {
-            val credentialManager = CredentialManager.create(activity)
-            val webClientId = BuildConfig.GOOGLE_WEB_CLIENT_ID.trim()
-                .ifBlank { activity.getString(R.string.default_web_client_id).trim() }
-            if (webClientId.isBlank()) {
-                return@withContext GoogleSignInResult.Error("Google Sign-In is not configured.")
+            if (!hasValidatedInternet(activity)) {
+                return@withContext GoogleSignInResult.Error(
+                    "No internet connection. Turn on Wi-Fi or mobile data and try Google Sign-In again."
+                )
             }
-            Log.d(TAG, "Starting Google sign-in with configured web client.")
-            
-            // This is launched from an explicit "Continue with Google" button, so use the
-            // Credential Manager button flow rather than the passive bottom-sheet flow.
-            val googleSignInOption = GetSignInWithGoogleOption.Builder(webClientId)
-                .build()
-            
-            // Create credential request
-            val request = GetCredentialRequest.Builder()
-                .addCredentialOption(googleSignInOption)
-                .build()
-            
-            // Get credential - requires Activity context
-            val result: GetCredentialResponse = credentialManager.getCredential(
-                context = activity,
-                request = request
+
+            val credentialManager = CredentialManager.create(activity)
+            val serverClientId = BuildConfig.GOOGLE_SERVER_CLIENT_ID.trim()
+            val androidClientId = BuildConfig.GOOGLE_ANDROID_CLIENT_ID.trim()
+            val buildConfigWebClientId = BuildConfig.GOOGLE_WEB_CLIENT_ID.trim()
+            val googleServicesWebClientId = activity.getString(R.string.default_web_client_id).trim()
+            val googleClientId = serverClientId.ifBlank {
+                buildConfigWebClientId
+            }.ifBlank {
+                googleServicesWebClientId
+            }
+            if (googleClientId.isBlank()) {
+                return@withContext GoogleSignInResult.Error("Google Sign-In is not configured. Missing server client ID.")
+            }
+            Log.d(
+                TAG,
+                "Starting Google sign-in for ${activity.packageName}. " +
+                    "Server client ${redactedClientId(googleClientId)}, " +
+                    "Android OAuth client ${redactedClientId(androidClientId)}, " +
+                    "google-services default ${redactedClientId(googleServicesWebClientId)}."
             )
+            
+            val googleIdOption = GetGoogleIdOption.Builder()
+                .setServerClientId(googleClientId)
+                .setFilterByAuthorizedAccounts(false)
+                .setAutoSelectEnabled(false)
+                .build()
+            val result = getCredential(activity, credentialManager, googleIdOption)
+                ?: return@withContext GoogleSignInResult.Error(
+                    "Google could not return an account for this app. Check the Google OAuth setup for com.vormex.android."
+                )
             
             // Extract Google ID token
             val credential = result.credential
@@ -105,4 +122,43 @@ object GoogleAuthHelper {
     internal fun isGoogleIdTokenCredentialType(type: String): Boolean =
         type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL ||
             type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_SIWG_CREDENTIAL
+
+    private fun redactedClientId(clientId: String): String {
+        if (clientId.isBlank()) return "not configured"
+        val suffix = clientId.substringAfterLast('-', missingDelimiterValue = clientId)
+            .substringBefore(".apps.googleusercontent.com")
+        return if (suffix.length <= 8) {
+            "ending $suffix"
+        } else {
+            "ending ${suffix.takeLast(8)}"
+        }
+    }
+
+    private fun hasValidatedInternet(context: Context): Boolean {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+        val activeNetwork = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    private suspend fun getCredential(
+        activity: Activity,
+        credentialManager: CredentialManager,
+        credentialOption: CredentialOption
+    ): GetCredentialResponse? {
+        val request = GetCredentialRequest.Builder()
+            .addCredentialOption(credentialOption)
+            .build()
+        return try {
+            credentialManager.getCredential(
+                context = activity,
+                request = request
+            )
+        } catch (e: NoCredentialException) {
+            Log.w(TAG, "No Google credential for ${credentialOption::class.java.simpleName}.", e)
+            null
+        }
+    }
 }

@@ -13,6 +13,7 @@ private val Context.settingsDataStore by preferencesDataStore(name = "app_settin
  * App Settings Preferences - Stores user preferences for notifications, privacy, and appearance
  */
 object SettingsPreferences {
+    const val PROFILE_BADGE_STYLE_NONE = "none"
     const val PROFILE_BADGE_STYLE_STUDENT = "student"
     const val PROFILE_BADGE_STYLE_PROFESSIONAL = "professional"
     const val PROFILE_BADGE_STYLE_PREMIUM = "premium"
@@ -41,6 +42,7 @@ object SettingsPreferences {
     private val SHOW_ONLINE_STATUS = booleanPreferencesKey("show_online_status")
     private val SHOW_ACTIVITY_STATUS = booleanPreferencesKey("show_activity_status")
     private val SHOW_PROFILE_VIEWS = booleanPreferencesKey("show_profile_views")
+    private val SHOW_PROFILE_LOCATION = booleanPreferencesKey("show_profile_location")
     private val DISCOVERABLE_BY_EMAIL = booleanPreferencesKey("discoverable_by_email")
     private val DISCOVERABLE_BY_PHONE = booleanPreferencesKey("discoverable_by_phone")
     
@@ -56,6 +58,7 @@ object SettingsPreferences {
     private val SHOW_REELS_ON_HOME = booleanPreferencesKey("show_reels_on_home")
     private val PROFILE_FRAME_ENABLED = booleanPreferencesKey("profile_frame_enabled")
     private val PROFILE_BADGE_STYLE = stringPreferencesKey("profile_badge_style")
+    private val PROFILE_THEME = stringPreferencesKey("profile_theme")
     private val STAY_ACTIVE_BANNER_DISMISSED_AT = longPreferencesKey("stay_active_banner_dismissed_at")
     /** Equipped profile visit loader gift id (e.g. `big_bad_wolfie`). */
     private val EQUIPPED_PROFILE_LOADER_GIFT = stringPreferencesKey("equipped_profile_loader_gift")
@@ -103,6 +106,12 @@ object SettingsPreferences {
         return (settings[PUSH_NOTIFICATIONS_ENABLED] ?: true) &&
             (settings[MESSAGE_NOTIFICATIONS_ENABLED] ?: true)
     }
+
+    suspend fun isMatchNotificationDeliveryEnabled(context: Context): Boolean {
+        val settings = context.settingsDataStore.data.first()
+        return (settings[PUSH_NOTIFICATIONS_ENABLED] ?: true) &&
+            (settings[MATCH_ALERTS_ENABLED] ?: true)
+    }
     
     // ==================== PRIVACY GETTERS ====================
     
@@ -120,6 +129,9 @@ object SettingsPreferences {
     
     fun showProfileViews(context: Context): Flow<Boolean> =
         context.settingsDataStore.data.map { it[SHOW_PROFILE_VIEWS] ?: true }
+
+    fun showProfileLocation(context: Context): Flow<Boolean> =
+        context.settingsDataStore.data.map { it[SHOW_PROFILE_LOCATION] ?: true }
     
     fun discoverableByEmail(context: Context): Flow<Boolean> =
         context.settingsDataStore.data.map { it[DISCOVERABLE_BY_EMAIL] ?: true }
@@ -160,7 +172,12 @@ object SettingsPreferences {
         context.settingsDataStore.data.map { it[PROFILE_FRAME_ENABLED] ?: false }
 
     fun profileBadgeStyle(context: Context): Flow<String> =
-        context.settingsDataStore.data.map { it[PROFILE_BADGE_STYLE] ?: PROFILE_BADGE_STYLE_STUDENT }
+        context.settingsDataStore.data.map { it[PROFILE_BADGE_STYLE] ?: PROFILE_BADGE_STYLE_NONE }
+
+    fun profileTheme(context: Context): Flow<String> =
+        context.settingsDataStore.data.map {
+            com.kyant.backdrop.catalog.linkedin.normalizeProfileThemeKey(it[PROFILE_THEME])
+        }
 
     fun stayActiveBannerDismissedAt(context: Context): Flow<Long> =
         context.settingsDataStore.data.map { it[STAY_ACTIVE_BANNER_DISMISSED_AT] ?: 0L }
@@ -234,6 +251,10 @@ object SettingsPreferences {
     suspend fun setShowProfileViews(context: Context, value: Boolean) {
         context.settingsDataStore.edit { it[SHOW_PROFILE_VIEWS] = value }
     }
+
+    suspend fun setShowProfileLocation(context: Context, value: Boolean) {
+        context.settingsDataStore.edit { it[SHOW_PROFILE_LOCATION] = value }
+    }
     
     suspend fun setDiscoverableByEmail(context: Context, value: Boolean) {
         context.settingsDataStore.edit { it[DISCOVERABLE_BY_EMAIL] = value }
@@ -288,12 +309,17 @@ object SettingsPreferences {
 
     suspend fun setProfileBadgeStyle(context: Context, value: String) {
         val normalized = when (value) {
+            PROFILE_BADGE_STYLE_NONE,
             PROFILE_BADGE_STYLE_STUDENT,
-            PROFILE_BADGE_STYLE_PROFESSIONAL,
-            PROFILE_BADGE_STYLE_PREMIUM -> value
-            else -> PROFILE_BADGE_STYLE_STUDENT
+            PROFILE_BADGE_STYLE_PROFESSIONAL -> value
+            else -> PROFILE_BADGE_STYLE_NONE
         }
         context.settingsDataStore.edit { it[PROFILE_BADGE_STYLE] = normalized }
+    }
+
+    suspend fun setProfileTheme(context: Context, value: String) {
+        val normalized = com.kyant.backdrop.catalog.linkedin.normalizeProfileThemeKey(value)
+        context.settingsDataStore.edit { it[PROFILE_THEME] = normalized }
     }
 
     suspend fun setStayActiveBannerDismissedAt(context: Context, value: Long) {

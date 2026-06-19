@@ -397,7 +397,8 @@ private fun AvatarProofRow(
                         imageUrl = person.profileImage,
                         fallback = person.name ?: person.username ?: "V",
                         accentColor = accentColor,
-                        verified = person.hasVerificationBadge()
+                        verified = person.hasVerificationBadge(),
+                        badgeStyle = person.verificationBadgeStyle()
                     )
                 }
             }
@@ -415,7 +416,8 @@ private fun MiniAvatar(
     imageUrl: String?,
     fallback: String,
     accentColor: Color,
-    verified: Boolean = false
+    verified: Boolean = false,
+    badgeStyle: String? = null
 ) {
     Box(
         modifier = Modifier
@@ -448,6 +450,7 @@ private fun MiniAvatar(
         }
         VerificationBadge(
             verified = verified,
+            badgeStyle = badgeStyle,
             modifier = Modifier.align(Alignment.BottomEnd),
             size = VerificationBadgeSize.Micro
         )

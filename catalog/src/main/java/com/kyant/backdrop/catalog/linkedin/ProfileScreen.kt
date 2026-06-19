@@ -122,6 +122,7 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.catalog.data.SettingsPreferences
 import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.components.LiquidSlider
+import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -163,6 +164,12 @@ import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 private const val ProfileGitHubSectionKey = "profile_github_section"
+private val RetroGameCream = Color(0xFFF3EFE3)
+private val RetroGameInk = Color(0xFF111111)
+private val RetroGameYellow = Color(0xFFFFD414)
+private val RetroGameRed = Color(0xFFFF3B30)
+private val RetroGameBlue = Color(0xFF3F6FFF)
+private val RetroGameGreen = Color(0xFF28D17C)
 
 // ==================== Main Profile Screen ====================
 
@@ -192,15 +199,31 @@ fun ProfileScreen(
     // Theme detection
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
     val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
+    val profileThemePreference by SettingsPreferences.profileTheme(context).collectAsState(initial = DefaultProfileThemeKey)
+    val showProfileLocation by SettingsPreferences.showProfileLocation(context).collectAsState(initial = true)
     val appearance = currentVormexAppearance(themeMode)
     val isGlassTheme = appearance.isGlassTheme
     val isDarkTheme = appearance.isDarkTheme
+    val profileUser = uiState.profile?.user
+    val canUseProfileTheme =
+        profileUser?.canAccessProfileCustomization == true || profileUser?.isPremium == true
+    val activeProfileThemeKey = normalizeProfileThemeKey(
+        if (uiState.isOwner && canUseProfileTheme) {
+            profileThemePreference
+        } else {
+            profileUser?.profileTheme
+        }
+    )
+    val isGameProfileTheme = activeProfileThemeKey == GameRetroProfileThemeKey
     
     // Project screen state
     var showAddProject by remember { mutableStateOf(false) }
     var editingProject by remember { mutableStateOf<Project?>(null) }
     var projectDetailProject by remember { mutableStateOf<Project?>(null) }
     var projectDetailVisible by remember { mutableStateOf(false) }
+    var showReportProfileDialog by remember { mutableStateOf(false) }
+    var isSubmittingProfileReport by remember { mutableStateOf(false) }
+    var isBlockingProfileUser by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     fun dismissProjectDetail(afterDismiss: (() -> Unit)? = null) {
@@ -209,6 +232,68 @@ fun ProfileScreen(
             delay(220)
             projectDetailProject = null
             afterDismiss?.invoke()
+        }
+    }
+
+    fun targetProfileUserId(): String? {
+        val targetUser = uiState.profile?.user ?: return null
+        return targetUser.id.takeIf { it.isNotBlank() && !uiState.isOwner }
+    }
+
+    fun submitProfileReport(reason: String, details: String, blockUser: Boolean) {
+        val targetUserId = targetProfileUserId() ?: return
+        if (isSubmittingProfileReport) return
+        scope.launch {
+            isSubmittingProfileReport = true
+            ApiClient.reportUser(
+                context = context,
+                userId = targetUserId,
+                reason = reason,
+                description = details.ifBlank { null },
+                blockUser = blockUser
+            ).onSuccess {
+                Toast.makeText(
+                    context,
+                    if (blockUser) {
+                        "Report sent and user blocked."
+                    } else {
+                        "Thanks - we received your report."
+                    },
+                    Toast.LENGTH_LONG
+                ).show()
+                showReportProfileDialog = false
+                if (blockUser) onNavigateBack()
+            }.onFailure { error ->
+                Toast.makeText(
+                    context,
+                    error.message ?: "Could not submit report",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            isSubmittingProfileReport = false
+        }
+    }
+
+    fun blockProfileUser() {
+        val targetUserId = targetProfileUserId() ?: return
+        if (isBlockingProfileUser) return
+        scope.launch {
+            isBlockingProfileUser = true
+            ApiClient.blockUser(
+                context = context,
+                userId = targetUserId,
+                reason = "Blocked from profile"
+            ).onSuccess {
+                Toast.makeText(context, "User blocked.", Toast.LENGTH_LONG).show()
+                onNavigateBack()
+            }.onFailure { error ->
+                Toast.makeText(
+                    context,
+                    error.message ?: "Could not block user",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            isBlockingProfileUser = false
         }
     }
     
@@ -282,6 +367,8 @@ fun ProfileScreen(
                     accentColor = accentColor,
                     isGlassTheme = isGlassTheme,
                     isDarkTheme = isDarkTheme,
+                    profileThemeOverride = profileThemePreference,
+                    showOwnerProfileLocation = showProfileLocation,
                     onEditProfile = { screenViewModel.startEditingProfile() },
                     onConnect = { screenViewModel.sendConnectionRequest() },
                     onCancelRequest = { screenViewModel.cancelConnectionRequest() },
@@ -289,6 +376,7 @@ fun ProfileScreen(
                     onRejectRequest = { screenViewModel.rejectConnectionRequest() },
                     onRemoveConnection = { screenViewModel.removeConnection() },
                     onToggleFollow = { screenViewModel.toggleFollow() },
+                    onToggleProfileSave = { screenViewModel.toggleProfileSave() },
                     onFilterChange = { screenViewModel.setFeedFilter(it) },
                     onLoadMore = { screenViewModel.loadMoreFeed() },
                     onYearChange = { screenViewModel.loadActivityForYear(it) },
@@ -308,6 +396,8 @@ fun ProfileScreen(
                     onVotePoll = { postId, optionId -> screenViewModel.votePoll(postId, optionId) },
                     onUploadAvatar = { screenViewModel.uploadAvatar(it) },
                     onUploadBanner = { screenViewModel.uploadBanner(it) },
+                    onReportUser = { showReportProfileDialog = true },
+                    onBlockUser = { blockProfileUser() },
                     onConnectGitHub = {
                         screenViewModel.startGitHubOAuth { authUrl ->
                             runCatching {
@@ -404,6 +494,21 @@ fun ProfileScreen(
             )
         }
 
+        if (showReportProfileDialog) {
+            SafetyReportDialog(
+                title = "Report profile",
+                subtitle = "Tell Trust & Safety what is wrong with this profile.",
+                contentColor = contentColor,
+                accentColor = accentColor,
+                blockLabel = "Also block this user",
+                isSubmitting = isSubmittingProfileReport,
+                onDismiss = {
+                    if (!isSubmittingProfileReport) showReportProfileDialog = false
+                },
+                onSubmit = ::submitProfileReport
+            )
+        }
+
         val profileEditDraft = uiState.profileEditDraft
         if (uiState.isEditingProfile && profileEditDraft != null) {
             EditProfileScreen(
@@ -413,6 +518,7 @@ fun ProfileScreen(
                 backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
+                isGameProfileTheme = isGameProfileTheme,
                 onDraftChange = { screenViewModel.updateProfileEditDraft { _ -> it } },
                 onDraftTransform = { transform -> screenViewModel.updateProfileEditDraft(transform) },
                 onDismiss = { screenViewModel.cancelEditingProfile() },
@@ -427,6 +533,7 @@ fun ProfileScreen(
                 backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
+                isGameProfileTheme = isGameProfileTheme,
                 onSave = { showAddProject = false },
                 onDelete = null,
                 onCancel = { showAddProject = false }
@@ -440,6 +547,7 @@ fun ProfileScreen(
                 backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
+                isGameProfileTheme = isGameProfileTheme,
                 onSave = { editingProject = null },
                 onDelete = {
                     screenViewModel.deleteProject(
@@ -489,6 +597,7 @@ fun ProfileScreen(
                             backdrop = backdrop,
                             contentColor = contentColor,
                             accentColor = accentColor,
+                            isGameProfileTheme = isGameProfileTheme,
                             isOwner = uiState.isOwner,
                             onEdit = {
                                 dismissProjectDetail {
@@ -831,6 +940,7 @@ private fun EditProfileScreen(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
+    isGameProfileTheme: Boolean = false,
     onDraftChange: (ProfileEditDraft) -> Unit,
     onDraftTransform: ((ProfileEditDraft) -> ProfileEditDraft) -> Unit,
     onDismiss: () -> Unit,
@@ -892,7 +1002,9 @@ private fun EditProfileScreen(
         modifier = Modifier
             .fillMaxSize()
             .then(
-                if (appearance.isGlassTheme) {
+                if (isGameProfileTheme) {
+                    Modifier.background(RetroGameCream)
+                } else if (appearance.isGlassTheme) {
                     Modifier.drawBackdrop(
                         backdrop = backdrop,
                         shape = { RoundedRectangle(0f.dp) },
@@ -916,59 +1028,87 @@ private fun EditProfileScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(
-                        if (appearance.isGlassTheme) {
+                        if (isGameProfileTheme) {
+                            RetroGameCream
+                        } else if (appearance.isGlassTheme) {
                             Color.Black.copy(alpha = 0.14f)
                         } else {
                             appearance.navigationColor
                         }
                     )
-                    .border(1.dp, appearance.navigationBorderColor)
+                    .border(
+                        if (isGameProfileTheme) 2.dp else 1.dp,
+                        if (isGameProfileTheme) RetroGameInk else appearance.navigationBorderColor,
+                        RoundedCornerShape(0.dp)
+                    )
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                BasicText(
-                    "Cancel",
-                    style = TextStyle(
-                        contentColor.copy(alpha = if (isSaving) 0.35f else 0.76f),
-                        14.sp,
-                        FontWeight.Medium
-                    ),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable(enabled = !isSaving, onClick = onDismiss)
-                        .padding(horizontal = 8.dp, vertical = 8.dp)
-                )
+                if (isGameProfileTheme) {
+                    RetroGameMiniButton(
+                        label = "CANCEL",
+                        background = Color.White,
+                        onClick = onDismiss
+                    )
+                } else {
+                    BasicText(
+                        "Cancel",
+                        style = TextStyle(
+                            contentColor.copy(alpha = if (isSaving) 0.35f else 0.76f),
+                            14.sp,
+                            FontWeight.Medium
+                        ),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(enabled = !isSaving, onClick = onDismiss)
+                            .padding(horizontal = 8.dp, vertical = 8.dp)
+                    )
+                }
 
                 BasicText(
-                    "Edit Profile",
-                    style = TextStyle(contentColor, 18.sp, FontWeight.Bold),
+                    if (isGameProfileTheme) "EDIT / PROFILE" else "Edit Profile",
+                    style = TextStyle(
+                        if (isGameProfileTheme) RetroGameInk else contentColor,
+                        if (isGameProfileTheme) 14.sp else 18.sp,
+                        FontWeight.Black,
+                        letterSpacing = if (isGameProfileTheme) 1.sp else 0.sp
+                    ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
 
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(if (isSaving) accentColor.copy(alpha = 0.62f) else accentColor)
-                        .clickable(enabled = !isSaving, onClick = onSave)
-                        .padding(horizontal = 14.dp, vertical = 9.dp)
-                ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(7.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                if (isGameProfileTheme) {
+                    RetroGameMiniButton(
+                        label = if (isSaving) "SAVING" else "SAVE",
+                        background = if (isSaving) RetroGameRed.copy(alpha = 0.62f) else RetroGameRed,
+                        content = Color.White,
+                        onClick = onSave
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (isSaving) accentColor.copy(alpha = 0.62f) else accentColor)
+                            .clickable(enabled = !isSaving, onClick = onSave)
+                            .padding(horizontal = 14.dp, vertical = 9.dp)
                     ) {
-                        if (isSaving) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                color = Color.White,
-                                strokeWidth = 2.dp
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isSaving) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                            BasicText(
+                                if (isSaving) "Saving" else "Save",
+                                style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold)
                             )
                         }
-                        BasicText(
-                            if (isSaving) "Saving" else "Save",
-                            style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold)
-                        )
                     }
                 }
             }
@@ -1001,6 +1141,7 @@ private fun EditProfileScreen(
                         placeholder = "Your full name",
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
                         onValueChange = { onDraftChange(draft.copy(name = it)) }
                     )
                 }
@@ -1011,6 +1152,7 @@ private fun EditProfileScreen(
                         placeholder = "Student, Android developer, founder...",
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
                         onValueChange = { onDraftChange(draft.copy(headline = it)) }
                     )
                 }
@@ -1019,6 +1161,7 @@ private fun EditProfileScreen(
                         checked = draft.isOpenToOpportunities,
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
                         onToggle = {
                             onDraftChange(
                                 draft.copy(isOpenToOpportunities = !draft.isOpenToOpportunities)
@@ -1033,6 +1176,7 @@ private fun EditProfileScreen(
                         placeholder = "Tell people what you are building, learning, or looking for",
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
                         singleLine = false,
                         minHeight = 116.dp,
                         onValueChange = { onDraftChange(draft.copy(bio = it)) }
@@ -1043,6 +1187,7 @@ private fun EditProfileScreen(
                         value = draft.location,
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
                         isResolvingDeviceLocation = isResolvingDeviceLocation,
                         deviceLocationMessage = deviceLocationMessage,
                         deviceLocationError = deviceLocationError,
@@ -1062,6 +1207,7 @@ private fun EditProfileScreen(
                             placeholder = "College name",
                             contentColor = contentColor,
                             accentColor = accentColor,
+                            isGameProfileTheme = isGameProfileTheme,
                             modifier = Modifier.weight(1f),
                             onValueChange = { onDraftChange(draft.copy(college = it)) }
                         )
@@ -1071,6 +1217,7 @@ private fun EditProfileScreen(
                             placeholder = "CSE, ECE...",
                             contentColor = contentColor,
                             accentColor = accentColor,
+                            isGameProfileTheme = isGameProfileTheme,
                             modifier = Modifier.weight(1f),
                             onValueChange = { onDraftChange(draft.copy(branch = it)) }
                         )
@@ -1084,6 +1231,7 @@ private fun EditProfileScreen(
                             placeholder = "B.Tech",
                             contentColor = contentColor,
                             accentColor = accentColor,
+                            isGameProfileTheme = isGameProfileTheme,
                             modifier = Modifier.weight(1f),
                             onValueChange = { onDraftChange(draft.copy(degree = it)) }
                         )
@@ -1093,6 +1241,7 @@ private fun EditProfileScreen(
                             placeholder = "1-5",
                             contentColor = contentColor,
                             accentColor = accentColor,
+                            isGameProfileTheme = isGameProfileTheme,
                             modifier = Modifier.weight(1f),
                             onValueChange = { value ->
                                 onDraftChange(
@@ -1109,6 +1258,7 @@ private fun EditProfileScreen(
                         placeholder = "2027",
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
                         onValueChange = { value ->
                             onDraftChange(
                                 draft.copy(graduationYear = value.filter { it.isDigit() }.take(4))
@@ -1123,6 +1273,7 @@ private fun EditProfileScreen(
                         placeholder = "https://linkedin.com/in/username",
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
                         onValueChange = { onDraftChange(draft.copy(linkedinUrl = it)) }
                     )
                 }
@@ -1133,6 +1284,7 @@ private fun EditProfileScreen(
                         placeholder = "https://github.com/username",
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
                         onValueChange = { onDraftChange(draft.copy(githubProfileUrl = it)) }
                     )
                 }
@@ -1143,6 +1295,7 @@ private fun EditProfileScreen(
                         placeholder = "https://your-site.com",
                         contentColor = contentColor,
                         accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
                         onValueChange = { onDraftChange(draft.copy(portfolioUrl = it)) }
                     )
                 }
@@ -1159,6 +1312,7 @@ private fun ProfileEditLocationField(
     value: String,
     contentColor: Color,
     accentColor: Color,
+    isGameProfileTheme: Boolean = false,
     isResolvingDeviceLocation: Boolean,
     deviceLocationMessage: String?,
     deviceLocationError: String?,
@@ -1174,13 +1328,26 @@ private fun ProfileEditLocationField(
             verticalAlignment = Alignment.CenterVertically
         ) {
             BasicText(
-                "Location",
-                style = TextStyle(contentColor.copy(alpha = 0.62f), 12.sp, FontWeight.SemiBold)
+                if (isGameProfileTheme) "// LOCATION" else "Location",
+                style = TextStyle(
+                    if (isGameProfileTheme) RetroGameInk else contentColor.copy(alpha = 0.62f),
+                    12.sp,
+                    if (isGameProfileTheme) FontWeight.Black else FontWeight.SemiBold,
+                    letterSpacing = if (isGameProfileTheme) 0.8.sp else 0.sp
+                )
             )
             Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(accentColor.copy(alpha = if (isResolvingDeviceLocation) 0.12f else 0.18f))
+                    .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp))
+                    .background(
+                        if (isGameProfileTheme) RetroGameYellow
+                        else accentColor.copy(alpha = if (isResolvingDeviceLocation) 0.12f else 0.18f)
+                    )
+                    .border(
+                        if (isGameProfileTheme) 2.dp else 0.dp,
+                        if (isGameProfileTheme) RetroGameInk else Color.Transparent,
+                        RoundedCornerShape(0.dp)
+                    )
                     .clickable(enabled = !isResolvingDeviceLocation, onClick = onUseDeviceLocation)
                     .padding(horizontal = 10.dp, vertical = 7.dp),
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -1189,20 +1356,24 @@ private fun ProfileEditLocationField(
                 if (isResolvingDeviceLocation) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(13.dp),
-                        color = accentColor,
+                        color = if (isGameProfileTheme) RetroGameInk else accentColor,
                         strokeWidth = 2.dp
                     )
                 } else {
                     Icon(
                         painter = painterResource(R.drawable.ic_location),
                         contentDescription = null,
-                        tint = accentColor,
+                        tint = if (isGameProfileTheme) RetroGameInk else accentColor,
                         modifier = Modifier.size(14.dp)
                     )
                 }
                 BasicText(
                     if (isResolvingDeviceLocation) "Locating" else "Use device",
-                    style = TextStyle(accentColor, 12.sp, FontWeight.SemiBold)
+                    style = TextStyle(
+                        if (isGameProfileTheme) RetroGameInk else accentColor,
+                        12.sp,
+                        if (isGameProfileTheme) FontWeight.Black else FontWeight.SemiBold
+                    )
                 )
             }
         }
@@ -1210,8 +1381,8 @@ private fun ProfileEditLocationField(
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
-            textStyle = TextStyle(contentColor, 14.sp),
-            cursorBrush = SolidColor(accentColor),
+            textStyle = TextStyle(if (isGameProfileTheme) RetroGameInk else contentColor, 14.sp),
+            cursorBrush = SolidColor(if (isGameProfileTheme) RetroGameRed else accentColor),
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
             decorationBox = { inner ->
@@ -1219,16 +1390,23 @@ private fun ProfileEditLocationField(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(contentColor.copy(alpha = 0.06f))
-                        .border(1.dp, contentColor.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+                        .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp))
+                        .background(if (isGameProfileTheme) Color.White.copy(alpha = 0.72f) else contentColor.copy(alpha = 0.06f))
+                        .border(
+                            if (isGameProfileTheme) 2.dp else 1.dp,
+                            if (isGameProfileTheme) RetroGameInk else contentColor.copy(alpha = 0.10f),
+                            if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp)
+                        )
                         .padding(horizontal = 12.dp, vertical = 11.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
                     if (value.isEmpty()) {
                         BasicText(
                             "City, State",
-                            style = TextStyle(contentColor.copy(alpha = 0.36f), 14.sp),
+                            style = TextStyle(
+                                if (isGameProfileTheme) RetroGameInk.copy(alpha = 0.42f) else contentColor.copy(alpha = 0.36f),
+                                14.sp
+                            ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1246,7 +1424,11 @@ private fun ProfileEditLocationField(
         } ?: deviceLocationMessage?.let {
             BasicText(
                 it,
-                style = TextStyle(contentColor.copy(alpha = 0.56f), 12.sp, FontWeight.Medium)
+                style = TextStyle(
+                    if (isGameProfileTheme) RetroGameInk.copy(alpha = 0.62f) else contentColor.copy(alpha = 0.56f),
+                    12.sp,
+                    FontWeight.Medium
+                )
             )
         }
     }
@@ -1259,6 +1441,7 @@ private fun ProfileEditTextField(
     placeholder: String,
     contentColor: Color,
     accentColor: Color,
+    isGameProfileTheme: Boolean = false,
     modifier: Modifier = Modifier,
     singleLine: Boolean = true,
     minHeight: androidx.compose.ui.unit.Dp = 48.dp,
@@ -1269,14 +1452,19 @@ private fun ProfileEditTextField(
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         BasicText(
-            label,
-            style = TextStyle(contentColor.copy(alpha = 0.62f), 12.sp, FontWeight.SemiBold)
+            if (isGameProfileTheme) "// ${label.uppercase(Locale.US)}" else label,
+            style = TextStyle(
+                if (isGameProfileTheme) RetroGameInk else contentColor.copy(alpha = 0.62f),
+                12.sp,
+                if (isGameProfileTheme) FontWeight.Black else FontWeight.SemiBold,
+                letterSpacing = if (isGameProfileTheme) 0.8.sp else 0.sp
+            )
         )
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
-            textStyle = TextStyle(contentColor, 14.sp),
-            cursorBrush = SolidColor(accentColor),
+            textStyle = TextStyle(if (isGameProfileTheme) RetroGameInk else contentColor, 14.sp),
+            cursorBrush = SolidColor(if (isGameProfileTheme) RetroGameRed else accentColor),
             singleLine = singleLine,
             modifier = Modifier.fillMaxWidth(),
             decorationBox = { inner ->
@@ -1284,16 +1472,23 @@ private fun ProfileEditTextField(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = minHeight)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(contentColor.copy(alpha = 0.06f))
-                        .border(1.dp, contentColor.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+                        .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp))
+                        .background(if (isGameProfileTheme) Color.White.copy(alpha = 0.72f) else contentColor.copy(alpha = 0.06f))
+                        .border(
+                            if (isGameProfileTheme) 2.dp else 1.dp,
+                            if (isGameProfileTheme) RetroGameInk else contentColor.copy(alpha = 0.10f),
+                            if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp)
+                        )
                         .padding(horizontal = 12.dp, vertical = 11.dp),
                     contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart
                 ) {
                     if (value.isEmpty()) {
                         BasicText(
                             placeholder,
-                            style = TextStyle(contentColor.copy(alpha = 0.36f), 14.sp),
+                            style = TextStyle(
+                                if (isGameProfileTheme) RetroGameInk.copy(alpha = 0.42f) else contentColor.copy(alpha = 0.36f),
+                                14.sp
+                            ),
                             maxLines = if (singleLine) 1 else 2,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1310,15 +1505,23 @@ private fun ProfileEditOpenToWorkRow(
     checked: Boolean,
     contentColor: Color,
     accentColor: Color,
+    isGameProfileTheme: Boolean = false,
     onToggle: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(14.dp))
             .background(
-                if (checked) Color(0xFF22C55E).copy(alpha = 0.15f)
+                if (isGameProfileTheme && checked) RetroGameGreen
+                else if (isGameProfileTheme) Color.White.copy(alpha = 0.72f)
+                else if (checked) Color(0xFF22C55E).copy(alpha = 0.15f)
                 else contentColor.copy(alpha = 0.06f)
+            )
+            .border(
+                if (isGameProfileTheme) 2.dp else 0.dp,
+                if (isGameProfileTheme) RetroGameInk else Color.Transparent,
+                RoundedCornerShape(0.dp)
             )
             .clickable(onClick = onToggle)
             .padding(12.dp),
@@ -1328,27 +1531,49 @@ private fun ProfileEditOpenToWorkRow(
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             BasicText(
                 "Open to work",
-                style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold)
+                style = TextStyle(
+                    if (isGameProfileTheme) RetroGameInk else contentColor,
+                    14.sp,
+                    if (isGameProfileTheme) FontWeight.Black else FontWeight.SemiBold
+                )
             )
             BasicText(
                 if (checked) "Shown as #OpenToWork on your profile" else "Hidden from your profile header",
-                style = TextStyle(contentColor.copy(alpha = 0.54f), 12.sp)
+                style = TextStyle(
+                    if (isGameProfileTheme) RetroGameInk.copy(alpha = 0.68f) else contentColor.copy(alpha = 0.54f),
+                    12.sp
+                )
             )
         }
         Box(
             modifier = Modifier
                 .width(44.dp)
                 .height(24.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (checked) Color(0xFF22C55E) else contentColor.copy(alpha = 0.16f))
+                .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp))
+                .background(
+                    if (isGameProfileTheme && checked) RetroGameYellow
+                    else if (isGameProfileTheme) Color.White
+                    else if (checked) Color(0xFF22C55E)
+                    else contentColor.copy(alpha = 0.16f)
+                )
+                .border(
+                    if (isGameProfileTheme) 2.dp else 0.dp,
+                    if (isGameProfileTheme) RetroGameInk else Color.Transparent,
+                    RoundedCornerShape(0.dp)
+                )
                 .padding(3.dp),
             contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart
         ) {
             Box(
                 modifier = Modifier
                     .size(18.dp)
-                    .clip(CircleShape)
-                    .background(if (checked) Color.White else accentColor.copy(alpha = 0.72f))
+                    .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else CircleShape)
+                    .background(
+                        if (isGameProfileTheme && checked) RetroGameInk
+                        else if (isGameProfileTheme) RetroGameRed
+                        else if (checked) Color.White
+                        else accentColor.copy(alpha = 0.72f)
+                    )
             )
         }
     }
@@ -1487,6 +1712,8 @@ private fun ProfileContent(
     accentColor: Color,
     isGlassTheme: Boolean,
     isDarkTheme: Boolean,
+    profileThemeOverride: String? = null,
+    showOwnerProfileLocation: Boolean = true,
     onEditProfile: () -> Unit = {},
     onConnect: () -> Unit,
     onCancelRequest: () -> Unit,
@@ -1494,6 +1721,7 @@ private fun ProfileContent(
     onRejectRequest: () -> Unit,
     onRemoveConnection: () -> Unit,
     onToggleFollow: () -> Unit,
+    onToggleProfileSave: () -> Unit,
     onFilterChange: (String) -> Unit,
     onLoadMore: () -> Unit,
     onYearChange: (Int) -> Unit,
@@ -1513,6 +1741,8 @@ private fun ProfileContent(
     onVotePoll: (String, String) -> Unit,
     onUploadAvatar: (ByteArray) -> Unit,
     onUploadBanner: (ByteArray) -> Unit,
+    onReportUser: () -> Unit = {},
+    onBlockUser: () -> Unit = {},
     onConnectGitHub: () -> Unit = {},
     onSyncGitHub: () -> Unit = {},
     onDisconnectGitHub: () -> Unit = {},
@@ -1543,6 +1773,12 @@ private fun ProfileContent(
     onDeleteFeedPost: (String) -> Unit = {}
 ) {
     val profile = uiState.profile!!
+    val profileThemeKey = if (uiState.isOwner) {
+        normalizeProfileThemeKey(profileThemeOverride ?: profile.user.profileTheme)
+    } else {
+        normalizeProfileThemeKey(profile.user.profileTheme)
+    }
+    val isGameProfileTheme = profileThemeKey == GameRetroProfileThemeKey
     val listState = rememberLazyListState()
     val isGitHubItemVisible by remember(listState, profile.github.connected, uiState.isOwner) {
         derivedStateOf {
@@ -1577,50 +1813,77 @@ private fun ProfileContent(
     
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .then(if (isGameProfileTheme) Modifier.background(RetroGameCream) else Modifier),
         contentPadding = PaddingValues(bottom = 100.dp)
     ) {
         // Header Section
         item {
-            ProfileHeader(
-                user = profile.user,
-                stats = profile.stats,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isGlassTheme = isGlassTheme,
-                isDarkTheme = isDarkTheme,
-                isOwner = uiState.isOwner,
-                connectionStatus = uiState.connectionStatus,
-                isFollowing = uiState.isFollowing,
-                isFollowedBy = uiState.isFollowedBy,
-                connectionActionInProgress = uiState.connectionActionInProgress,
-                followActionInProgress = uiState.followActionInProgress,
-                mutualConnections = uiState.mutualConnections,
-                mutualConnectionsCount = uiState.mutualConnectionsCount,
-                isUploadingAvatar = uiState.isUploadingAvatar,
-                isUploadingBanner = uiState.isUploadingBanner,
-                onEditProfile = onEditProfile,
-                onConnect = onConnect,
-                onCancelRequest = onCancelRequest,
-                onAcceptRequest = onAcceptRequest,
-                onRejectRequest = onRejectRequest,
-                onRemoveConnection = onRemoveConnection,
-                onToggleFollow = onToggleFollow,
-                onOpenConnections = onOpenConnections,
-                onOpenFollowers = onOpenFollowers,
-                onMessage = onMessage,
-                showStartConversation = showStartConversation,
-                isPreparingConversationStarter = isPreparingConversationStarter,
-                onStartConversation = onStartConversation,
-                onOpenMutualProfile = onOpenProfile,
-                onUploadAvatar = onUploadAvatar,
-                onUploadBanner = onUploadBanner
-            )
+            if (isGameProfileTheme) {
+                RetroGameProfileThemeSection(
+                    user = profile.user,
+                    stats = profile.stats,
+                    isOwner = uiState.isOwner,
+                    showLocation = !uiState.isOwner || showOwnerProfileLocation,
+                    showStartConversation = showStartConversation,
+                    isPreparingConversationStarter = isPreparingConversationStarter,
+                    onEditProfile = onEditProfile,
+                    onMessage = onMessage,
+                    onStartConversation = onStartConversation,
+                    onOpenConnections = onOpenConnections,
+                    onOpenFollowers = onOpenFollowers,
+                    isProfileSaved = profile.viewerContext.isProfileSaved,
+                    profileSaveActionInProgress = uiState.profileSaveActionInProgress,
+                    onToggleProfileSave = onToggleProfileSave
+                )
+            } else {
+                ProfileHeader(
+                    user = profile.user,
+                    stats = profile.stats,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    isGlassTheme = isGlassTheme,
+                    isDarkTheme = isDarkTheme,
+                    isOwner = uiState.isOwner,
+                    showLocation = !uiState.isOwner || showOwnerProfileLocation,
+                    connectionStatus = uiState.connectionStatus,
+                    isFollowing = uiState.isFollowing,
+                    isFollowedBy = uiState.isFollowedBy,
+                    connectionActionInProgress = uiState.connectionActionInProgress,
+                    followActionInProgress = uiState.followActionInProgress,
+                    isProfileSaved = profile.viewerContext.isProfileSaved,
+                    profileSaveActionInProgress = uiState.profileSaveActionInProgress,
+                    mutualConnections = uiState.mutualConnections,
+                    mutualConnectionsCount = uiState.mutualConnectionsCount,
+                    isUploadingAvatar = uiState.isUploadingAvatar,
+                    isUploadingBanner = uiState.isUploadingBanner,
+                    onEditProfile = onEditProfile,
+                    onConnect = onConnect,
+                    onCancelRequest = onCancelRequest,
+                    onAcceptRequest = onAcceptRequest,
+                    onRejectRequest = onRejectRequest,
+                    onRemoveConnection = onRemoveConnection,
+                    onToggleFollow = onToggleFollow,
+                    onToggleProfileSave = onToggleProfileSave,
+                    onOpenConnections = onOpenConnections,
+                    onOpenFollowers = onOpenFollowers,
+                    onMessage = onMessage,
+                    showStartConversation = showStartConversation,
+                    isPreparingConversationStarter = isPreparingConversationStarter,
+                    onStartConversation = onStartConversation,
+                    onOpenMutualProfile = onOpenProfile,
+                    onUploadAvatar = onUploadAvatar,
+                    onUploadBanner = onUploadBanner,
+                    onReportUser = onReportUser,
+                    onBlockUser = onBlockUser
+                )
+            }
         }
         
         // About Section
-        item {
+        if (!isGameProfileTheme) item {
             Spacer(Modifier.height(12.dp))
             AboutSection(
                 user = profile.user,
@@ -1641,7 +1904,7 @@ private fun ProfileContent(
         }
         
         // GitHub Stats Section
-        if (profile.github.connected || uiState.isOwner) {
+        if (!isGameProfileTheme && (profile.github.connected || uiState.isOwner)) {
             item(key = ProfileGitHubSectionKey) {
                 Spacer(Modifier.height(12.dp))
                 GitHubSection(
@@ -1663,7 +1926,7 @@ private fun ProfileContent(
         }
         
         // Activity Calendar Section
-        item {
+        if (!isGameProfileTheme) item {
             Spacer(Modifier.height(12.dp))
             ActivityCalendarSection(
                 heatmap = uiState.activityHeatmap,
@@ -1681,15 +1944,24 @@ private fun ProfileContent(
         if (profile.skills.isNotEmpty() || uiState.isOwner) {
             item {
                 Spacer(Modifier.height(12.dp))
-                SkillsSection(
-                    skills = profile.skills,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddSkill = onAddSkill,
-                    onRemoveSkill = onRemoveSkill
-                )
+                if (isGameProfileTheme) {
+                    RetroGameSkillsSection(
+                        skills = profile.skills,
+                        isOwner = uiState.isOwner,
+                        onAddSkill = onAddSkill,
+                        onRemoveSkill = onRemoveSkill
+                    )
+                } else {
+                    SkillsSection(
+                        skills = profile.skills,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddSkill = onAddSkill,
+                        onRemoveSkill = onRemoveSkill
+                    )
+                }
             }
         }
         
@@ -1697,17 +1969,28 @@ private fun ProfileContent(
         if (profile.projects.isNotEmpty() || uiState.isOwner) {
             item {
                 Spacer(Modifier.height(12.dp))
-                ProjectsSection(
-                    projects = profile.projects,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddProject = onAddProject,
-                    onEditProject = onEditProject,
-                    onViewProject = onViewProject,
-                    onToggleFeatured = onToggleProjectFeatured
-                )
+                if (isGameProfileTheme) {
+                    RetroGameProjectsSection(
+                        projects = profile.projects,
+                        isOwner = uiState.isOwner,
+                        onAddProject = onAddProject,
+                        onEditProject = onEditProject,
+                        onViewProject = onViewProject,
+                        onToggleFeatured = onToggleProjectFeatured
+                    )
+                } else {
+                    ProjectsSection(
+                        projects = profile.projects,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddProject = onAddProject,
+                        onEditProject = onEditProject,
+                        onViewProject = onViewProject,
+                        onToggleFeatured = onToggleProjectFeatured
+                    )
+                }
             }
         }
         
@@ -1715,16 +1998,26 @@ private fun ProfileContent(
         if (profile.experiences.isNotEmpty() || uiState.isOwner) {
             item {
                 Spacer(Modifier.height(12.dp))
-                ExperienceSection(
-                    experiences = profile.experiences,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddExperience = onAddExperience,
-                    onEditExperience = onEditExperience,
-                    onViewExperience = onViewExperience
-                )
+                if (isGameProfileTheme) {
+                    RetroGameExperienceSection(
+                        experiences = profile.experiences,
+                        isOwner = uiState.isOwner,
+                        onAddExperience = onAddExperience,
+                        onEditExperience = onEditExperience,
+                        onViewExperience = onViewExperience
+                    )
+                } else {
+                    ExperienceSection(
+                        experiences = profile.experiences,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddExperience = onAddExperience,
+                        onEditExperience = onEditExperience,
+                        onViewExperience = onViewExperience
+                    )
+                }
             }
         }
         
@@ -1732,16 +2025,26 @@ private fun ProfileContent(
         if (profile.education.isNotEmpty() || uiState.isOwner) {
             item {
                 Spacer(Modifier.height(12.dp))
-                EducationSection(
-                    education = profile.education,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddEducation = onAddEducation,
-                    onEditEducation = onEditEducation,
-                    onViewEducation = onViewEducation
-                )
+                if (isGameProfileTheme) {
+                    RetroGameEducationSection(
+                        education = profile.education,
+                        isOwner = uiState.isOwner,
+                        onAddEducation = onAddEducation,
+                        onEditEducation = onEditEducation,
+                        onViewEducation = onViewEducation
+                    )
+                } else {
+                    EducationSection(
+                        education = profile.education,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddEducation = onAddEducation,
+                        onEditEducation = onEditEducation,
+                        onViewEducation = onViewEducation
+                    )
+                }
             }
         }
         
@@ -1749,16 +2052,26 @@ private fun ProfileContent(
         if (profile.certificates.isNotEmpty() || uiState.isOwner) {
             item {
                 Spacer(Modifier.height(12.dp))
-                CertificatesSection(
-                    certificates = profile.certificates,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddCertificate = onAddCertificate,
-                    onEditCertificate = onEditCertificate,
-                    onViewCertificate = onViewCertificate
-                )
+                if (isGameProfileTheme) {
+                    RetroGameCertificatesSection(
+                        certificates = profile.certificates,
+                        isOwner = uiState.isOwner,
+                        onAddCertificate = onAddCertificate,
+                        onEditCertificate = onEditCertificate,
+                        onViewCertificate = onViewCertificate
+                    )
+                } else {
+                    CertificatesSection(
+                        certificates = profile.certificates,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddCertificate = onAddCertificate,
+                        onEditCertificate = onEditCertificate,
+                        onViewCertificate = onViewCertificate
+                    )
+                }
             }
         }
         
@@ -1766,72 +2079,1368 @@ private fun ProfileContent(
         if (profile.achievements.isNotEmpty() || uiState.isOwner) {
             item {
                 Spacer(Modifier.height(12.dp))
-                AchievementsSection(
-                    achievements = profile.achievements,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddAchievement = onAddAchievement,
-                    onEditAchievement = onEditAchievement,
-                    onViewAchievement = onViewAchievement
-                )
+                if (isGameProfileTheme) {
+                    RetroGameAchievementsSection(
+                        achievements = profile.achievements,
+                        isOwner = uiState.isOwner,
+                        onAddAchievement = onAddAchievement,
+                        onEditAchievement = onEditAchievement,
+                        onViewAchievement = onViewAchievement
+                    )
+                } else {
+                    AchievementsSection(
+                        achievements = profile.achievements,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddAchievement = onAddAchievement,
+                        onEditAchievement = onEditAchievement,
+                        onViewAchievement = onViewAchievement
+                    )
+                }
             }
         }
         
         // Activity Feed Section
         item(key = "profile_activity_header", contentType = "profile_activity_header") {
             Spacer(Modifier.height(12.dp))
-            ActivityFeedHeaderSection(
-                isEmpty = uiState.feedItems.isEmpty(),
-                currentFilter = uiState.feedFilter,
-                isLoading = uiState.isLoadingFeed,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onFilterChange = onFilterChange
-            )
+            if (isGameProfileTheme) {
+                RetroGameActivityFeedHeaderSection(
+                    currentFilter = uiState.feedFilter,
+                    onFilterChange = onFilterChange
+                )
+            } else {
+                ActivityFeedHeaderSection(
+                    currentFilter = uiState.feedFilter,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onFilterChange = onFilterChange
+                )
+            }
         }
 
-        items(
-            items = uiState.feedItems,
-            key = { item -> "profile_activity_${item.entityType ?: item.contentType}_${item.id}" },
-            contentType = { "profile_activity_item" }
-        ) { item ->
+        item(key = "profile_activity_grid", contentType = "profile_activity_grid") {
             Spacer(Modifier.height(12.dp))
-            ActivityFeedItemSection(
-                item = item,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isOwner = uiState.isOwner,
-                onOpenItem = onOpenFeedItem,
-                onVotePoll = onVotePoll,
-                onDeletePost = onDeleteFeedPost
-            )
+            if (isGameProfileTheme) {
+                RetroGameActivityFeedGridSection(
+                    items = uiState.feedItems,
+                    isLoading = uiState.isLoadingFeed,
+                    isOwner = uiState.isOwner,
+                    onOpenItem = onOpenFeedItem,
+                    onDeletePost = onDeleteFeedPost
+                )
+            } else {
+                ActivityFeedGridSection(
+                    items = uiState.feedItems,
+                    isLoading = uiState.isLoadingFeed,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    isOwner = uiState.isOwner,
+                    onOpenItem = onOpenFeedItem,
+                    onDeletePost = onDeleteFeedPost
+                )
+            }
         }
 
         if (uiState.isLoadingFeed) {
             item(key = "profile_activity_loading", contentType = "profile_activity_status") {
                 Spacer(Modifier.height(12.dp))
-                ActivityFeedLoadingSection(
-                    contentColor = contentColor,
-                    accentColor = accentColor
-                )
+                if (isGameProfileTheme) {
+                    RetroGameActivityFeedLoadingSection()
+                } else {
+                    ActivityFeedLoadingSection(
+                        contentColor = contentColor,
+                        accentColor = accentColor
+                    )
+                }
             }
         }
 
         if (uiState.feedHasMore && !uiState.isLoadingFeed) {
             item(key = "profile_activity_load_more", contentType = "profile_activity_status") {
                 Spacer(Modifier.height(12.dp))
-                ActivityFeedLoadMoreSection(
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    onLoadMore = onLoadMore
+                if (isGameProfileTheme) {
+                    RetroGameActivityFeedLoadMoreSection(onLoadMore = onLoadMore)
+                } else {
+                    ActivityFeedLoadMoreSection(
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onLoadMore = onLoadMore
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ==================== Retro Game Profile Theme ====================
+
+@Composable
+private fun RetroGameProfileThemeSection(
+    user: ProfileUser,
+    stats: ProfileStats,
+    isOwner: Boolean,
+    showLocation: Boolean,
+    showStartConversation: Boolean,
+    isPreparingConversationStarter: Boolean,
+    onEditProfile: () -> Unit,
+    onMessage: (String) -> Unit,
+    onStartConversation: (String) -> Unit,
+    onOpenConnections: () -> Unit,
+    onOpenFollowers: () -> Unit,
+    isProfileSaved: Boolean = false,
+    profileSaveActionInProgress: Boolean = false,
+    onToggleProfileSave: () -> Unit = {}
+) {
+    val context = LocalContext.current
+    val profileUrl = "https://vormex.com/@${user.username}"
+    val primaryLabel = when {
+        isOwner -> "EDIT PROFILE ->"
+        showStartConversation && isPreparingConversationStarter -> "STARTING..."
+        showStartConversation -> "START CHAT ->"
+        else -> "MESSAGE ->"
+    }
+    val headline = user.headline?.takeIf { it.isNotBlank() } ?: "Vormex profile player"
+    val locationLine = listOfNotNull(
+        if (showLocation) user.location?.takeIf { it.isNotBlank() }?.uppercase(Locale.US) else null,
+        user.college?.takeIf { it.isNotBlank() }?.uppercase(Locale.US)
+    ).joinToString("  ·  ").ifBlank { "VORMEX" }
+    val xpTarget = (stats.xp + stats.xpToNextLevel).coerceAtLeast(1)
+    val xpProgress = (stats.xp.toFloat() / xpTarget.toFloat()).coerceIn(0.08f, 1f)
+
+    fun openUrl(url: String?) {
+        if (url.isNullOrBlank()) return
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }
+    }
+
+    fun shareProfile() {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, profileUrl)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share profile"))
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(RetroGameCream)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText("VORMEX", style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black))
+            BasicText(
+                "PROFILE / 01",
+                style = TextStyle(RetroGameInk, 11.sp, FontWeight.Black),
+                modifier = Modifier
+                    .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                modifier = Modifier
+                    .size(96.dp)
+                    .retroGamePanel(RetroGameYellow)
+                    .clip(RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                val profileImageUrl = user.profileImageUrl()
+                if (profileImageUrl != null) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(profileImageUrl)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = "Profile photo",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    BasicText(
+                        profileInitials(user.name),
+                        style = TextStyle(RetroGameInk, 32.sp, FontWeight.Black)
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                BasicText(
+                    "// HUMAN_${user.id.take(3).uppercase(Locale.US)}",
+                    style = TextStyle(RetroGameInk, 11.sp, FontWeight.Black, letterSpacing = 1.sp)
+                )
+                BasicText(
+                    user.name.uppercase(Locale.US),
+                    style = TextStyle(RetroGameInk, 22.sp, FontWeight.Black, lineHeight = 22.sp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (user.isOpenToOpportunities) {
+                    BasicText(
+                        "✓ OPEN TO WORK",
+                        style = TextStyle(RetroGameInk, 10.sp, FontWeight.Black),
+                        modifier = Modifier
+                            .background(RetroGameGreen)
+                            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+                BasicText(
+                    "@${user.username}",
+                    style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                .background(Color.White.copy(alpha = 0.70f))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            BasicText(
+                headline,
+                style = TextStyle(RetroGameInk, 14.sp, FontWeight.Medium, lineHeight = 19.sp),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            BasicText(
+                "⌾ $locationLine",
+                style = TextStyle(RetroGameInk, 11.sp, FontWeight.Black, letterSpacing = 0.8.sp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RetroGameButton(
+                label = primaryLabel,
+                background = RetroGameRed,
+                content = Color.White,
+                modifier = Modifier.weight(1f),
+                onClick = {
+                    when {
+                        isOwner -> onEditProfile()
+                        showStartConversation -> onStartConversation(user.id)
+                        else -> onMessage(user.id)
+                    }
+                }
+            )
+            if (!isOwner) {
+                RetroGameButton(
+                    label = if (isProfileSaved) "SAVED" else "SAVE",
+                    background = if (isProfileSaved) RetroGameYellow else Color.White,
+                    content = RetroGameInk,
+                    modifier = Modifier.width(76.dp),
+                    onClick = {
+                        if (!profileSaveActionInProgress) {
+                            onToggleProfileSave()
+                        }
+                    }
+                )
+            }
+            RetroGameButton(
+                label = "SHARE",
+                background = Color.White,
+                content = RetroGameInk,
+                modifier = Modifier.width(86.dp),
+                onClick = ::shareProfile
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                .background(Color.White.copy(alpha = 0.70f))
+        ) {
+            RetroGameStatCell(
+                value = formatNumber(stats.connectionsCount),
+                label = "CONNECTIONS",
+                modifier = Modifier.weight(1f),
+                onClick = onOpenConnections
+            )
+            RetroGameStatCell(
+                value = formatNumber(stats.followersCount),
+                label = "FOLLOWERS",
+                background = RetroGameYellow,
+                modifier = Modifier.weight(1f),
+                onClick = onOpenFollowers
+            )
+            RetroGameStatCell(
+                value = formatNumber(stats.totalPosts),
+                label = "POSTS",
+                modifier = Modifier.weight(1f)
+            )
+            RetroGameStatCell(
+                value = formatNumber(stats.totalLikesReceived),
+                label = "LIKES",
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                .background(RetroGameBlue)
+        ) {
+            BasicText(
+                "// PROGRESSION",
+                style = TextStyle(Color.White, 11.sp, FontWeight.Black, letterSpacing = 1.2.sp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+            )
+            Row {
+                Box(
+                    modifier = Modifier
+                        .width(80.dp)
+                        .height(76.dp)
+                        .background(RetroGameYellow)
+                        .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        BasicText("LVL", style = TextStyle(RetroGameInk, 10.sp, FontWeight.Black))
+                        BasicText("${stats.level}", style = TextStyle(RetroGameInk, 34.sp, FontWeight.Black))
+                    }
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        BasicText("XP ${formatNumber(stats.xp)}", style = TextStyle(Color.White, 11.sp, FontWeight.Black))
+                        BasicText("+${formatNumber(stats.xpToNextLevel)}", style = TextStyle(Color.White, 11.sp, FontWeight.Black))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(12.dp)
+                            .background(Color.White)
+                            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(xpProgress)
+                                .fillMaxHeight()
+                                .background(RetroGameRed)
+                        )
+                    }
+                    BasicText(
+                        "STREAK · ${stats.currentStreak}D (${stats.longestStreak} BEST)",
+                        style = TextStyle(Color.White, 11.sp, FontWeight.Black),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RetroGameLinkButton(
+                label = "in LINKEDIN",
+                url = user.linkedinUrl,
+                modifier = Modifier.weight(1f),
+                onClick = ::openUrl
+            )
+            RetroGameLinkButton(
+                label = "<> GITHUB",
+                url = user.githubProfileUrl,
+                modifier = Modifier.weight(1f),
+                onClick = ::openUrl
+            )
+            RetroGameLinkButton(
+                label = "↗ PORTFOLIO",
+                url = user.portfolioUrl,
+                background = RetroGameYellow,
+                modifier = Modifier.weight(1f),
+                onClick = ::openUrl
+            )
+        }
+
+        BasicText(
+            "// ABOUT",
+            style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black, letterSpacing = 1.4.sp)
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                .background(Color.White.copy(alpha = 0.70f))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            BasicText(
+                user.bio?.takeIf { it.isNotBlank() } ?: "No bio added yet.",
+                style = TextStyle(RetroGameInk, 14.sp, FontWeight.Medium, lineHeight = 20.sp),
+                maxLines = 5,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (isOwner) {
+                RetroGameButton(
+                    label = "SHOW MORE ->",
+                    background = RetroGameInk,
+                    content = Color.White,
+                    onClick = onEditProfile
                 )
             }
         }
     }
 }
+
+@Composable
+private fun RetroGameSection(
+    title: String,
+    count: Int? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+    content: @Composable () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .retroGamePanel(Color.White.copy(alpha = 0.72f))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText(
+                buildString {
+                    append("// ")
+                    append(title.uppercase(Locale.US))
+                    count?.let { append(" / $it") }
+                },
+                style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black, letterSpacing = 1.2.sp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (actionLabel != null && onAction != null) {
+                RetroGameMiniButton(
+                    label = actionLabel,
+                    background = RetroGameYellow,
+                    onClick = onAction
+                )
+            }
+        }
+        content()
+    }
+}
+
+@Composable
+private fun RetroGameMiniButton(
+    label: String,
+    background: Color,
+    modifier: Modifier = Modifier,
+    content: Color = RetroGameInk,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .height(30.dp)
+            .retroGamePanel(background)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            label,
+            style = TextStyle(content, 10.sp, FontWeight.Black),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun RetroGameEntryCard(
+    modifier: Modifier = Modifier,
+    highlighted: Boolean = false,
+    onClick: (() -> Unit)? = null,
+    content: @Composable () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(if (highlighted) RetroGameYellow.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.70f))
+            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+            .clickable(enabled = onClick != null) { onClick?.invoke() }
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun RetroGameEmptyState(message: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+            .background(Color.White.copy(alpha = 0.58f))
+            .padding(18.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            message.uppercase(Locale.US),
+            style = TextStyle(
+                color = RetroGameInk.copy(alpha = 0.58f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 0.8.sp,
+                textAlign = TextAlign.Center
+            )
+        )
+    }
+}
+
+@Composable
+private fun RetroGamePill(
+    label: String,
+    background: Color = Color.White,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
+) {
+    Box(
+        modifier = modifier
+            .background(background)
+            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+            .clickable(enabled = onClick != null) { onClick?.invoke() }
+            .padding(horizontal = 9.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            label.uppercase(Locale.US),
+            style = TextStyle(RetroGameInk, 10.sp, FontWeight.Black, letterSpacing = 0.4.sp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RetroGameSkillsSection(
+    skills: List<UserSkill>,
+    isOwner: Boolean,
+    onAddSkill: () -> Unit,
+    onRemoveSkill: (UserSkill) -> Unit
+) {
+    RetroGameSection(
+        title = "Skill Inventory",
+        count = skills.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddSkill else null
+    ) {
+        if (skills.isEmpty()) {
+            RetroGameEmptyState("No skills equipped yet")
+        } else {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                skills.forEach { userSkill ->
+                    Row(
+                        modifier = Modifier
+                            .background(RetroGameBlue.copy(alpha = 0.12f))
+                            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                            .padding(start = 9.dp, end = if (isOwner) 5.dp else 9.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Column {
+                            BasicText(
+                                userSkill.skill.name.uppercase(Locale.US),
+                                style = TextStyle(RetroGameInk, 10.sp, FontWeight.Black),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 150.dp)
+                            )
+                            val meta = listOfNotNull(
+                                userSkill.proficiency?.takeIf { it.isNotBlank() },
+                                userSkill.yearsOfExp?.let { "$it YRS" }
+                            ).joinToString(" / ")
+                            if (meta.isNotBlank()) {
+                                BasicText(
+                                    meta.uppercase(Locale.US),
+                                    style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 8.sp, FontWeight.Black),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        if (isOwner) {
+                            BasicText(
+                                "X",
+                                style = TextStyle(RetroGameRed, 10.sp, FontWeight.Black),
+                                modifier = Modifier
+                                    .clickable { onRemoveSkill(userSkill) }
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RetroGameProjectsSection(
+    projects: List<Project>,
+    isOwner: Boolean,
+    onAddProject: () -> Unit,
+    onEditProject: (Project) -> Unit,
+    onViewProject: (Project) -> Unit,
+    onToggleFeatured: (Project) -> Unit
+) {
+    RetroGameSection(
+        title = "Project Quests",
+        count = projects.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddProject else null
+    ) {
+        if (projects.isEmpty()) {
+            RetroGameEmptyState("No project quests posted")
+        } else {
+            val orderedProjects = remember(projects) {
+                projects.sortedWith(
+                    compareByDescending<Project> { it.featured }.thenByDescending { it.startDate }
+                )
+            }
+
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(end = 22.dp)
+            ) {
+                items(orderedProjects.size) { index ->
+                    val project = orderedProjects[index]
+                    Box(modifier = Modifier.width(284.dp)) {
+                        RetroGameEntryCard(
+                            highlighted = project.featured,
+                            onClick = { onViewProject(project) }
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    BasicText(
+                                        "QUEST_${(index + 1).toString().padStart(2, '0')}",
+                                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 9.sp, FontWeight.Black, letterSpacing = 0.8.sp)
+                                    )
+                                    BasicText(
+                                        project.name.uppercase(Locale.US),
+                                        style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black, lineHeight = 18.sp),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (project.featured) {
+                                    RetroGamePill("Featured", background = RetroGameYellow)
+                                }
+                            }
+                            project.role?.takeIf { it.isNotBlank() }?.let { role ->
+                                BasicText(
+                                    role,
+                                    style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            BasicText(
+                                project.description,
+                                style = TextStyle(RetroGameInk.copy(alpha = 0.82f), 13.sp, FontWeight.Medium, lineHeight = 18.sp),
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            BasicText(
+                                retroDateRange(project.startDate, project.endDate, project.isCurrent),
+                                style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 10.sp, FontWeight.Black)
+                            )
+                            if (project.techStack.isNotEmpty()) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    project.techStack.take(6).forEach { tech ->
+                                        RetroGamePill(tech, background = Color.White)
+                                    }
+                                }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                RetroGameMiniButton("VIEW", RetroGameBlue, content = Color.White) { onViewProject(project) }
+                                if (isOwner) {
+                                    RetroGameMiniButton("EDIT", Color.White) { onEditProject(project) }
+                                    RetroGameMiniButton(
+                                        if (project.featured) "UNPIN" else "PIN",
+                                        RetroGameYellow
+                                    ) { onToggleFeatured(project) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RetroGameExperienceSection(
+    experiences: List<Experience>,
+    isOwner: Boolean,
+    onAddExperience: () -> Unit,
+    onEditExperience: (Experience) -> Unit,
+    onViewExperience: (Experience) -> Unit
+) {
+    RetroGameSection(
+        title = "Career Missions",
+        count = experiences.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddExperience else null
+    ) {
+        if (experiences.isEmpty()) {
+            RetroGameEmptyState("No missions unlocked")
+        } else {
+            experiences.forEachIndexed { index, experience ->
+                RetroGameEntryCard(onClick = { onViewExperience(experience) }) {
+                    BasicText(
+                        "MISSION_${(index + 1).toString().padStart(2, '0')}",
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 9.sp, FontWeight.Black, letterSpacing = 0.8.sp)
+                    )
+                    BasicText(
+                        experience.title.uppercase(Locale.US),
+                        style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black, lineHeight = 18.sp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        "${experience.company} / ${experience.type}",
+                        style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        retroDateRange(experience.startDate, experience.endDate, experience.isCurrent),
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 10.sp, FontWeight.Black)
+                    )
+                    experience.description?.takeIf { it.isNotBlank() }?.let { description ->
+                        BasicText(
+                            description,
+                            style = TextStyle(RetroGameInk.copy(alpha = 0.82f), 13.sp, FontWeight.Medium, lineHeight = 18.sp),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (experience.skills.isNotEmpty()) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            experience.skills.take(6).forEach { skill ->
+                                RetroGamePill(skill, background = RetroGameYellow.copy(alpha = 0.60f))
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RetroGameMiniButton("VIEW", RetroGameBlue, content = Color.White) { onViewExperience(experience) }
+                        if (isOwner) {
+                            RetroGameMiniButton("EDIT", Color.White) { onEditExperience(experience) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameEducationSection(
+    education: List<Education>,
+    isOwner: Boolean,
+    onAddEducation: () -> Unit,
+    onEditEducation: (Education) -> Unit,
+    onViewEducation: (Education) -> Unit
+) {
+    RetroGameSection(
+        title = "Academy Log",
+        count = education.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddEducation else null
+    ) {
+        if (education.isEmpty()) {
+            RetroGameEmptyState("No academy records")
+        } else {
+            education.forEachIndexed { index, item ->
+                RetroGameEntryCard(onClick = { onViewEducation(item) }) {
+                    BasicText(
+                        "CLASS_${(index + 1).toString().padStart(2, '0')}",
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 9.sp, FontWeight.Black, letterSpacing = 0.8.sp)
+                    )
+                    BasicText(
+                        item.school.uppercase(Locale.US),
+                        style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black, lineHeight = 18.sp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        "${item.degree} / ${item.fieldOfStudy}",
+                        style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        retroDateRange(item.startDate, item.endDate, item.isCurrent),
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 10.sp, FontWeight.Black)
+                    )
+                    item.description?.takeIf { it.isNotBlank() }?.let { description ->
+                        BasicText(
+                            description,
+                            style = TextStyle(RetroGameInk.copy(alpha = 0.82f), 13.sp, FontWeight.Medium, lineHeight = 18.sp),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RetroGameMiniButton("VIEW", RetroGameBlue, content = Color.White) { onViewEducation(item) }
+                        if (isOwner) {
+                            RetroGameMiniButton("EDIT", Color.White) { onEditEducation(item) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameCertificatesSection(
+    certificates: List<Certificate>,
+    isOwner: Boolean,
+    onAddCertificate: () -> Unit,
+    onEditCertificate: (Certificate) -> Unit,
+    onViewCertificate: (Certificate) -> Unit
+) {
+    RetroGameSection(
+        title = "Power Badges",
+        count = certificates.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddCertificate else null
+    ) {
+        if (certificates.isEmpty()) {
+            RetroGameEmptyState("No power badges collected")
+        } else {
+            certificates.forEachIndexed { index, certificate ->
+                RetroGameEntryCard(onClick = { onViewCertificate(certificate) }) {
+                    BasicText(
+                        "BADGE_${(index + 1).toString().padStart(2, '0')}",
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 9.sp, FontWeight.Black, letterSpacing = 0.8.sp)
+                    )
+                    BasicText(
+                        certificate.name.uppercase(Locale.US),
+                        style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black, lineHeight = 18.sp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        certificate.issuingOrg,
+                        style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        "ISSUED ${retroCompactDate(certificate.issueDate)}",
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 10.sp, FontWeight.Black)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RetroGameMiniButton("VIEW", RetroGameBlue, content = Color.White) { onViewCertificate(certificate) }
+                        if (isOwner) {
+                            RetroGameMiniButton("EDIT", Color.White) { onEditCertificate(certificate) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameAchievementsSection(
+    achievements: List<Achievement>,
+    isOwner: Boolean,
+    onAddAchievement: () -> Unit,
+    onEditAchievement: (Achievement) -> Unit,
+    onViewAchievement: (Achievement) -> Unit
+) {
+    RetroGameSection(
+        title = "Trophy Shelf",
+        count = achievements.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddAchievement else null
+    ) {
+        if (achievements.isEmpty()) {
+            RetroGameEmptyState("No trophies claimed")
+        } else {
+            achievements.forEachIndexed { index, achievement ->
+                RetroGameEntryCard(onClick = { onViewAchievement(achievement) }) {
+                    BasicText(
+                        "TROPHY_${(index + 1).toString().padStart(2, '0')}",
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 9.sp, FontWeight.Black, letterSpacing = 0.8.sp)
+                    )
+                    BasicText(
+                        achievement.title.uppercase(Locale.US),
+                        style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black, lineHeight = 18.sp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        "${achievement.organization} / ${achievement.type}",
+                        style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        retroCompactDate(achievement.date),
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 10.sp, FontWeight.Black)
+                    )
+                    achievement.description?.takeIf { it.isNotBlank() }?.let { description ->
+                        BasicText(
+                            description,
+                            style = TextStyle(RetroGameInk.copy(alpha = 0.82f), 13.sp, FontWeight.Medium, lineHeight = 18.sp),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RetroGameMiniButton("VIEW", RetroGameBlue, content = Color.White) { onViewAchievement(achievement) }
+                        if (isOwner) {
+                            RetroGameMiniButton("EDIT", Color.White) { onEditAchievement(achievement) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameActivityFeedHeaderSection(
+    currentFilter: String,
+    onFilterChange: (String) -> Unit
+) {
+    val filters = listOf(
+        "all" to "All",
+        "posts" to "Posts",
+        "articles" to "Articles",
+        "videos" to "Reels"
+    )
+
+    RetroGameSection(title = "Activity Grid") {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            filters.forEach { (filter, label) ->
+                val isSelected = currentFilter == filter
+                RetroGamePill(
+                    label = label,
+                    background = if (isSelected) RetroGameYellow else Color.White,
+                    onClick = { onFilterChange(filter) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameActivityFeedGridSection(
+    items: List<FeedItem>,
+    isLoading: Boolean,
+    isOwner: Boolean,
+    onOpenItem: (FeedItem) -> Unit,
+    onDeletePost: (String) -> Unit
+) {
+    val gridItems = remember(items) { items.mapNotNull(::retroGameActivityGridItemFor) }
+
+    RetroGameSection(
+        title = "Posts",
+        count = gridItems.size
+    ) {
+        when {
+            gridItems.isNotEmpty() -> {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    gridItems.chunked(3).forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            rowItems.forEach { gridItem ->
+                                RetroGameActivityGridTile(
+                                    gridItem = gridItem,
+                                    isOwner = isOwner,
+                                    onOpenItem = onOpenItem,
+                                    onDeletePost = onDeletePost,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            repeat(3 - rowItems.size) {
+                                Spacer(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .aspectRatio(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            !isLoading -> RetroGameEmptyState("No image or video posts yet")
+        }
+    }
+}
+
+@Composable
+private fun RetroGameActivityGridTile(
+    gridItem: RetroGameActivityGridItem,
+    isOwner: Boolean,
+    onOpenItem: (FeedItem) -> Unit,
+    onDeletePost: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val item = gridItem.item
+    val canDelete = isOwner && item.entityType?.equals("post", ignoreCase = true) == true
+    var showMenu by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = modifier
+            .aspectRatio(1f)
+            .background(Color.White.copy(alpha = 0.70f))
+            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+            .clickable { onOpenItem(item) }
+    ) {
+        if (gridItem.thumbnailUrl != null) {
+            AsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(gridItem.thumbnailUrl)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = if (gridItem.isVideo) "Video thumbnail" else "Post thumbnail",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else if (gridItem.defaultVideoId != null) {
+            DefaultPostVideoPlayer(
+                defaultVideoId = gridItem.defaultVideoId,
+                modifier = Modifier.fillMaxSize(),
+                reduceAnimations = true,
+                accentColor = RetroGameRed,
+                height = null,
+                contentScale = ContentScale.Crop
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.22f),
+                        0.55f to Color.Transparent,
+                        1f to Color.Black.copy(alpha = 0.28f)
+                    )
+                )
+        )
+
+        if (gridItem.isVideo) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(42.dp)
+                    .background(RetroGameRed)
+                    .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_play_arrow),
+                    contentDescription = "Video",
+                    modifier = Modifier.size(22.dp),
+                    colorFilter = ColorFilter.tint(Color.White)
+                )
+            }
+        }
+
+        if (gridItem.mediaCount > 1) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .background(RetroGameYellow)
+                    .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                    .padding(5.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_image),
+                    contentDescription = "Multiple media",
+                    modifier = Modifier.size(14.dp),
+                    colorFilter = ColorFilter.tint(RetroGameInk)
+                )
+            }
+        }
+
+        if (canDelete) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .background(Color.White)
+                        .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                        .clickable { showMenu = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(R.drawable.ic_more),
+                        contentDescription = "Post options",
+                        modifier = Modifier.size(17.dp),
+                        colorFilter = ColorFilter.tint(RetroGameInk)
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { BasicText("Delete post", style = TextStyle(Color(0xFFDC2626), 13.sp)) },
+                        onClick = {
+                            showMenu = false
+                            onDeletePost(item.id)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameActivityFeedLoadingSection() {
+    RetroGameSection(title = "Loading") {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                .background(Color.White.copy(alpha = 0.70f))
+                .padding(vertical = 18.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                strokeWidth = 2.dp,
+                color = RetroGameRed
+            )
+        }
+    }
+}
+
+@Composable
+private fun RetroGameActivityFeedLoadMoreSection(onLoadMore: () -> Unit) {
+    RetroGameSection(title = "More Posts") {
+        RetroGameButton(
+            label = "LOAD MORE ->",
+            background = RetroGameInk,
+            content = Color.White,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onLoadMore
+        )
+    }
+}
+
+private data class RetroGameActivityGridItem(
+    val item: FeedItem,
+    val thumbnailUrl: String?,
+    val mediaCount: Int,
+    val isVideo: Boolean,
+    val defaultVideoId: String?
+)
+
+private fun retroGameActivityGridItemFor(item: FeedItem): RetroGameActivityGridItem? {
+    val imageUrls = item.images.orEmpty().filter { it.isNotBlank() }
+    val mediaUrls = item.mediaUrls.orEmpty().filter { it.isNotBlank() }
+    val mediaItems = when {
+        imageUrls.isNotEmpty() -> imageUrls
+        mediaUrls.isNotEmpty() -> mediaUrls
+        else -> emptyList()
+    }
+    val hasDefaultVideo = findDefaultPostVideo(item.defaultVideoId) != null
+    val isVideo =
+        item.contentType == "short_video" ||
+            item.postType?.equals("VIDEO", ignoreCase = true) == true ||
+            item.entityType?.equals("reel", ignoreCase = true) == true ||
+            !item.videoUrl.isNullOrBlank() ||
+            !item.videoThumbnail.isNullOrBlank() ||
+            hasDefaultVideo
+    val thumbnailUrl = when {
+        !item.videoThumbnail.isNullOrBlank() -> item.videoThumbnail
+        mediaItems.isNotEmpty() -> mediaItems.first()
+        !item.celebrationGifUrl.isNullOrBlank() -> item.celebrationGifUrl
+        else -> null
+    }
+
+    if (thumbnailUrl == null && !hasDefaultVideo) return null
+
+    return RetroGameActivityGridItem(
+        item = item,
+        thumbnailUrl = thumbnailUrl,
+        mediaCount = mediaItems.size.coerceAtLeast(if (isVideo || thumbnailUrl != null) 1 else 0),
+        isVideo = isVideo,
+        defaultVideoId = item.defaultVideoId?.takeIf { hasDefaultVideo }
+    )
+}
+
+private fun retroCompactDate(value: String?): String =
+    value
+        ?.takeIf { it.isNotBlank() }
+        ?.take(10)
+        ?.replace("-", ".")
+        ?: "NOW"
+
+private fun retroDateRange(startDate: String?, endDate: String?, isCurrent: Boolean): String {
+    val start = retroCompactDate(startDate)
+    val end = if (isCurrent) "PRESENT" else retroCompactDate(endDate)
+    return "$start - $end"
+}
+
+@Composable
+private fun RetroGameButton(
+    label: String,
+    background: Color,
+    content: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .height(40.dp)
+            .retroGamePanel(background)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            label,
+            style = TextStyle(content, 13.sp, FontWeight.Black),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun RetroGameLinkButton(
+    label: String,
+    url: String?,
+    background: Color = Color.White,
+    modifier: Modifier = Modifier,
+    onClick: (String?) -> Unit
+) {
+    Box(
+        modifier = modifier
+            .height(34.dp)
+            .retroGamePanel(if (url.isNullOrBlank()) Color(0xFFE8E2D4) else background)
+            .clickable(enabled = !url.isNullOrBlank()) { onClick(url) },
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            label,
+            style = TextStyle(
+                color = RetroGameInk.copy(alpha = if (url.isNullOrBlank()) 0.45f else 1f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Black
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun RowScope.RetroGameStatCell(
+    value: String,
+    label: String,
+    modifier: Modifier = Modifier,
+    background: Color = Color.White.copy(alpha = 0.70f),
+    onClick: (() -> Unit)? = null
+) {
+    Column(
+        modifier = modifier
+            .height(80.dp)
+            .background(background)
+            .border(1.dp, RetroGameInk, RoundedCornerShape(0.dp))
+            .clickable(enabled = onClick != null) { onClick?.invoke() }
+            .padding(horizontal = 4.dp, vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        BasicText(value, style = TextStyle(RetroGameInk, 22.sp, FontWeight.Black))
+        Spacer(Modifier.height(4.dp))
+        BasicText(
+            label,
+            style = TextStyle(RetroGameInk, 9.sp, FontWeight.Black, letterSpacing = 0.7.sp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+private fun Modifier.retroGamePanel(background: Color): Modifier =
+    this
+        .drawBehind {
+            val shadowOffset = 4.dp.toPx()
+            drawRect(
+                color = RetroGameInk,
+                topLeft = Offset(shadowOffset, shadowOffset),
+                size = size
+            )
+        }
+        .background(background)
+        .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
 
 // ==================== Profile Header ====================
 
@@ -1846,11 +3455,14 @@ private fun ProfileHeader(
     isGlassTheme: Boolean,
     isDarkTheme: Boolean,
     isOwner: Boolean,
+    showLocation: Boolean,
     connectionStatus: String,
     isFollowing: Boolean,
     isFollowedBy: Boolean,
     connectionActionInProgress: Boolean,
     followActionInProgress: Boolean,
+    isProfileSaved: Boolean,
+    profileSaveActionInProgress: Boolean,
     mutualConnections: List<MutualConnection>,
     mutualConnectionsCount: Int,
     isUploadingAvatar: Boolean = false,
@@ -1862,6 +3474,7 @@ private fun ProfileHeader(
     onRejectRequest: () -> Unit,
     onRemoveConnection: () -> Unit,
     onToggleFollow: () -> Unit,
+    onToggleProfileSave: () -> Unit,
     onOpenConnections: () -> Unit,
     onOpenFollowers: () -> Unit,
     onMessage: (String) -> Unit,
@@ -1870,7 +3483,9 @@ private fun ProfileHeader(
     onStartConversation: (String) -> Unit,
     onOpenMutualProfile: ((String) -> Unit)? = null,
     onUploadAvatar: (ByteArray) -> Unit = {},
-    onUploadBanner: (ByteArray) -> Unit = {}
+    onUploadBanner: (ByteArray) -> Unit = {},
+    onReportUser: () -> Unit = {},
+    onBlockUser: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var showShareMenu by remember { mutableStateOf(false) }
@@ -1886,6 +3501,7 @@ private fun ProfileHeader(
     val profileMenuContentColor = profileMenuAppearance.contentColor
     val profileMenuMutedContentColor = profileMenuAppearance.mutedContentColor
     val profileMenuDangerColor = if (profileMenuAppearance.isDarkTheme) Color(0xFFF87171) else Color(0xFFDC2626)
+    val profileSaveMenuColor = if (isProfileSaved) accentColor else profileMenuContentColor
     val profileBodySurfaceColor = if (isGlassTheme) Color.Transparent else profileMenuAppearance.cardColor
     val profileBodyContentColor = profileMenuAppearance.contentColor
     val profileBodyMutedContentColor = profileMenuAppearance.mutedContentColor
@@ -2129,10 +3745,11 @@ private fun ProfileHeader(
                                     .background(accentColor.copy(alpha = 0.8f)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (!user.avatar.isNullOrEmpty()) {
+                                val profileImageUrl = user.profileImageUrl()
+                                if (profileImageUrl != null) {
                                     AsyncImage(
                                         model = ImageRequest.Builder(context)
-                                            .data(user.avatar)
+                                            .data(profileImageUrl)
                                             .memoryCacheKey("avatar_${user.id}_$avatarCacheKey")
                                             .diskCachePolicy(CachePolicy.DISABLED)
                                             .crossfade(true)
@@ -2518,6 +4135,26 @@ private fun ProfileHeader(
                                         )
                                         GlassMenuItem(
                                             onClick = {
+                                                onToggleProfileSave()
+                                                showShareMenu = false
+                                            },
+                                            contentColor = profileMenuContentColor,
+                                            leadingIcon = {
+                                                Image(
+                                                    painter = painterResource(
+                                                        if (isProfileSaved) R.drawable.ic_bookmark else R.drawable.ic_bookmark_outline
+                                                    ),
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                    colorFilter = ColorFilter.tint(profileSaveMenuColor)
+                                                )
+                                            },
+                                            text = if (isProfileSaved) "Saved profile" else "Save profile",
+                                            textColor = profileSaveMenuColor,
+                                            enabled = !profileSaveActionInProgress
+                                        )
+                                        GlassMenuItem(
+                                            onClick = {
                                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                                 clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
                                                 showShareMenu = false
@@ -2553,6 +4190,27 @@ private fun ProfileHeader(
                                             },
                                             text = "Share profile"
                                         )
+                                        if (!isOwner) {
+                                            GlassMenuDivider(contentColor = profileMenuContentColor)
+                                            GlassMenuItem(
+                                                onClick = {
+                                                    showShareMenu = false
+                                                    onReportUser()
+                                                },
+                                                contentColor = profileMenuContentColor,
+                                                text = "Report profile",
+                                                textColor = profileMenuDangerColor
+                                            )
+                                            GlassMenuItem(
+                                                onClick = {
+                                                    showShareMenu = false
+                                                    onBlockUser()
+                                                },
+                                                contentColor = profileMenuContentColor,
+                                                text = "Block user",
+                                                textColor = profileMenuDangerColor
+                                            )
+                                        }
                                     }
                                 } else {
                                     DropdownMenu(
@@ -2681,6 +4339,32 @@ private fun ProfileHeader(
                                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                                 ) {
                                                     Image(
+                                                        painter = painterResource(
+                                                            if (isProfileSaved) R.drawable.ic_bookmark else R.drawable.ic_bookmark_outline
+                                                    ),
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                    colorFilter = ColorFilter.tint(profileSaveMenuColor)
+                                                )
+                                                    BasicText(
+                                                        if (isProfileSaved) "Saved profile" else "Save profile",
+                                                        style = TextStyle(profileSaveMenuColor, 14.sp, FontWeight.SemiBold)
+                                                    )
+                                                }
+                                            },
+                                            enabled = !profileSaveActionInProgress,
+                                            onClick = {
+                                                onToggleProfileSave()
+                                                showShareMenu = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Image(
                                                         painter = painterResource(R.drawable.ic_link),
                                                         contentDescription = null,
                                                         modifier = Modifier.size(18.dp),
@@ -2719,6 +4403,32 @@ private fun ProfileHeader(
                                                 showShareMenu = false
                                             }
                                         )
+                                        if (!isOwner) {
+                                            DropdownMenuItem(
+                                                text = {
+                                                    BasicText(
+                                                        "Report profile",
+                                                        style = TextStyle(profileMenuDangerColor, 14.sp, FontWeight.SemiBold)
+                                                    )
+                                                },
+                                                onClick = {
+                                                    showShareMenu = false
+                                                    onReportUser()
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = {
+                                                    BasicText(
+                                                        "Block user",
+                                                        style = TextStyle(profileMenuDangerColor, 14.sp, FontWeight.SemiBold)
+                                                    )
+                                                },
+                                                onClick = {
+                                                    showShareMenu = false
+                                                    onBlockUser()
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -2738,7 +4448,7 @@ private fun ProfileHeader(
                     )
 
                     if (user.hasVerificationBadge()) {
-                        ProfileVerificationBadge()
+                        ProfileVerificationBadge(badgeStyle = user.verificationBadgeStyle())
                     }
                 }
 
@@ -2778,7 +4488,7 @@ private fun ProfileHeader(
                     Modifier.offset(y = (-8).dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    user.location?.let { location ->
+                    if (showLocation) user.location?.let { location ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Image(
                                 painter = painterResource(R.drawable.ic_location),
@@ -2960,10 +4670,12 @@ private fun ProfileHeader(
 
 @Composable
 private fun ProfileVerificationBadge(
+    badgeStyle: String?,
     modifier: Modifier = Modifier
 ) {
     VerificationBadge(
         verified = true,
+        badgeStyle = badgeStyle,
         modifier = modifier,
         size = VerificationBadgeSize.Large
     )
@@ -2977,7 +4689,7 @@ private fun ProfileAvatarPreviewDialog(
 ) {
     val context = LocalContext.current
     val profileUrl = remember(user.username) { "https://vormex.com/@${user.username}" }
-    val avatarUrl = user.avatar?.takeIf { it.isNotBlank() }
+    val avatarUrl = user.profileImageUrl()
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -3171,6 +4883,11 @@ private fun profileInitials(name: String): String {
         .ifBlank { "V" }
 }
 
+private fun ProfileUser.profileImageUrl(): String? {
+    return avatar?.takeIf { it.isNotBlank() }
+        ?: profileImage?.takeIf { it.isNotBlank() }
+}
+
 @Composable
 private fun MutualConnectionChip(
     mutual: MutualConnection,
@@ -3231,6 +4948,7 @@ private fun MutualConnectionChip(
         )
         VerificationBadge(
             verified = mutual.hasVerificationBadge(),
+            badgeStyle = mutual.verificationBadgeStyle(),
             size = VerificationBadgeSize.Micro
         )
     }
@@ -3632,7 +5350,8 @@ private fun ProfilePeopleRow(
                 )
 
                 VerificationBadge(
-                    verified = person.verified || person.isVerified,
+                    verified = person.hasVerificationBadge(),
+                    badgeStyle = person.verificationBadgeStyle(),
                     size = VerificationBadgeSize.Small
                 )
 
