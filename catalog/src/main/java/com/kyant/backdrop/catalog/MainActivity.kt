@@ -32,8 +32,6 @@ import com.kyant.backdrop.catalog.onboarding.AppRoot
 import com.kyant.backdrop.catalog.payments.PremiumCheckoutManager
 import com.kyant.backdrop.catalog.ui.ProvideVormexFontFamily
 import com.google.firebase.messaging.FirebaseMessaging
-import com.razorpay.PaymentData
-import com.razorpay.PaymentResultWithDataListener
 
 /**
  * Deep link navigation state from push notifications
@@ -56,7 +54,7 @@ data class NotificationDeepLink(
     val githubMessage: String? = null
 )
 
-class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
+class MainActivity : ComponentActivity() {
     
     companion object {
         private const val TAG = "MainActivity"
@@ -141,23 +139,6 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
     override fun onStop() {
         isInForeground = false
         super.onStop()
-    }
-
-    override fun onPaymentSuccess(razorpayPaymentID: String?, paymentData: PaymentData?) {
-        PremiumCheckoutManager.onPaymentSuccess(
-            context = this,
-            razorpayPaymentId = razorpayPaymentID,
-            paymentData = paymentData
-        )
-    }
-
-    override fun onPaymentError(code: Int, response: String?, paymentData: PaymentData?) {
-        PremiumCheckoutManager.onPaymentError(
-            context = this,
-            code = code,
-            response = response,
-            paymentData = paymentData
-        )
     }
 
     private fun handleIntent(intent: Intent?) {

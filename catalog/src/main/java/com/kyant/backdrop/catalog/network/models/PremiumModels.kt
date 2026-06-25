@@ -288,6 +288,12 @@ data class PremiumVerifyRequest(
 )
 
 @Serializable
+data class GooglePlayPremiumVerifyRequest(
+    val productId: String,
+    val purchaseToken: String
+)
+
+@Serializable
 data class PremiumVerifyResponse(
     val message: String = "",
     val subscription: PremiumSubscriptionResponse? = null

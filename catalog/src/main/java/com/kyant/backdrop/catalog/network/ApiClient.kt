@@ -20,6 +20,7 @@ import io.ktor.client.request.forms.*
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.*
+import io.ktor.http.takeFrom
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,7 +46,11 @@ import kotlinx.serialization.json.putJsonObject
 import kotlinx.io.asSource
 import kotlinx.io.buffered
 import java.io.IOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.UnknownHostException
 import java.util.UUID
+import javax.net.ssl.SSLException
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "vormex_prefs")
 
@@ -111,7 +116,12 @@ object ApiClient {
         return normalizeSavedAccountSessions(existing.filterNot { it.userId == userId })
     }
 
-    private val BASE_URL = BuildConfig.API_BASE_URL
+    private const val FALLBACK_API_BASE_URL = "https://www.vormex.in/api"
+    private val BASE_URL = normalizeApiBaseUrl(BuildConfig.API_BASE_URL)
+    private val fallbackApiBaseUrls = listOf(FALLBACK_API_BASE_URL)
+        .map(::normalizeApiBaseUrl)
+        .filterNot { it.equals(BASE_URL, ignoreCase = true) }
+        .distinct()
     private val managedAdSessionId = UUID.randomUUID().toString()
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val DEFAULT_REQUEST_TIMEOUT_MILLIS = 60_000L
@@ -190,6 +200,9 @@ object ApiClient {
                 level = LogLevel.HEADERS
             }
         }
+        install(HttpSend) {
+            maxSendCount = 2
+        }
         install(HttpTimeout) {
             this.requestTimeoutMillis = requestTimeoutMillis
             this.connectTimeoutMillis = connectTimeoutMillis
@@ -200,6 +213,26 @@ object ApiClient {
             applyVormexClientHeaders()
             if (defaultJsonContentType) {
                 contentType(ContentType.Application.Json)
+            }
+        }
+    }.also { httpClient ->
+        httpClient.plugin(HttpSend).intercept { request ->
+            try {
+                execute(request)
+            } catch (primaryFailure: IOException) {
+                val fallbackRequest = fallbackRequestFor(request, primaryFailure)
+                if (fallbackRequest == null) {
+                    if (requestTargetsConfiguredApi(request) && primaryFailure.isRecoverableNetworkFailure()) {
+                        throw friendlyNetworkFailure(primaryFailure)
+                    }
+                    throw primaryFailure
+                }
+
+                try {
+                    execute(fallbackRequest)
+                } catch (fallbackFailure: IOException) {
+                    throw friendlyNetworkFailure(fallbackFailure)
+                }
             }
         }
     }
@@ -217,6 +250,57 @@ object ApiClient {
     private data class ApiFailure(
         val message: String
     )
+
+    private fun normalizeApiBaseUrl(rawUrl: String): String {
+        val trimmed = rawUrl.trim().trimEnd('/')
+        val usableUrl = trimmed.ifBlank { FALLBACK_API_BASE_URL }
+        return if (usableUrl.endsWith("/api", ignoreCase = true)) usableUrl else "$usableUrl/api"
+    }
+
+    private fun requestTargetsConfiguredApi(request: HttpRequestBuilder): Boolean {
+        val requestUrl = request.url.buildString()
+        return requestUrl == BASE_URL || requestUrl.startsWith("$BASE_URL/")
+    }
+
+    private fun fallbackRequestFor(
+        request: HttpRequestBuilder,
+        failure: IOException
+    ): HttpRequestBuilder? {
+        if (!failure.isRecoverableNetworkFailure()) return null
+
+        val requestUrl = request.url.buildString()
+        val suffix = when {
+            requestUrl == BASE_URL -> ""
+            requestUrl.startsWith("$BASE_URL/") -> requestUrl.removePrefix(BASE_URL)
+            else -> return null
+        }
+        val fallbackUrl = fallbackApiBaseUrls.firstOrNull()?.let { "$it$suffix" } ?: return null
+
+        return HttpRequestBuilder()
+            .takeFrom(request)
+            .apply {
+                url.takeFrom(fallbackUrl)
+            }
+    }
+
+    private fun IOException.isRecoverableNetworkFailure(): Boolean {
+        var current: Throwable? = this
+        while (current != null) {
+            if (current is UnknownHostException ||
+                current is ConnectException ||
+                current is NoRouteToHostException ||
+                current is SSLException
+            ) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
+    }
+
+    private fun friendlyNetworkFailure(cause: IOException): IOException {
+        return IOException("Couldn't connect to Vormex. Check your internet connection and try again.", cause)
+    }
 
     suspend fun getOrCreateDeviceInstallId(context: Context): String {
         val existing = context.dataStore.data.first()[DEVICE_INSTALL_ID_KEY]
@@ -1006,6 +1090,27 @@ object ApiClient {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val response = client.post("$BASE_URL/premium/verify") {
+                header("Authorization", "Bearer $token")
+                setBody(request)
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun verifyGooglePlayPremiumCheckout(
+        context: Context,
+        request: GooglePlayPremiumVerifyRequest
+    ): Result<PremiumVerifyResponse> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.post("$BASE_URL/premium/play/verify") {
                 header("Authorization", "Bearer $token")
                 setBody(request)
             }

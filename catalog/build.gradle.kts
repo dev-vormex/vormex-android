@@ -26,10 +26,12 @@ val googleWebClientId = googleServerClientId
 val googleAndroidClientId = secret("VORMEX_GOOGLE_ANDROID_CLIENT_ID")
     ?: secret("GOOGLE_CLIENT_ID_ANDROID")
     ?: "562328294412-sfil52dp4f7mapttri74hs9t445ierpd.apps.googleusercontent.com"
-// Physical devices and emulators can reach the host machine through adb reverse on 127.0.0.1.
-// If you prefer the emulator-only host bridge, override with VORMEX_DEBUG_* = http://10.0.2.2:5000.
-val localDebugApiBaseUrl = "http://127.0.0.1:5000/api"
-val localDebugSocketBaseUrl = "http://127.0.0.1:5000"
+// Debug builds use the production API proxy by default so physical-device tests
+// do not depend on Render's generated hostname resolving on the phone network.
+// For local backend testing, override with VORMEX_DEBUG_* = http://127.0.0.1:5000
+// after running adb reverse, or use http://10.0.2.2:5000 for emulators.
+val localDebugApiBaseUrl = "https://www.vormex.in/api"
+val localDebugSocketBaseUrl = "https://vormex-backend.onrender.com"
 val debugApiBaseUrl = secret("VORMEX_DEBUG_API_BASE_URL") ?: localDebugApiBaseUrl
 val debugSocketBaseUrl = secret("VORMEX_DEBUG_SOCKET_BASE_URL") ?: localDebugSocketBaseUrl
 val adMobApplicationId = secret("VORMEX_ADMOB_APPLICATION_ID")
@@ -74,8 +76,8 @@ android {
         applicationId = "com.vormex.android"
         minSdk = 23
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.0.4"
+        versionCode = 8
+        versionName = "1.0.6"
         androidResources.localeFilters += arrayOf("en")
         buildConfigField("String", "API_BASE_URL", "\"$releaseApiBaseUrl\"")
         buildConfigField("String", "SOCKET_BASE_URL", "\"$releaseSocketBaseUrl\"")
@@ -152,6 +154,12 @@ gradle.taskGraph.whenReady {
             "Release builds require VORMEX_RELEASE_API_BASE_URL and VORMEX_RELEASE_SOCKET_BASE_URL."
         )
     }
+    if (isReleaseTask && !hasReleaseSigning) {
+        throw GradleException(
+            "Release builds require VORMEX_RELEASE_STORE_FILE, VORMEX_RELEASE_STORE_PASSWORD, " +
+                "VORMEX_RELEASE_KEY_ALIAS, and VORMEX_RELEASE_KEY_PASSWORD."
+        )
+    }
 }
 
 kotlin {
@@ -214,7 +222,7 @@ dependencies {
     implementation(libs.google.user.messaging.platform)
 
     // Payments
-    implementation(libs.razorpay.checkout)
+    implementation(libs.google.play.billing)
 
     // Free/open map rendering for Nearby
     implementation(libs.osmdroid.android)

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.GroupsApiService
 import com.kyant.backdrop.catalog.network.models.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -86,6 +87,10 @@ class CirclesViewModel(private val context: Context) : ViewModel() {
         loadMyCircles()
         loadDiscoverCircles()
     }
+
+    private suspend fun cacheOwnerId(): String? {
+        return ApiClient.getCurrentUserId(context)
+    }
     
     fun setActiveTab(tab: CirclesTab) {
         _uiState.value = _uiState.value.copy(activeTab = tab, error = null)
@@ -96,13 +101,25 @@ class CirclesViewModel(private val context: Context) : ViewModel() {
     }
     
     fun loadMyCircles(refresh: Boolean = false) {
-        if (_uiState.value.isLoading && !refresh) return
+        if (_uiState.value.isLoading && !refresh && _uiState.value.myCircles.isNotEmpty()) return
         
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            val ownerId = cacheOwnerId()
+            val cached = if (!refresh) GroupsLocalCache.readMyCircles(context, ownerId) else null
+            if (cached != null) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = null,
+                    myCircles = cached.circles,
+                    circlesJoinedCount = cached.circles.size
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            }
             
             GroupsApiService.getMyCircles(context).fold(
                 onSuccess = { response ->
+                    GroupsLocalCache.writeMyCircles(context, ownerId, response.circles)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         myCircles = response.circles,
@@ -112,7 +129,7 @@ class CirclesViewModel(private val context: Context) : ViewModel() {
                 onFailure = { e ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = e.message
+                        error = if (cached != null) null else e.message
                     )
                 }
             )
@@ -120,17 +137,34 @@ class CirclesViewModel(private val context: Context) : ViewModel() {
     }
     
     fun loadDiscoverCircles(refresh: Boolean = false) {
-        if (_uiState.value.isLoading && !refresh) return
+        if (_uiState.value.isLoading && !refresh && _uiState.value.discoverCircles.isNotEmpty()) return
         
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            val ownerId = cacheOwnerId()
+            val search = _uiState.value.searchQuery.takeIf { it.isNotBlank() }
+            val category = _uiState.value.selectedCategory
+            val cached = if (!refresh) {
+                GroupsLocalCache.readDiscoverCircles(context, ownerId, search, category)
+            } else {
+                null
+            }
+            if (cached != null) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = null,
+                    discoverCircles = cached.circles
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            }
             
             GroupsApiService.discoverCircles(
                 context = context,
-                category = _uiState.value.selectedCategory,
-                search = _uiState.value.searchQuery.takeIf { it.isNotBlank() }
+                category = category,
+                search = search
             ).fold(
                 onSuccess = { response ->
+                    GroupsLocalCache.writeDiscoverCircles(context, ownerId, search, category, response)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         discoverCircles = response.circles
@@ -139,7 +173,7 @@ class CirclesViewModel(private val context: Context) : ViewModel() {
                 onFailure = { e ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = e.message
+                        error = if (cached != null) null else e.message
                     )
                 }
             )

@@ -1,10 +1,7 @@
 package com.kyant.backdrop.catalog.payments
 
 import com.kyant.backdrop.catalog.network.models.PremiumPlanOption
-import com.razorpay.Checkout
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class PremiumCheckoutPayloadsTest {
@@ -37,54 +34,6 @@ class PremiumCheckoutPayloadsTest {
         )
 
         assertEquals("monthly", selectPremiumCheckoutPlanOption(options, "weekly")?.billingCycle)
-    }
-
-    @Test
-    fun `buildPremiumVerifyRequestOrNull requires all Razorpay verification fields`() {
-        assertNull(
-            buildPremiumVerifyRequestOrNull(
-                razorpayOrderId = "order_123",
-                razorpayPaymentId = "pay_123",
-                razorpaySignature = null
-            )
-        )
-
-        val request = buildPremiumVerifyRequestOrNull(
-            razorpayOrderId = " order_123 ",
-            razorpayPaymentId = " pay_123 ",
-            razorpaySignature = " sig_123 "
-        )
-
-        assertNotNull(request)
-        assertEquals("order_123", request?.razorpayOrderId)
-        assertEquals("pay_123", request?.razorpayPaymentId)
-        assertEquals("sig_123", request?.razorpaySignature)
-    }
-
-    @Test
-    fun `resolveRazorpayCheckoutErrorMessage stays quiet when the user cancels`() {
-        assertNull(
-            resolveRazorpayCheckoutErrorMessage(
-                code = Checkout.PAYMENT_CANCELED,
-                response = "User closed checkout"
-            )
-        )
-    }
-
-    @Test
-    fun `resolveRazorpayCheckoutErrorMessage explains gateway startup and network failures`() {
-        assertEquals(
-            "Razorpay checkout could not reach the network. Please check your connection and try again.",
-            resolveRazorpayCheckoutErrorMessage(Checkout.NETWORK_ERROR)
-        )
-        assertEquals(
-            "Premium checkout could not be started. Please try again.",
-            resolveRazorpayCheckoutErrorMessage(Checkout.INVALID_OPTIONS)
-        )
-        assertEquals(
-            "Premium payment could not be completed. Please try again.",
-            resolveRazorpayCheckoutErrorMessage(code = 999, response = " ")
-        )
     }
 
     private fun premiumPlan(

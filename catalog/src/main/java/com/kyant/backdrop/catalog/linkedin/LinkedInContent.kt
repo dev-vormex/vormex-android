@@ -6198,19 +6198,6 @@ private fun MoreFullScreen(
                 )
             }
 
-            MoreTestPremiumOverrideSection(
-                backdrop = backdrop,
-                isGlassTheme = isGlassTheme,
-                surfaceColor = sectionSurfaceColor,
-                borderColor = dividerColor,
-                groupDividerColor = groupDividerColor,
-                contentColor = contentColor,
-                secondaryTextColor = secondaryTextColor,
-                sectionHeaderColor = sectionHeaderColor,
-                accentColor = accentColor,
-                currentUser = currentUser
-            )
-
             Spacer(Modifier.height(18.dp))
         }
     }
@@ -6384,60 +6371,6 @@ private fun MorePremiumSection(
     currentUser: com.kyant.backdrop.catalog.network.models.User?,
     onOpenPremiumDetails: () -> Unit
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val premiumRefreshSignal by PremiumCheckoutManager.refreshSignal.collectAsState()
-    var premiumState by remember(currentUser?.id) { mutableStateOf<PremiumSubscriptionResponse?>(null) }
-    var isUpdatingTestPremium by remember(currentUser?.id) { mutableStateOf(false) }
-    var testPremiumError by remember(currentUser?.id) { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(currentUser?.id, premiumRefreshSignal) {
-        if (currentUser == null) {
-            premiumState = null
-            testPremiumError = null
-            return@LaunchedEffect
-        }
-
-        ApiClient.getPremiumSubscription(context)
-            .onSuccess {
-                premiumState = it
-                testPremiumError = null
-            }
-            .onFailure { error ->
-                testPremiumError = error.message
-            }
-    }
-
-    fun setTestPremium(enabled: Boolean) {
-        if (currentUser == null || isUpdatingTestPremium) return
-
-        scope.launch {
-            isUpdatingTestPremium = true
-            testPremiumError = null
-            ApiClient.setDeveloperPremiumOverride(context, enabled)
-                .onSuccess { response ->
-                    premiumState = response.subscription ?: premiumState
-                    PremiumCheckoutManager.notifyPremiumStateChanged()
-                    Toast.makeText(
-                        context,
-                        response.message.ifBlank {
-                            if (enabled) "Test premium is on." else "Test premium is off."
-                        },
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-                .onFailure { error ->
-                    testPremiumError = error.message ?: "Could not update test premium."
-                    Toast.makeText(
-                        context,
-                        testPremiumError ?: "Could not update test premium.",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            isUpdatingTestPremium = false
-        }
-    }
-
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         MoreSectionHeader("Premium", sectionHeaderColor)
         MorePremiumEntryCard(
@@ -6448,137 +6381,6 @@ private fun MorePremiumSection(
             accentColor = accentColor,
             onOpenPremiumDetails = onOpenPremiumDetails
         )
-        if (premiumState?.developerPremiumOverrideAvailable == true) {
-            MorePremiumTestToggleCard(
-                backdrop = backdrop,
-                isGlassTheme = isGlassTheme,
-                surfaceColor = sectionSurfaceColor,
-                borderColor = dividerColor,
-                contentColor = contentColor,
-                secondaryTextColor = secondaryTextColor,
-                accentColor = accentColor,
-                checked = premiumState?.developerPremiumOverrideActive == true || premiumState?.isPremium == true,
-                isUpdating = isUpdatingTestPremium,
-                error = testPremiumError,
-                onCheckedChange = ::setTestPremium
-            )
-        }
-    }
-}
-
-@Composable
-private fun MorePremiumTestToggleCard(
-    backdrop: LayerBackdrop,
-    isGlassTheme: Boolean,
-    surfaceColor: Color,
-    borderColor: Color,
-    contentColor: Color,
-    secondaryTextColor: Color,
-    accentColor: Color,
-    checked: Boolean,
-    isUpdating: Boolean,
-    error: String?,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .then(
-                if (isGlassTheme) {
-                    Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { RoundedRectangle(18.dp) },
-                        effects = {
-                            vibrancy()
-                            blur(14f.dp.toPx())
-                            lens(6f.dp.toPx(), 12f.dp.toPx())
-                        },
-                        onDrawSurface = {
-                            drawRect(surfaceColor)
-                        }
-                    )
-                } else {
-                    Modifier.background(surfaceColor)
-                }
-            )
-            .border(1.dp, borderColor, RoundedCornerShape(18.dp))
-            .clickable(enabled = !isUpdating) { onCheckedChange(!checked) }
-            .padding(horizontal = 16.dp, vertical = 14.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(38.dp)
-                    .clip(CircleShape)
-                    .background(accentColor.copy(alpha = 0.14f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.WorkspacePremium,
-                    contentDescription = null,
-                    tint = accentColor,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
-            ) {
-                BasicText(
-                    "Test premium",
-                    style = TextStyle(
-                        color = contentColor,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                )
-                BasicText(
-                    when {
-                        isUpdating -> "Updating premium access"
-                        checked -> "Premium is enabled for this account"
-                        else -> "Premium is disabled for this account"
-                    },
-                    style = TextStyle(
-                        color = secondaryTextColor,
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp
-                    )
-                )
-                error?.takeIf { it.isNotBlank() }?.let { message ->
-                    BasicText(
-                        message,
-                        style = TextStyle(
-                            color = Color(0xFFFF7A7A),
-                            fontSize = 11.sp,
-                            lineHeight = 15.sp
-                        ),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            if (isUpdating) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    strokeWidth = 2.dp,
-                    color = accentColor
-                )
-            } else {
-                LiquidToggle(
-                    selected = { checked },
-                    onSelect = onCheckedChange,
-                    backdrop = backdrop,
-                    accentColor = accentColor
-                )
-            }
-        }
     }
 }
 
@@ -7090,7 +6892,7 @@ private fun MorePremiumDetailsScreen(
         if (!isLoadingPremiumState && premiumState?.checkoutEnabled == false) {
             Toast.makeText(
                 context,
-                "Premium checkout is not configured on the server yet.",
+                "Google Play premium verification is not configured on the server yet.",
                 Toast.LENGTH_SHORT
             ).show()
             return
@@ -8176,11 +7978,11 @@ private fun MorePremiumPromoCard(
         !checkoutPendingMessage.isNullOrBlank() -> checkoutPendingMessage
         !checkoutErrorMessage.isNullOrBlank() && !isPremiumActive -> checkoutErrorMessage
         isLoadingPremiumState -> "Checking your premium access..."
-        isLaunchingCheckout -> "Opening Razorpay checkout..."
+        isLaunchingCheckout -> "Opening Google Play checkout..."
         isActivatingBoost -> "Activating your profile boost..."
         isProfileBoostActive -> "Your profile boost is active and ranking higher in discovery."
         isCancellingPremium -> "Updating premium access..."
-        !checkoutEnabled && !isPremiumActive -> "Razorpay checkout is not ready yet. Tap to retry."
+        !checkoutEnabled && !isPremiumActive -> "Google Play checkout is not ready yet. Tap to retry."
         customPriceApplied -> "A special premium price is active for this account."
         else -> null
     }
@@ -10435,206 +10237,6 @@ private fun MoreSettingsListSectionHeader(
                 overflow = TextOverflow.Ellipsis
             )
         }
-    }
-}
-
-@Composable
-private fun MoreTestPremiumOverrideSection(
-    backdrop: LayerBackdrop,
-    isGlassTheme: Boolean,
-    surfaceColor: Color,
-    borderColor: Color,
-    groupDividerColor: Color,
-    contentColor: Color,
-    secondaryTextColor: Color,
-    sectionHeaderColor: Color,
-    accentColor: Color,
-    currentUser: com.kyant.backdrop.catalog.network.models.User?
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val premiumRefreshSignal by PremiumCheckoutManager.refreshSignal.collectAsState()
-    var premiumState by remember(currentUser?.id) { mutableStateOf<PremiumSubscriptionResponse?>(null) }
-    var isUpdatingTestPremium by remember(currentUser?.id) { mutableStateOf(false) }
-    var testPremiumError by remember(currentUser?.id) { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(currentUser?.id, premiumRefreshSignal) {
-        if (currentUser == null) {
-            premiumState = null
-            testPremiumError = null
-            return@LaunchedEffect
-        }
-
-        ApiClient.getPremiumSubscription(context)
-            .onSuccess {
-                premiumState = it
-                testPremiumError = null
-            }
-            .onFailure { error ->
-                testPremiumError = error.message
-            }
-    }
-
-    fun setTestPremium(enabled: Boolean) {
-        if (currentUser == null || isUpdatingTestPremium) return
-
-        scope.launch {
-            isUpdatingTestPremium = true
-            testPremiumError = null
-            ApiClient.setDeveloperPremiumOverride(context, enabled)
-                .onSuccess { response ->
-                    premiumState = response.subscription ?: premiumState
-                    PremiumCheckoutManager.notifyPremiumStateChanged()
-                    Toast.makeText(
-                        context,
-                        response.message.ifBlank {
-                            if (enabled) "Test premium is on." else "Test premium is off."
-                        },
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-                .onFailure { error ->
-                    testPremiumError = error.message ?: "Could not update test premium."
-                    Toast.makeText(
-                        context,
-                        testPremiumError ?: "Could not update test premium.",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            isUpdatingTestPremium = false
-        }
-    }
-
-    if (premiumState?.developerPremiumOverrideAvailable != true) return
-
-    val checked = premiumState?.developerPremiumOverrideActive == true || premiumState?.isPremium == true
-
-    MoreSettingsGroupDivider(groupDividerColor)
-    MoreSettingsListSectionHeader(
-        title = "Developer tools",
-        contentColor = sectionHeaderColor
-    )
-    MoreTestPremiumOverrideRow(
-        backdrop = backdrop,
-        isGlassTheme = isGlassTheme,
-        surfaceColor = surfaceColor,
-        borderColor = borderColor,
-        contentColor = contentColor,
-        secondaryTextColor = secondaryTextColor,
-        accentColor = accentColor,
-        checked = checked,
-        isUpdating = isUpdatingTestPremium,
-        error = testPremiumError,
-        onCheckedChange = ::setTestPremium
-    )
-}
-
-@Composable
-private fun MoreTestPremiumOverrideRow(
-    backdrop: LayerBackdrop,
-    isGlassTheme: Boolean,
-    surfaceColor: Color,
-    borderColor: Color,
-    contentColor: Color,
-    secondaryTextColor: Color,
-    accentColor: Color,
-    checked: Boolean,
-    isUpdating: Boolean,
-    error: String?,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    val subtitle = when {
-        isUpdating -> "Updating premium access"
-        checked -> "Premium is enabled for this account"
-        else -> "Premium is disabled for this account"
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(if (isGlassTheme) surfaceColor else Color.Transparent)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .noRippleClickable(enabled = !isUpdating) { onCheckedChange(!checked) }
-                .padding(horizontal = 18.dp, vertical = 13.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Box(
-                modifier = Modifier.size(26.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.WorkspacePremium,
-                    contentDescription = null,
-                    tint = contentColor.copy(alpha = 0.9f),
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
-            ) {
-                BasicText(
-                    "Test premium",
-                    style = TextStyle(
-                        color = contentColor,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                BasicText(
-                    subtitle,
-                    style = TextStyle(
-                        color = secondaryTextColor,
-                        fontSize = 13.sp,
-                        lineHeight = 17.sp
-                    ),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                error?.takeIf { it.isNotBlank() }?.let { message ->
-                    BasicText(
-                        message,
-                        style = TextStyle(
-                            color = Color(0xFFFF7A7A),
-                            fontSize = 12.sp,
-                            lineHeight = 16.sp
-                        ),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            if (isUpdating) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    strokeWidth = 2.dp,
-                    color = accentColor
-                )
-            } else {
-                LiquidToggle(
-                    selected = { checked },
-                    onSelect = onCheckedChange,
-                    backdrop = backdrop,
-                    accentColor = accentColor
-                )
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 58.dp, end = 18.dp)
-                .height(1.dp)
-                .background(borderColor)
-        )
     }
 }
 

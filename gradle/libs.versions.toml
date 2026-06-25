@@ -31,7 +31,7 @@ room = "2.8.4"
 ksp = "2.3.6"
 lottie = "6.6.7"
 osmdroid = "6.1.20"
-razorpayCheckout = "1.6.39"
+playBilling = "9.1.0"
 zxing = "3.5.3"
 desugarJdkLibs = "2.1.5"
 
@@ -84,7 +84,7 @@ google-play-services-ads = { group = "com.google.android.gms", name = "play-serv
 google-user-messaging-platform = { group = "com.google.android.ump", name = "user-messaging-platform", version.ref = "userMessagingPlatform" }
 
 # Payments
-razorpay-checkout = { group = "com.razorpay", name = "checkout", version.ref = "razorpayCheckout" }
+google-play-billing = { group = "com.android.billingclient", name = "billing", version.ref = "playBilling" }
 
 # Image Loading
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }

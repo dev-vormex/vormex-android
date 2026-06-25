@@ -134,6 +134,14 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
             GroupSocketManager.currentUserId = currentUserId
         }
     }
+
+    private suspend fun cacheOwnerId(): String? {
+        currentUserId?.let { return it }
+        return ApiClient.getCurrentUserId(context).also { userId ->
+            currentUserId = userId
+            GroupSocketManager.currentUserId = userId
+        }
+    }
     
     // ==================== Hub Actions ====================
     
@@ -147,17 +155,30 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     }
     
     fun loadMyGroups(refresh: Boolean = false) {
-        if (_uiState.value.isLoading && !refresh) return
+        if (_uiState.value.isLoading && !refresh && _uiState.value.myGroups.isNotEmpty()) return
         
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(
-                isLoading = true,
-                error = null,
-                currentPage = if (refresh) 1 else _uiState.value.currentPage
-            )
+            val ownerId = cacheOwnerId()
+            val cached = if (!refresh) GroupsLocalCache.readMyGroups(context, ownerId) else null
+            if (cached != null) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = null,
+                    myGroups = cached.groups,
+                    hasMoreGroups = cached.pagination?.let { it.page < it.totalPages } ?: false,
+                    currentPage = 1
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = true,
+                    error = null,
+                    currentPage = if (refresh) 1 else _uiState.value.currentPage
+                )
+            }
             
             GroupsApiService.getMyGroups(context, page = 1).fold(
                 onSuccess = { response ->
+                    GroupsLocalCache.writeMyGroups(context, ownerId, response)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         myGroups = response.groups,
@@ -169,7 +190,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                 onFailure = { e ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = e.message
+                        error = if (cached != null) null else e.message
                     )
                 }
             )
@@ -177,18 +198,37 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     }
     
     fun loadDiscoverGroups(refresh: Boolean = false) {
-        if (_uiState.value.isLoading && !refresh) return
+        if (_uiState.value.isLoading && !refresh && _uiState.value.discoverGroups.isNotEmpty()) return
         
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            val ownerId = cacheOwnerId()
+            val search = _uiState.value.searchQuery.takeIf { it.isNotBlank() }
+            val category = _uiState.value.selectedCategory
+            val cached = if (!refresh) {
+                GroupsLocalCache.readDiscoverGroups(context, ownerId, search, category)
+            } else {
+                null
+            }
+            if (cached != null) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = null,
+                    discoverGroups = cached.groups,
+                    hasMoreGroups = cached.pagination?.let { it.page < it.totalPages } ?: false,
+                    currentPage = 1
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            }
             
             GroupsApiService.discoverGroups(
                 context = context,
-                search = _uiState.value.searchQuery.takeIf { it.isNotBlank() },
-                category = _uiState.value.selectedCategory,
+                search = search,
+                category = category,
                 page = 1
             ).fold(
                 onSuccess = { response ->
+                    GroupsLocalCache.writeDiscoverGroups(context, ownerId, search, category, response)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         discoverGroups = response.groups,
@@ -200,7 +240,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                 onFailure = { e ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = e.message
+                        error = if (cached != null) null else e.message
                     )
                 }
             )
@@ -209,10 +249,21 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     
     fun loadPendingInvites() {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            val ownerId = cacheOwnerId()
+            val cached = GroupsLocalCache.readPendingInvites(context, ownerId)
+            if (cached != null) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = null,
+                    pendingInvites = cached.invites
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            }
             
             GroupsApiService.getPendingInvites(context).fold(
                 onSuccess = { response ->
+                    GroupsLocalCache.writePendingInvites(context, ownerId, response)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         pendingInvites = response.invites
@@ -221,7 +272,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                 onFailure = { e ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = e.message
+                        error = if (cached != null) null else e.message
                     )
                 }
             )
@@ -230,8 +281,12 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     
     fun loadCategories() {
         viewModelScope.launch {
+            GroupsLocalCache.readCategories(context)?.let { cached ->
+                _uiState.value = _uiState.value.copy(categories = cached.categories)
+            }
             GroupsApiService.getCategories(context).fold(
                 onSuccess = { response ->
+                    GroupsLocalCache.writeCategories(context, response)
                     _uiState.value = _uiState.value.copy(categories = response.categories)
                 },
                 onFailure = { /* ignore */ }
