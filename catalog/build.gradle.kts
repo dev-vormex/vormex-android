@@ -26,12 +26,13 @@ val googleWebClientId = googleServerClientId
 val googleAndroidClientId = secret("VORMEX_GOOGLE_ANDROID_CLIENT_ID")
     ?: secret("GOOGLE_CLIENT_ID_ANDROID")
     ?: "562328294412-sfil52dp4f7mapttri74hs9t445ierpd.apps.googleusercontent.com"
-// Debug builds use the production API proxy by default so physical-device tests
-// do not depend on Render's generated hostname resolving on the phone network.
-// For local backend testing, override with VORMEX_DEBUG_* = http://127.0.0.1:5000
-// after running adb reverse, or use http://10.0.2.2:5000 for emulators.
-val localDebugApiBaseUrl = "https://www.vormex.in/api"
-val localDebugSocketBaseUrl = "https://vormex-backend.onrender.com"
+// Debug builds use the local backend by default. For physical devices, run
+// adb reverse tcp:5000 tcp:5000 so the phone's 127.0.0.1 points at this machine.
+// Keep the Render URLs here for quick hosted-backend overrides when needed.
+val renderDebugApiBaseUrl = "https://vormex-backend.onrender.com/api"
+val renderDebugSocketBaseUrl = "https://vormex-backend.onrender.com"
+val localDebugApiBaseUrl = "http://127.0.0.1:5000/api"
+val localDebugSocketBaseUrl = "http://127.0.0.1:5000"
 val debugApiBaseUrl = secret("VORMEX_DEBUG_API_BASE_URL") ?: localDebugApiBaseUrl
 val debugSocketBaseUrl = secret("VORMEX_DEBUG_SOCKET_BASE_URL") ?: localDebugSocketBaseUrl
 val adMobApplicationId = secret("VORMEX_ADMOB_APPLICATION_ID")
