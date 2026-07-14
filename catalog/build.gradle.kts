@@ -21,8 +21,8 @@ val releaseStoreFilePath = secret("VORMEX_RELEASE_STORE_FILE")
 val releaseStorePassword = secret("VORMEX_RELEASE_STORE_PASSWORD")
 val releaseKeyAlias = secret("VORMEX_RELEASE_KEY_ALIAS")
 val releaseKeyPassword = secret("VORMEX_RELEASE_KEY_PASSWORD")
-val releaseApiBaseUrl = secret("VORMEX_RELEASE_API_BASE_URL").orEmpty()
-val releaseSocketBaseUrl = secret("VORMEX_RELEASE_SOCKET_BASE_URL").orEmpty()
+val releaseApiBaseUrl = secret("VORMEX_RELEASE_API_BASE_URL") ?: "https://vormex-backend.onrender.com/api"
+val releaseSocketBaseUrl = secret("VORMEX_RELEASE_SOCKET_BASE_URL") ?: "https://vormex-backend.onrender.com"
 // Credential Manager asks for the server client ID: this is the OAuth client
 // whose audience the backend verifies. The Android OAuth client must still be
 // registered in the same Google project for com.vormex.android and the app's
@@ -35,15 +35,15 @@ val googleWebClientId = googleServerClientId
 val googleAndroidClientId = secret("VORMEX_GOOGLE_ANDROID_CLIENT_ID")
     ?: secret("GOOGLE_CLIENT_ID_ANDROID")
     ?: "562328294412-sfil52dp4f7mapttri74hs9t445ierpd.apps.googleusercontent.com"
-// Debug builds use the local backend by default. For physical devices, run
-// adb reverse tcp:5000 tcp:5000 so the phone's 127.0.0.1 points at this machine.
-// Keep the Render URLs here for quick hosted-backend overrides when needed.
+// Debug builds now use Render by default.
 val renderDebugApiBaseUrl = "https://vormex-backend.onrender.com/api"
 val renderDebugSocketBaseUrl = "https://vormex-backend.onrender.com"
+// Previous local defaults are preserved for optional VORMEX_DEBUG_* overrides.
+// For physical devices, adb reverse tcp:5000 tcp:5000 maps 127.0.0.1 to the development machine.
 val localDebugApiBaseUrl = "http://127.0.0.1:5000/api"
 val localDebugSocketBaseUrl = "http://127.0.0.1:5000"
-val debugApiBaseUrl = secret("VORMEX_DEBUG_API_BASE_URL") ?: localDebugApiBaseUrl
-val debugSocketBaseUrl = secret("VORMEX_DEBUG_SOCKET_BASE_URL") ?: localDebugSocketBaseUrl
+val debugApiBaseUrl = secret("VORMEX_DEBUG_API_BASE_URL") ?: renderDebugApiBaseUrl
+val debugSocketBaseUrl = secret("VORMEX_DEBUG_SOCKET_BASE_URL") ?: renderDebugSocketBaseUrl
 val adMobApplicationId = secret("VORMEX_ADMOB_APPLICATION_ID")
     ?: "ca-app-pub-3940256099942544~3347511713"
 val adMobNativeFeedAdUnitId = secret("VORMEX_ADMOB_NATIVE_FEED_AD_UNIT_ID")
