@@ -1186,10 +1186,7 @@ fun AppearanceSettingsScreen(
                     "warm_paper" to "Warm Paper",
                     "black_green" to "Black Green",
                     "light" to "White",
-                    "dark" to "Dark",
-                    "midnight_neon" to "Midnight Neon",
-                    "soft_graphite" to "Soft Graphite",
-                    "emerald_focus" to "Emerald Focus"
+                    "dark" to "Dark"
                 )
 
                 Row(

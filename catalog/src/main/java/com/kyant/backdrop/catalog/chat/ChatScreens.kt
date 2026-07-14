@@ -19,6 +19,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -26,6 +29,11 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -139,6 +147,7 @@ import com.kyant.backdrop.catalog.network.models.MySafetyReport
 import com.kyant.backdrop.catalog.network.models.SharedPostContent
 import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
 import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.posts.formatTimeAgo
 import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -536,6 +545,9 @@ private fun ChatListScreen(
                         cardColor = cardColor,
                         borderColor = cardBorder,
                         currentUserId = uiState.currentUserId,
+                        isTyping = conv.id in uiState.typingConversationIds,
+                        isPeerOnline = uiState.peerPresence[conv.otherParticipant.id]?.isOnline
+                            ?: conv.otherParticipant.isOnline,
                         onClick = { viewModel.selectConversation(conv) }
                     )
                 }
@@ -554,6 +566,9 @@ private fun ChatListScreen(
                                 cardColor = cardColor,
                                 borderColor = cardBorder,
                                 currentUserId = uiState.currentUserId,
+                                isTyping = entry.conversation.id in uiState.typingConversationIds,
+                                isPeerOnline = uiState.peerPresence[entry.conversation.otherParticipant.id]?.isOnline
+                                    ?: entry.conversation.otherParticipant.isOnline,
                                 onClick = { viewModel.selectConversation(entry.conversation) }
                             )
                         }
@@ -700,13 +715,18 @@ private fun ChatAvatar(
                 )
             }
         }
-        if (showOnlineDot) {
+        AnimatedVisibility(
+            visible = showOnlineDot,
+            modifier = Modifier.align(Alignment.BottomEnd),
+            enter = scaleIn(initialScale = 0.4f, animationSpec = tween(260)) + fadeIn(tween(260)),
+            exit = scaleOut(targetScale = 0.4f, animationSpec = tween(200)) + fadeOut(tween(200)),
+            label = "chat_avatar_online_dot"
+        ) {
             Box(
                 Modifier
-                    .align(Alignment.BottomEnd)
                     .size((size * 0.22f).dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF35D07F))
+                    .background(chatPresenceGreen)
                     .border(2.dp, avatarBackground, CircleShape)
             )
         }
@@ -721,6 +741,8 @@ private fun SwipeableConversationRow(
     cardColor: Color,
     borderColor: Color,
     currentUserId: String?,
+    isTyping: Boolean = false,
+    isPeerOnline: Boolean = false,
     onClick: () -> Unit
 ) {
     val other = conversation.otherParticipant
@@ -756,7 +778,7 @@ private fun SwipeableConversationRow(
                 contentColor = contentColor,
                 accentColor = accentColor,
                 highlighted = showUnreadAccent || conversation.isMessageRequest,
-                showOnlineDot = false,
+                showOnlineDot = isPeerOnline,
                 size = 48,
                 backgroundColor = contentColor.copy(alpha = 0.018f),
                 showFrame = false
@@ -803,16 +825,29 @@ private fun SwipeableConversationRow(
                     )
                 }
                 Spacer(Modifier.height(5.dp))
-                BasicText(
-                    previewText,
-                    style = TextStyle(
-                        color = contentColor.copy(alpha = if (showUnreadAccent) 0.72f else 0.54f),
-                        fontSize = 12.sp,
-                        fontWeight = if (showUnreadAccent) FontWeight.Medium else FontWeight.Normal
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                AnimatedContent(
+                    targetState = isTyping,
+                    transitionSpec = {
+                        (fadeIn(tween(200)) + scaleIn(initialScale = 0.94f, animationSpec = tween(200)))
+                            .togetherWith(fadeOut(tween(140)))
+                    },
+                    label = "chat_list_preview"
+                ) { showTyping ->
+                    if (showTyping) {
+                        ChatTypingPreviewRow()
+                    } else {
+                        BasicText(
+                            previewText,
+                            style = TextStyle(
+                                color = contentColor.copy(alpha = if (showUnreadAccent) 0.72f else 0.54f),
+                                fontSize = 12.sp,
+                                fontWeight = if (showUnreadAccent) FontWeight.Medium else FontWeight.Normal
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
             if (conversation.unreadCount > 0) {
                 Spacer(Modifier.width(8.dp))
@@ -1015,9 +1050,14 @@ private fun ChatThreadScreen(
     val lastMessageId = uiState.messages.lastOrNull()?.id
     var pendingLoadMoreAnchor by remember(conv.id) { mutableStateOf<LoadMoreAnchor?>(null) }
     var initialBottomScrollDone by remember(conv.id) { mutableStateOf(false) }
+    val peerPresence = uiState.peerPresence[conv.otherParticipant.id]
+    val isPeerOnline = peerPresence?.isOnline ?: conv.otherParticipant.isOnline
+    val peerLastActiveAt = peerPresence?.lastActiveAt ?: conv.otherParticipant.lastActiveAt
     val threadStatusLine = when {
         uiState.typingUserId != null -> "typing..."
         uiState.isLoadingMessages && uiState.messages.isEmpty() -> "loading messages..."
+        isPeerOnline -> "Online"
+        !peerLastActiveAt.isNullOrBlank() -> chatLastSeenLabel(peerLastActiveAt)
         else -> null
     }
     val showLoadingWithoutCache = uiState.threadReadyState == ChatThreadReadyState.LOADING_WITHOUT_CACHE
@@ -1532,14 +1572,33 @@ private fun ChatThreadScreen(
                                     size = VerificationBadgeSize.Small
                                 )
                             }
-                            threadStatusLine?.let { statusLine ->
-                                Spacer(Modifier.height(2.dp))
-                                BasicText(
-                                    statusLine,
-                                    style = TextStyle(threadContentColor.copy(alpha = 0.52f), 11.sp, FontWeight.Medium),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                            AnimatedContent(
+                                targetState = threadStatusLine,
+                                transitionSpec = {
+                                    (fadeIn(tween(220)) + scaleIn(initialScale = 0.94f, animationSpec = tween(220)))
+                                        .togetherWith(fadeOut(tween(160)))
+                                },
+                                label = "chat_thread_presence"
+                            ) { statusLine ->
+                                if (statusLine != null) {
+                                    Column {
+                                        Spacer(Modifier.height(2.dp))
+                                        BasicText(
+                                            statusLine,
+                                            style = TextStyle(
+                                                color = when (statusLine) {
+                                                    "typing..." -> chatPresenceGreen
+                                                    "Online" -> chatPresenceGreen
+                                                    else -> threadContentColor.copy(alpha = 0.52f)
+                                                },
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Medium
+                                            ),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
                             }
                         }
                         Box(
@@ -1638,7 +1697,6 @@ private fun ChatThreadScreen(
                                 )
                                 val nextMsg = displayedMessages.getOrNull(index + 1)
                                 val showTimestamp = shouldShowClusterMetaForDm(msg, nextMsg)
-                                val deliveryStateText = chatDeliveryStateText(msg, isFromMe)
 
                                 MessageBubble(
                                     message = msg,
@@ -1661,8 +1719,7 @@ private fun ChatThreadScreen(
                                         fullscreenMedia = media
                                     },
                                     onOpenReel = onNavigateToReel,
-                                    currentUserId = uiState.currentUserId,
-                                    deliveryStateText = deliveryStateText
+                                    currentUserId = uiState.currentUserId
                                 )
                             }
                         }
@@ -2861,6 +2918,59 @@ private fun rememberLoaderPulseAlpha(): Float {
 // Common emoji reactions
 private val quickReactions = listOf("❤️", "👍", "😂", "😮", "😢", "🔥")
 private val chatMediaContentTypes = setOf("image", "video", "audio", "document", "file")
+private val chatPresenceGreen = Color(0xFF35D07F)
+
+/**
+ * "typing…" preview for the conversation list with three staggered bouncing dots.
+ */
+@Composable
+private fun ChatTypingPreviewRow() {
+    val transition = rememberInfiniteTransition(label = "chat_list_typing_dots")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "chat_list_typing_phase"
+    )
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        BasicText(
+            "typing",
+            style = TextStyle(chatPresenceGreen, 12.sp, FontWeight.SemiBold),
+            maxLines = 1
+        )
+        Spacer(Modifier.width(4.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.5.dp)
+        ) {
+            repeat(3) { index ->
+                val angle = phase * 2f * PI.toFloat() - index * 0.9f
+                val wave = ((sin(angle.toDouble()) + 1.0) / 2.0).toFloat()
+                Box(
+                    Modifier
+                        .offset(y = (-wave * 2.5f).dp)
+                        .size(4.dp)
+                        .clip(CircleShape)
+                        .background(chatPresenceGreen.copy(alpha = 0.35f + wave * 0.65f))
+                )
+            }
+        }
+    }
+}
+
+private fun chatLastSeenLabel(lastActiveAt: String): String {
+    val ago = formatTimeAgo(lastActiveAt)
+    return when {
+        ago == lastActiveAt -> "last seen recently"
+        ago.equals("Just now", ignoreCase = true) -> "last seen just now"
+        ago.matches(Regex("\\d+[smhdw]")) -> "last seen $ago ago"
+        else -> "last seen $ago"
+    }
+}
 
 @Composable
 private fun ChatMediaMessageContent(
@@ -3599,8 +3709,7 @@ private fun MessageBubble(
     onCopy: () -> Unit = {},
     onOpenMedia: (ChatFullscreenMedia) -> Unit = {},
     onOpenReel: (SharedPostContent) -> Unit = {},
-    currentUserId: String? = null,
-    deliveryStateText: String? = null
+    currentUserId: String? = null
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -3804,16 +3913,27 @@ private fun MessageBubble(
                         }
                     }
 
-                    val metaParts = buildList {
-                        if (showTimestamp) add(formatTime(message.createdAt))
-                        if (!deliveryStateText.isNullOrBlank()) add(deliveryStateText)
-                    }
-                    if (metaParts.isNotEmpty()) {
-                        BasicText(
-                            metaParts.joinToString(" • "),
+                    val tickStatus = chatTickStatus(message, isFromMe)
+                    if (showTimestamp || tickStatus != null) {
+                        Row(
                             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                            style = TextStyle(contentColor.copy(alpha = 0.5f), 10.sp)
-                        )
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            if (showTimestamp) {
+                                BasicText(
+                                    formatTime(message.createdAt),
+                                    style = TextStyle(contentColor.copy(alpha = 0.5f), 10.sp)
+                                )
+                            }
+                            tickStatus?.let { status ->
+                                ChatMessageStatusTicks(
+                                    status = status,
+                                    contentColor = contentColor,
+                                    accentColor = accentColor
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -4069,18 +4189,63 @@ private fun Message.isPendingUpload(): Boolean {
     return status.equals("SENDING", ignoreCase = true) || id.startsWith("pending-")
 }
 
-private fun chatDeliveryStateText(message: Message, isFromMe: Boolean): String? {
-    if (message.status.equals("FAILED", ignoreCase = true)) return "Failed"
-    if (message.isPendingUpload()) return "Sending"
-    return if (isFromMe) {
-        when {
-            message.status.equals("READ", ignoreCase = true) || message.readAt != null -> "Read"
-            message.status.equals("DELIVERED", ignoreCase = true) || message.deliveredAt != null -> "Delivered"
-            message.status.equals("FAILED", ignoreCase = true) -> "Failed"
-            else -> "Sent"
-        }
-    } else {
-        null
+private enum class ChatTickStatus {
+    SENDING, SENT, DELIVERED, READ, FAILED
+}
+
+private fun chatTickStatus(message: Message, isFromMe: Boolean): ChatTickStatus? {
+    if (!isFromMe) return null
+    return when {
+        message.status.equals("FAILED", ignoreCase = true) -> ChatTickStatus.FAILED
+        message.isPendingUpload() -> ChatTickStatus.SENDING
+        message.status.equals("READ", ignoreCase = true) || message.readAt != null -> ChatTickStatus.READ
+        message.status.equals("DELIVERED", ignoreCase = true) || message.deliveredAt != null -> ChatTickStatus.DELIVERED
+        else -> ChatTickStatus.SENT
+    }
+}
+
+/**
+ * WhatsApp-style delivery ticks: ✓ sent, ✓✓ delivered, accent-tinted ✓✓ read.
+ * Transitions animate with a subtle scale+fade and a color crossfade.
+ */
+@Composable
+private fun ChatMessageStatusTicks(
+    status: ChatTickStatus,
+    contentColor: Color,
+    accentColor: Color
+) {
+    val tickColor by animateColorAsState(
+        targetValue = when (status) {
+            ChatTickStatus.READ -> accentColor
+            ChatTickStatus.FAILED -> Color(0xFFFF6B6B)
+            else -> contentColor.copy(alpha = 0.5f)
+        },
+        animationSpec = tween(durationMillis = 350),
+        label = "chat_tick_color"
+    )
+
+    AnimatedContent(
+        targetState = status,
+        transitionSpec = {
+            (fadeIn(tween(220)) + scaleIn(initialScale = 0.6f, animationSpec = tween(220)))
+                .togetherWith(fadeOut(tween(140)))
+        },
+        label = "chat_tick_status"
+    ) { tickStatus ->
+        BasicText(
+            when (tickStatus) {
+                ChatTickStatus.SENDING -> "Sending"
+                ChatTickStatus.FAILED -> "Failed"
+                ChatTickStatus.SENT -> "✓"
+                ChatTickStatus.DELIVERED, ChatTickStatus.READ -> "✓✓"
+            },
+            style = TextStyle(
+                color = tickColor,
+                fontSize = if (tickStatus == ChatTickStatus.SENDING || tickStatus == ChatTickStatus.FAILED) 10.sp else 11.sp,
+                fontWeight = FontWeight.SemiBold
+            ),
+            maxLines = 1
+        )
     }
 }
 

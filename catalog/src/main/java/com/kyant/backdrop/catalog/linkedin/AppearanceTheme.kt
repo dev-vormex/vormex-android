@@ -7,7 +7,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.composed
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -20,7 +19,7 @@ import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.shapes.RoundedRectangle
 
-const val DefaultThemeModeKey = "glass"
+const val DefaultThemeModeKey = "light"
 const val DefaultProfileThemeKey = "default"
 const val GameRetroProfileThemeKey = "game_retro"
 
@@ -61,9 +60,12 @@ enum class VormexThemeMode(val key: String) {
 
     companion object {
         fun fromKey(key: String): VormexThemeMode =
-            entries.firstOrNull { it.key == key } ?: Glass
+            entries.firstOrNull { it.key == key } ?: Light
     }
 }
+
+fun normalizeThemeModeKey(value: String?): String =
+    VormexThemeMode.entries.firstOrNull { it.key == value }?.key ?: DefaultThemeModeKey
 
 enum class VormexSurfaceTone {
     Card,
@@ -354,6 +356,7 @@ private fun appearanceForTheme(themeMode: String): VormexAppearance =
         )
     }
 
+@Composable
 fun Modifier.vormexSurface(
     backdrop: LayerBackdrop? = null,
     tone: VormexSurfaceTone = VormexSurfaceTone.Card,
@@ -364,13 +367,13 @@ fun Modifier.vormexSurface(
     useBackdropEffects: Boolean = true,
     surfaceColor: Color? = null,
     borderColor: Color? = null
-): Modifier = composed {
+): Modifier {
     val appearance = currentVormexAppearance()
     val shape = RoundedCornerShape(cornerRadius)
     val resolvedSurface = surfaceColor ?: appearance.surfaceColor(tone)
     val resolvedBorder = borderColor ?: appearance.borderColor(tone)
 
-    if (appearance.isGlassTheme && backdrop != null && useBackdropEffects) {
+    return if (appearance.isGlassTheme && backdrop != null && useBackdropEffects) {
         var modifier = this.drawBackdrop(
             backdrop = backdrop,
             shape = { RoundedRectangle(cornerRadius) },

@@ -144,6 +144,11 @@ class MainActivity : ComponentActivity() {
     private fun handleIntent(intent: Intent?) {
         intent ?: return
 
+        if (intent.getBooleanExtra("open_crossed_paths", false)) {
+            pendingDeepLink = NotificationDeepLink(action = "crossed_paths")
+            return
+        }
+
         intent.data?.let { uri ->
             VormexDeepLinks.parse(uri)?.let { deepLink ->
                 pendingDeepLink = deepLink
@@ -197,6 +202,8 @@ class MainActivity : ComponentActivity() {
     
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val permissionPrefs = getSharedPreferences("notification_permission", MODE_PRIVATE)
+            val alreadyRequested = permissionPrefs.getBoolean("requested_once", false)
             when {
                 ContextCompat.checkSelfPermission(
                     this,
@@ -206,12 +213,13 @@ class MainActivity : ComponentActivity() {
                     initializeFirebaseMessaging()
                 }
                 shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS) -> {
-                    // TODO: Show UI explaining why notifications are important
+                    initializeFirebaseMessaging()
+                }
+                !alreadyRequested -> {
+                    permissionPrefs.edit().putBoolean("requested_once", true).apply()
                     notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
-                else -> {
-                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
+                else -> initializeFirebaseMessaging()
             }
         } else {
             // For Android 12 and below, no runtime permission needed

@@ -1153,12 +1153,14 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
             val cursor = if (resetPage) null else state.allPeopleNextCursor
             val cacheOwnerId = ApiClient.getCurrentUserId(context)
             val cachedFromDisk = if (resetPage && !forceRefresh && cached == null) {
-                FindPeopleCacheStore.readAllPeople(
-                    context = context,
-                    cacheOwnerId = cacheOwnerId,
-                    queryKey = queryKey,
-                    maxAgeMillis = VormexPerformancePolicy.PersistentFindPeopleCacheMaxAgeMillis
-                )
+                withContext(Dispatchers.IO) {
+                    FindPeopleCacheStore.readAllPeople(
+                        context = context,
+                        cacheOwnerId = cacheOwnerId,
+                        queryKey = queryKey,
+                        maxAgeMillis = VormexPerformancePolicy.PersistentFindPeopleCacheMaxAgeMillis
+                    )
+                }
             } else {
                 null
             }
@@ -1257,16 +1259,19 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
                     )
                     trimAllPeopleCache()
                     if (resetPage && page == 1 && buildAllPeopleQueryKey(_uiState.value) == queryKey) {
-                        FindPeopleCacheStore.writeAllPeople(
-                            context = context,
-                            cacheOwnerId = cacheOwnerId,
-                            queryKey = queryKey,
-                            people = newPeople,
-                            total = response.total.takeIf { it > 0 } ?: newPeople.size,
-                            hasMore = response.hasMore,
-                            page = page,
-                            nextCursor = response.nextCursor
-                        )
+                        // JSON encoding + prefs write off the main thread
+                        launch(Dispatchers.IO) {
+                            FindPeopleCacheStore.writeAllPeople(
+                                context = context,
+                                cacheOwnerId = cacheOwnerId,
+                                queryKey = queryKey,
+                                people = newPeople,
+                                total = response.total.takeIf { it > 0 } ?: newPeople.size,
+                                hasMore = response.hasMore,
+                                page = page,
+                                nextCursor = response.nextCursor
+                            )
+                        }
                     }
                     if (buildAllPeopleQueryKey(_uiState.value) == queryKey) {
                         _uiState.value = _uiState.value.copy(

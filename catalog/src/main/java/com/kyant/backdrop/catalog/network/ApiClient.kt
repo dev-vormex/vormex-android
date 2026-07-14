@@ -118,10 +118,14 @@ object ApiClient {
 
     private const val FALLBACK_API_BASE_URL = "https://www.vormex.in/api"
     private val BASE_URL = normalizeApiBaseUrl(BuildConfig.API_BASE_URL)
-    private val fallbackApiBaseUrls = listOf(FALLBACK_API_BASE_URL)
-        .map(::normalizeApiBaseUrl)
-        .filterNot { it.equals(BASE_URL, ignoreCase = true) }
-        .distinct()
+    private val fallbackApiBaseUrls = if (BuildConfig.DEBUG) {
+        emptyList()
+    } else {
+        listOf(FALLBACK_API_BASE_URL)
+            .map(::normalizeApiBaseUrl)
+            .filterNot { it.equals(BASE_URL, ignoreCase = true) }
+            .distinct()
+    }
     private val managedAdSessionId = UUID.randomUUID().toString()
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val DEFAULT_REQUEST_TIMEOUT_MILLIS = 60_000L
@@ -1190,8 +1194,11 @@ object ApiClient {
             val safeVisibility = InputSecurity.enumValue(visibility, setOf("PUBLIC", "CONNECTIONS", "PRIVATE"), "visibility")
             val safeContent = InputSecurity.text(content, "content", 2_000)
             val safeImages = imageBytes.mapIndexed { index, (bytes, filename) ->
-                InputSecurity.uploadBytes(bytes, "image", 10 * 1024 * 1024) to
-                    InputSecurity.fileName(filename, "image$index.jpg")
+                imageUploadPayload(
+                    bytes = InputSecurity.uploadBytes(bytes, "image", 10 * 1024 * 1024),
+                    requestedFilename = filename,
+                    fallbackBaseName = "image$index"
+                )
             }
             val safeVideo = videoBytes?.let { (bytes, filename) ->
                 InputSecurity.uploadBytes(bytes, "video", 100 * 1024 * 1024) to
@@ -1203,13 +1210,13 @@ object ApiClient {
                     append("type", safeType)
                     append("visibility", safeVisibility)
                     append("content", safeContent)
-                    safeImages.forEachIndexed { index, (bytes, filename) ->
+                    safeImages.forEach { image ->
                         append(
                             "media",
-                            bytes,
+                            image.bytes,
                             Headers.build {
-                                append(HttpHeaders.ContentType, "image/jpeg")
-                                append(HttpHeaders.ContentDisposition, "filename=$filename")
+                                append(HttpHeaders.ContentType, image.mimeType)
+                                append(HttpHeaders.ContentDisposition, "filename=${image.filename}")
                             }
                         )
                     }
@@ -2146,7 +2153,9 @@ object ApiClient {
         filter: String = "all"
     ): Result<RecentActivity> {
         return try {
+            val token = getToken(context)
             val response = client.get("$BASE_URL/users/$userId/feed") {
+                token?.let { header("Authorization", "Bearer $it") }
                 parameter("page", page)
                 parameter("limit", limit)
                 parameter("filter", filter)
@@ -2360,7 +2369,7 @@ object ApiClient {
         location = InputSecurity.optionalText(input.location, "location", 120),
         startDate = InputSecurity.text(input.startDate, "startDate", 40),
         endDate = InputSecurity.optionalText(input.endDate, "endDate", 40),
-        description = InputSecurity.optionalText(input.description, "description", 1_000),
+        description = InputSecurity.optionalText(input.description, "description", 2_000),
         skills = input.skills?.let { InputSecurity.sanitizeList(it, "skills", 30, 60) },
         logo = input.logo?.let { InputSecurity.url(it, "logo") }
     )
@@ -2372,9 +2381,45 @@ object ApiClient {
         startDate = InputSecurity.text(input.startDate, "startDate", 40),
         endDate = InputSecurity.optionalText(input.endDate, "endDate", 40),
         grade = InputSecurity.optionalText(input.grade, "grade", 80),
-        activities = InputSecurity.optionalText(input.activities, "activities", 500),
-        description = InputSecurity.optionalText(input.description, "description", 1_000)
+        activities = InputSecurity.optionalText(input.activities, "activities", 2_000),
+        description = InputSecurity.optionalText(input.description, "description", 2_000),
+        logo = input.logo?.let { InputSecurity.url(it, "logo") }
     )
+
+    private data class ImageUploadPayload(
+        val bytes: ByteArray,
+        val mimeType: String,
+        val filename: String
+    )
+
+    private fun imageUploadPayload(
+        bytes: ByteArray,
+        requestedFilename: String,
+        fallbackBaseName: String
+    ): ImageUploadPayload {
+        val pngSignature = intArrayOf(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
+        val detected = when {
+            bytes.size >= 3 &&
+                (bytes[0].toInt() and 0xFF) == 0xFF &&
+                (bytes[1].toInt() and 0xFF) == 0xD8 &&
+                (bytes[2].toInt() and 0xFF) == 0xFF -> "image/jpeg" to "jpg"
+            bytes.size >= pngSignature.size && pngSignature.indices.all { index ->
+                (bytes[index].toInt() and 0xFF) == pngSignature[index]
+            } ->
+                "image/png" to "png"
+            bytes.size >= 6 && String(bytes, 0, 6, Charsets.US_ASCII) in setOf("GIF87a", "GIF89a") ->
+                "image/gif" to "gif"
+            bytes.size >= 12 &&
+                String(bytes, 0, 4, Charsets.US_ASCII) == "RIFF" &&
+                String(bytes, 8, 4, Charsets.US_ASCII) == "WEBP" -> "image/webp" to "webp"
+            else -> throw IllegalArgumentException("Choose a JPEG, PNG, GIF, or WebP image")
+        }
+        val baseName = requestedFilename
+            .substringBeforeLast('.', requestedFilename)
+            .ifBlank { fallbackBaseName }
+        val safeFilename = InputSecurity.fileName("$baseName.${detected.second}", "$fallbackBaseName.${detected.second}")
+        return ImageUploadPayload(bytes, detected.first, safeFilename)
+    }
 
     private fun sanitizeCertificateInput(input: CertificateInput) = input.copy(
         name = InputSecurity.text(input.name, "name", 160),
@@ -2391,7 +2436,7 @@ object ApiClient {
         type = InputSecurity.text(input.type, "type", 80),
         organization = InputSecurity.text(input.organization, "organization", 160),
         date = InputSecurity.text(input.date, "date", 40),
-        description = InputSecurity.optionalText(input.description, "description", 1_000),
+        description = InputSecurity.optionalText(input.description, "description", 2_000),
         certificateUrl = input.certificateUrl?.let { InputSecurity.url(it, "certificateUrl") },
         color = InputSecurity.optionalText(input.color, "color", 32)
     )
@@ -2468,16 +2513,16 @@ object ApiClient {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val safeImageBytes = InputSecurity.uploadBytes(imageBytes, "avatar image", 10 * 1024 * 1024)
-            val safeFilename = InputSecurity.fileName(filename, "avatar.jpg")
+            val image = imageUploadPayload(safeImageBytes, filename, "avatar")
             val response = client.post("$BASE_URL/upload/avatar") {
                 header("Authorization", "Bearer $token")
                 setBody(MultiPartFormDataContent(formData {
                     append(
                         "image",
-                        safeImageBytes,
+                        image.bytes,
                         Headers.build {
-                            append(HttpHeaders.ContentType, "image/jpeg")
-                            append(HttpHeaders.ContentDisposition, "filename=$safeFilename")
+                            append(HttpHeaders.ContentType, image.mimeType)
+                            append(HttpHeaders.ContentDisposition, "filename=${image.filename}")
                         }
                     )
                 }))
@@ -2510,16 +2555,16 @@ object ApiClient {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val safeImageBytes = InputSecurity.uploadBytes(imageBytes, "banner image", 10 * 1024 * 1024)
-            val safeFilename = InputSecurity.fileName(filename, "banner.jpg")
+            val image = imageUploadPayload(safeImageBytes, filename, "banner")
             val response = client.post("$BASE_URL/upload/banner") {
                 header("Authorization", "Bearer $token")
                 setBody(MultiPartFormDataContent(formData {
                     append(
                         "image",
-                        safeImageBytes,
+                        image.bytes,
                         Headers.build {
-                            append(HttpHeaders.ContentType, "image/jpeg")
-                            append(HttpHeaders.ContentDisposition, "filename=$safeFilename")
+                            append(HttpHeaders.ContentType, image.mimeType)
+                            append(HttpHeaders.ContentDisposition, "filename=${image.filename}")
                         }
                     )
                 }))
@@ -4400,15 +4445,20 @@ object ApiClient {
     ): Result<String> {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val image = imageUploadPayload(
+                InputSecurity.uploadBytes(imageBytes, "project image", 10 * 1024 * 1024),
+                filename,
+                "project"
+            )
             val response = client.post("$BASE_URL/upload/project") {
                 header("Authorization", "Bearer $token")
                 setBody(MultiPartFormDataContent(formData {
                     append(
                         "image",
-                        imageBytes,
+                        image.bytes,
                         Headers.build {
-                            append(HttpHeaders.ContentType, "image/jpeg")
-                            append(HttpHeaders.ContentDisposition, "filename=$filename")
+                            append(HttpHeaders.ContentType, image.mimeType)
+                            append(HttpHeaders.ContentDisposition, "filename=${image.filename}")
                         }
                     )
                 }))
@@ -4418,6 +4468,48 @@ object ApiClient {
                 Result.success(result.url ?: result.imageUrl ?: "")
             } else {
                 Result.failure(Exception("Failed to upload project image"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun uploadLogoImage(
+        context: Context,
+        imageBytes: ByteArray,
+        filename: String = "logo.jpg"
+    ): Result<String> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val image = imageUploadPayload(
+                InputSecurity.uploadBytes(imageBytes, "logo image", 10 * 1024 * 1024),
+                filename,
+                "logo"
+            )
+            val response = client.post("$BASE_URL/upload/logo") {
+                header("Authorization", "Bearer $token")
+                setBody(MultiPartFormDataContent(formData {
+                    append(
+                        "image",
+                        image.bytes,
+                        Headers.build {
+                            append(HttpHeaders.ContentType, image.mimeType)
+                            append(HttpHeaders.ContentDisposition, "filename=${image.filename}")
+                        }
+                    )
+                }))
+            }
+            if (response.status.isSuccess()) {
+                val result: LogoUploadResponse = response.body()
+                val logoUrl = result.logoUrl ?: result.url
+                if (logoUrl.isNullOrBlank()) {
+                    Result.failure(Exception("Logo upload returned no URL"))
+                } else {
+                    Result.success(logoUrl)
+                }
+            } else {
+                val error = runCatching { response.body<ApiError>() }.getOrNull()
+                Result.failure(Exception(error?.getErrorMessage() ?: "Failed to upload logo"))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -4711,15 +4803,20 @@ object ApiClient {
     ): Result<String> {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val image = imageUploadPayload(
+                InputSecurity.uploadBytes(imageBytes, "certificate image", 10 * 1024 * 1024),
+                filename,
+                "certificate"
+            )
             val response = client.post("$BASE_URL/upload/certificate") {
                 header("Authorization", "Bearer $token")
                 setBody(MultiPartFormDataContent(formData {
                     append(
                         "image",
-                        imageBytes,
+                        image.bytes,
                         Headers.build {
-                            append(HttpHeaders.ContentType, "image/jpeg")
-                            append(HttpHeaders.ContentDisposition, "filename=$filename")
+                            append(HttpHeaders.ContentType, image.mimeType)
+                            append(HttpHeaders.ContentDisposition, "filename=${image.filename}")
                         }
                     )
                 }))
@@ -5033,6 +5130,87 @@ object ApiClient {
             }
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    // ==================== Crossed Paths v1 ====================
+    private suspend inline fun <reified T> proximityRequest(context: Context, crossinline block: suspend (String) -> HttpResponse): Result<T> = try {
+        val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+        val response = block(token)
+        if (response.status.isSuccess()) Result.success(response.body<ProximityEnvelope<T>>().data)
+        else {
+            val details = runCatching { response.body<ProximityErrorEnvelope>().error }.getOrNull()
+                ?: ProximityErrorDetails("PROXIMITY_SERVICE_DEGRADED",
+                    "Crossed Paths request failed (${response.status.value})", response.status.value >= 500)
+            Result.failure(ProximityApiException(details, response.status.value))
+        }
+    } catch (error: Exception) { Result.failure(error) }
+
+    suspend fun getProximityCapabilities(context: Context) = proximityRequest<ProximityCapabilities>(context) { token ->
+        client.get("$BASE_URL/proximity/v1/capabilities") { header("Authorization", "Bearer $token") }
+    }
+    suspend fun getProximitySettings(context: Context) = proximityRequest<ProximitySettings>(context) { token ->
+        client.get("$BASE_URL/proximity/v1/settings") { header("Authorization", "Bearer $token") }
+    }
+    suspend fun updateProximitySettings(context: Context, settings: ProximitySettings) = proximityRequest<ProximitySettings>(context) { token ->
+        client.put("$BASE_URL/proximity/v1/settings") { header("Authorization", "Bearer $token"); contentType(ContentType.Application.Json); setBody(settings) }
+    }
+    suspend fun startProximitySession(context: Context, request: StartProximitySessionRequest) = proximityRequest<ProximitySessionStart>(context) { token ->
+        client.post("$BASE_URL/proximity/v1/sessions") { header("Authorization", "Bearer $token"); contentType(ContentType.Application.Json); setBody(request) }
+    }
+    suspend fun getCurrentProximitySession(context: Context) = proximityRequest<ProximitySessionState?>(context) { token ->
+        client.get("$BASE_URL/proximity/v1/sessions/current") { header("Authorization", "Bearer $token") }
+    }
+    suspend fun resumeProximitySession(context: Context, sessionId: String) = proximityRequest<ProximitySessionState>(context) { token ->
+        client.post("$BASE_URL/proximity/v1/sessions/${InputSecurity.identifier(sessionId, "sessionId")}/resume") { header("Authorization", "Bearer $token") }
+    }
+    suspend fun sendProximityHeartbeat(context: Context, request: ProximityHeartbeatRequest) = proximityRequest<ProximityHeartbeatResult>(context) { token ->
+        client.post("$BASE_URL/proximity/v1/sessions/${InputSecurity.identifier(request.sessionId, "sessionId")}/heartbeat") {
+            header("Authorization", "Bearer $token"); contentType(ContentType.Application.Json); setBody(request)
+        }
+    }
+    suspend fun publishProximityPresence(context: Context, request: ProximityHeartbeatRequest) = proximityRequest<ProximityHeartbeatResult>(context) { token ->
+        client.post("$BASE_URL/proximity/v1/presence") { header("Authorization", "Bearer $token"); contentType(ContentType.Application.Json); setBody(request) }
+    }
+    suspend fun clearProximityPresence(context: Context) = proximityRequest<ProximityHeartbeatResult>(context) { token ->
+        client.post("$BASE_URL/proximity/v1/presence") { header("Authorization", "Bearer $token"); contentType(ContentType.Application.Json); setBody(mapOf("clear" to true)) }
+    }
+    suspend fun stopProximitySession(context: Context, sessionId: String) = proximityRequest<ProximityStopResult>(context) { token ->
+        client.post("$BASE_URL/proximity/v1/sessions/${InputSecurity.identifier(sessionId, "sessionId")}/stop") { header("Authorization", "Bearer $token") }
+    }
+    suspend fun getLiveProximity(context: Context, radiusM: Int = 500, cursor: String? = null) = proximityRequest<ProximityLiveData>(context) { token ->
+        client.get("$BASE_URL/proximity/v1/live") {
+            header("Authorization", "Bearer $token")
+            parameter("radiusM", radiusM)
+            parameter("limit", 50)
+            cursor?.let { parameter("cursor", it) }
+        }
+    }
+    suspend fun getProximityHistory(context: Context, tab: String, cursor: String? = null, query: String? = null,
+        sort: String = "recent", filters: Set<String> = emptySet()) = proximityRequest<ProximityHistoryData>(context) { token ->
+        client.get("$BASE_URL/proximity/v1/history") {
+            header("Authorization", "Bearer $token")
+            parameter("tab", tab)
+            parameter("sort", sort)
+            parameter("limit", 50)
+            cursor?.let { parameter("cursor", it) }
+            query?.takeIf { it.isNotBlank() }?.let { parameter("query", it) }
+            filters.takeIf { it.isNotEmpty() }?.let { parameter("filters", it.sorted().joinToString(",")) }
+        }
+    }
+    suspend fun setProximityHidden(context: Context, targetUserId: String, hidden: Boolean) = proximityRequest<Map<String, Boolean>>(context) { token ->
+        client.put("$BASE_URL/proximity/v1/history/${InputSecurity.identifier(targetUserId, "targetUserId")}/hidden") { header("Authorization", "Bearer $token"); contentType(ContentType.Application.Json); setBody(mapOf("hidden" to hidden)) }
+    }
+    suspend fun removeProximityHistory(context: Context, targetUserId: String): Result<Unit> = try {
+        val token = getToken(context) ?: return Result.failure(Exception("Not logged in")); val response = client.delete("$BASE_URL/proximity/v1/history/${InputSecurity.identifier(targetUserId, "targetUserId")}") { header("Authorization", "Bearer $token") }
+        if (response.status.isSuccess()) Result.success(Unit) else Result.failure(Exception("Unable to remove encounter"))
+    } catch (error: Exception) { Result.failure(error) }
+    suspend fun getPendingProximitySummaries(context: Context) = proximityRequest<List<ProximitySummary>>(context) { token ->
+        client.get("$BASE_URL/proximity/v1/summaries/pending") { header("Authorization", "Bearer $token") }
+    }
+    suspend fun markProximitySummaryViewed(context: Context, sessionId: String) = proximityRequest<Map<String, Boolean>>(context) { token ->
+        client.post("$BASE_URL/proximity/v1/summaries/${InputSecurity.identifier(sessionId, "sessionId")}/viewed") {
+            header("Authorization", "Bearer $token")
         }
     }
 }

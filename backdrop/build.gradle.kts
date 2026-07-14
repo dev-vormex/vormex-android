@@ -1,14 +1,13 @@
 plugins {
     alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     id("com.vanniktech.maven.publish")
 }
 
 android {
     namespace = "com.kyant.backdrop"
-    compileSdk {
-        version = release(36)
-    }
+    compileSdk = 36
     buildToolsVersion = "36.1.0"
 
     defaultConfig {

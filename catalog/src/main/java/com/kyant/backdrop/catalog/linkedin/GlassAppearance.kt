@@ -13,10 +13,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -27,7 +27,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.catalog.R
 
-const val DefaultGlassBackgroundPresetKey = "wallpaper"
+const val DefaultGlassBackgroundPresetKey = "crystal"
 const val DefaultAccentPaletteKey = "linkedin"
 const val DefaultGlassMotionStyleKey = "float"
 
@@ -55,32 +55,26 @@ data class GlassMotionStyle(
     val pulseAmount: Float
 )
 
-private data class GlassMotionState(
-    val primaryX: Float,
-    val primaryY: Float,
-    val secondaryX: Float,
-    val secondaryY: Float,
-    val tertiaryX: Float,
-    val tertiaryY: Float,
-    val pulse: Float
+// Values are exposed as lambdas so they are read in the draw phase
+// (inside graphicsLayer) instead of composition; the ambient animation
+// then never recomposes the background tree.
+private class GlassMotionState(
+    val primaryY: () -> Float,
+    val secondaryX: () -> Float,
+    val secondaryY: () -> Float,
+    val tertiaryX: () -> Float,
+    val pulse: () -> Float
+)
+
+private val StillGlassMotionState = GlassMotionState(
+    primaryY = { 0f },
+    secondaryX = { 0f },
+    secondaryY = { 0f },
+    tertiaryX = { 0f },
+    pulse = { 1f }
 )
 
 val GlassBackgroundPresets = listOf(
-    GlassBackgroundPreset(
-        key = "wallpaper",
-        name = "Blue Bloom",
-        description = "The current cool blue glass background.",
-        baseColors = listOf(
-            Color(0xFFF9FBFE),
-            Color(0xFFF2F6FB),
-            Color(0xFFE7EEF7)
-        ),
-        orbColors = listOf(
-            Color(0xFF7DB7FF),
-            Color(0xFF2F76E8),
-            Color(0xFFB9E9FF)
-        )
-    ),
     GlassBackgroundPreset(
         key = "crystal",
         name = "Crystal Wallpaper",
@@ -95,38 +89,6 @@ val GlassBackgroundPresets = listOf(
             Color(0xFF4AB9FF),
             Color(0xFF0E6EEA),
             Color(0xFF8DE9FF)
-        )
-    ),
-    GlassBackgroundPreset(
-        key = "circuit",
-        name = "Circuit Board",
-        description = "Dark hardware traces with ember orange details.",
-        imageResId = R.drawable.wallpaper_circuit_board,
-        baseColors = listOf(
-            Color(0xFF0E1218),
-            Color(0xFF141921),
-            Color(0xFF1C232C)
-        ),
-        orbColors = listOf(
-            Color(0xFFFF8A3D),
-            Color(0xFF596274),
-            Color(0xFF2B3440)
-        )
-    ),
-    GlassBackgroundPreset(
-        key = "neon_panel",
-        name = "Neon Panel",
-        description = "Graphite panels with soft silver light bars.",
-        imageResId = R.drawable.wallpaper_neon_panel,
-        baseColors = listOf(
-            Color(0xFF0D0F13),
-            Color(0xFF1D2127),
-            Color(0xFF373C43)
-        ),
-        orbColors = listOf(
-            Color(0xFFE6EEF3),
-            Color(0xFF6F7D8B),
-            Color(0xFF161B22)
         )
     ),
     GlassBackgroundPreset(
@@ -220,21 +182,6 @@ val GlassBackgroundPresets = listOf(
         )
     ),
     GlassBackgroundPreset(
-        key = "obsidian",
-        name = "Black Glass",
-        description = "A deep black backdrop with subtle cool shine.",
-        baseColors = listOf(
-            Color(0xFF08090D),
-            Color(0xFF08090D),
-            Color(0xFF111827)
-        ),
-        orbColors = listOf(
-            Color(0xFF334155),
-            Color(0xFF0F172A),
-            Color(0xFF38BDF8)
-        )
-    ),
-    GlassBackgroundPreset(
         key = "cobalt",
         name = "Pure Blue",
         description = "Strong blue color with bright electric bloom.",
@@ -301,8 +248,12 @@ val GlassMotionStyles = listOf(
     )
 )
 
+fun normalizeGlassBackgroundPresetKey(value: String?): String =
+    GlassBackgroundPresets.firstOrNull { it.key == value }?.key ?: DefaultGlassBackgroundPresetKey
+
 fun glassBackgroundPreset(key: String): GlassBackgroundPreset =
-    GlassBackgroundPresets.firstOrNull { it.key == key } ?: GlassBackgroundPresets.first()
+    GlassBackgroundPresets.firstOrNull { it.key == key }
+        ?: GlassBackgroundPresets.first { it.key == DefaultGlassBackgroundPresetKey }
 
 fun glassAccentPalette(key: String): GlassAccentPalette =
     GlassAccentPalettes.firstOrNull { it.key == key } ?: GlassAccentPalettes.first()
@@ -384,9 +335,9 @@ private fun GlassBackgroundVisual(
         AmbientOrb(
             alignment = Alignment.TopEnd,
             sizeDp = 228f,
-            offsetXDp = 42f - motion.secondaryX,
-            offsetYDp = 30f + motion.secondaryY,
-            scale = 1f + (motion.pulse - 1f) * 0.6f,
+            offsetXDp = { 42f - motion.secondaryX() },
+            offsetYDp = { 30f + motion.secondaryY() },
+            scale = { 1f + (motion.pulse() - 1f) * 0.6f },
             colors = listOf(
                 accentColor.copy(alpha = 0.22f),
                 accentColor.copy(alpha = 0.08f),
@@ -397,9 +348,9 @@ private fun GlassBackgroundVisual(
         AmbientOrb(
             alignment = Alignment.CenterEnd,
             sizeDp = 360f,
-            offsetXDp = 120f + motion.secondaryX,
-            offsetYDp = 8f - motion.primaryY,
-            scale = 1f,
+            offsetXDp = { 120f + motion.secondaryX() },
+            offsetYDp = { 8f - motion.primaryY() },
+            scale = { 1f },
             colors = listOf(
                 preset.orbColors[1].copy(alpha = 0.82f),
                 preset.orbColors[2].copy(alpha = 0.20f),
@@ -410,9 +361,9 @@ private fun GlassBackgroundVisual(
         AmbientOrb(
             alignment = Alignment.BottomStart,
             sizeDp = 280f,
-            offsetXDp = -58f + motion.tertiaryX,
-            offsetYDp = 112f - motion.secondaryY,
-            scale = 1f + (motion.pulse - 1f) * 0.35f,
+            offsetXDp = { -58f + motion.tertiaryX() },
+            offsetYDp = { 112f - motion.secondaryY() },
+            scale = { 1f + (motion.pulse() - 1f) * 0.35f },
             colors = listOf(
                 preset.orbColors[2].copy(alpha = 0.52f),
                 preset.orbColors[0].copy(alpha = 0.10f),
@@ -441,31 +392,10 @@ private fun rememberGlassMotionState(
     animate: Boolean
 ): GlassMotionState {
     if (!animate || motionStyle.key == "still") {
-        return GlassMotionState(
-            primaryX = 0f,
-            primaryY = 0f,
-            secondaryX = 0f,
-            secondaryY = 0f,
-            tertiaryX = 0f,
-            tertiaryY = 0f,
-            pulse = 1f
-        )
+        return StillGlassMotionState
     }
 
     val transition = rememberInfiniteTransition(label = "glassBackgroundMotion")
-
-    val primaryX = transition.animateFloat(
-        initialValue = -motionStyle.travel,
-        targetValue = motionStyle.travel,
-        animationSpec = infiniteRepeatable(
-            animation = tween(
-                durationMillis = motionStyle.durationMillis,
-                easing = LinearEasing
-            ),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "primaryX"
-    )
 
     val primaryY = transition.animateFloat(
         initialValue = motionStyle.travel * 0.35f,
@@ -519,19 +449,6 @@ private fun rememberGlassMotionState(
         label = "tertiaryX"
     )
 
-    val tertiaryY = transition.animateFloat(
-        initialValue = motionStyle.travel * 0.24f,
-        targetValue = -motionStyle.travel * 0.24f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(
-                durationMillis = (motionStyle.durationMillis * 1.22f).toInt(),
-                easing = LinearEasing
-            ),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "tertiaryY"
-    )
-
     val pulse = transition.animateFloat(
         initialValue = 1f,
         targetValue = 1f + motionStyle.pulseAmount,
@@ -545,36 +462,35 @@ private fun rememberGlassMotionState(
         label = "pulse"
     )
 
-    return GlassMotionState(
-        primaryX = primaryX.value,
-        primaryY = primaryY.value,
-        secondaryX = secondaryX.value,
-        secondaryY = secondaryY.value,
-        tertiaryX = tertiaryX.value,
-        tertiaryY = tertiaryY.value,
-        pulse = pulse.value
-    )
+    return remember(transition) {
+        GlassMotionState(
+            primaryY = { primaryY.value },
+            secondaryX = { secondaryX.value },
+            secondaryY = { secondaryY.value },
+            tertiaryX = { tertiaryX.value },
+            pulse = { pulse.value }
+        )
+    }
 }
 
 @Composable
 private fun BoxScope.AmbientOrb(
     alignment: Alignment,
     sizeDp: Float,
-    offsetXDp: Float,
-    offsetYDp: Float,
-    scale: Float,
+    offsetXDp: () -> Float,
+    offsetYDp: () -> Float,
+    scale: () -> Float,
     colors: List<Color>
 ) {
     Box(
         modifier = Modifier
             .align(alignment)
-            .offset(
-                x = offsetXDp.dp,
-                y = offsetYDp.dp
-            )
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                translationX = offsetXDp().dp.toPx()
+                translationY = offsetYDp().dp.toPx()
+                val orbScale = scale()
+                scaleX = orbScale
+                scaleY = orbScale
             }
             .size(sizeDp.dp)
             .background(

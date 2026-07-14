@@ -1,9 +1,18 @@
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.ksp)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.services)
+}
+
+kotlin {
+    compilerOptions {
+        // This is a very large, mostly single-module Compose application. Two JVM
+        // backend threads reduce code-generation time without using every CPU core.
+        freeCompilerArgs.add("-Xbackend-threads=2")
+    }
 }
 
 fun secret(name: String): String? = providers.gradleProperty(name).orNull ?: System.getenv(name)
@@ -57,12 +66,16 @@ val hasReleaseSigning = listOf(
 
 android {
     namespace = "com.kyant.backdrop.catalog"
-    compileSdk {
-        version = release(36)
-    }
+    compileSdk = 36
     buildToolsVersion = "36.1.0"
 
     signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("debug/vormex-debug.keystore")
+            storePassword = "android"
+            keyAlias = "AndroidDebugKey"
+            keyPassword = "android"
+        }
         if (hasReleaseSigning) {
             create("release") {
                 storeFile = file(releaseStoreFilePath!!)
@@ -95,6 +108,7 @@ android {
 
     buildTypes {
         debug {
+            signingConfig = signingConfigs.getByName("debug")
             buildConfigField("String", "API_BASE_URL", "\"$debugApiBaseUrl\"")
             buildConfigField("String", "SOCKET_BASE_URL", "\"$debugSocketBaseUrl\"")
             buildConfigField("String", "ADMOB_NATIVE_FEED_AD_UNIT_ID", "\"$debugEffectiveNativeFeedAdUnitId\"")
@@ -235,6 +249,9 @@ dependencies {
     // Lottie (e.g. streak fire on profile)
     implementation(libs.lottie.compose)
     implementation(libs.zxing.core)
+
+    // Installs baseline/cloud profiles so ART precompiles hot paths (cold start, first scroll)
+    implementation(libs.androidx.profileinstaller)
 
     implementation("androidx.startup:startup-runtime:1.1.1")
     implementation("com.google.android.gms:play-services-auth:21.1.0")

@@ -1340,7 +1340,10 @@ class FeedViewModel(private val context: Context) : ViewModel() {
     }
 
     private fun cachePersistentCurrentUser(user: User) {
-        CurrentUserCache.write(context, user)
+        // JSON encoding + prefs write off the main thread; callers run on Main.
+        viewModelScope.launch(Dispatchers.IO) {
+            CurrentUserCache.write(context, user)
+        }
     }
 
     private fun restorePersistentStoriesCache(userId: String?) {
@@ -1384,16 +1387,21 @@ class FeedViewModel(private val context: Context) : ViewModel() {
     }
 
     private fun cachePersistentStories(storyGroups: List<StoryGroup>) {
-        HomeStoriesCache.write(
-            context = context,
-            userId = _uiState.value.currentUserId,
-            response = StoriesFeedResponse(storyGroups = storyGroups)
-        )
+        val userId = _uiState.value.currentUserId
+        viewModelScope.launch(Dispatchers.IO) {
+            HomeStoriesCache.write(
+                context = context,
+                userId = userId,
+                response = StoriesFeedResponse(storyGroups = storyGroups)
+            )
+        }
     }
 
     private fun cachePersistentFeed(response: FeedResponse) {
         val userId = _uiState.value.currentUserId
-        HomeFeedCache.write(context, userId, response)
+        viewModelScope.launch(Dispatchers.IO) {
+            HomeFeedCache.write(context, userId, response)
+        }
     }
 
     fun loadFeed(forceRefresh: Boolean = false) {

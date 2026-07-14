@@ -828,6 +828,7 @@ private fun findPeopleShimmerBrush(isLightTheme: Boolean): Brush {
 }
 
 /** Glass blur is expensive; use a flat surface when [reduceAnimations] is enabled. */
+@Composable
 private fun Modifier.findPeopleGlassSurface(
     backdrop: LayerBackdrop,
     cornerDp: Float,

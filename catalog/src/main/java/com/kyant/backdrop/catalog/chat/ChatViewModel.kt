@@ -48,6 +48,7 @@ private const val OUTGOING_TYPING_HEARTBEAT_MS = 300L
 private const val REFRESH_CONVERSATIONS_DEBOUNCE_MS = 500L
 private const val UNREAD_COUNT_DEBOUNCE_MS = 1_000L
 private const val REFRESH_CONVERSATIONS_MIN_INTERVAL_MS = 2_000L
+private const val LIST_TYPING_TIMEOUT_MS = 4_000L
 
 enum class ChatThreadReadyState {
     CACHED_READY,
@@ -55,6 +56,11 @@ enum class ChatThreadReadyState {
     EMPTY_THREAD,
     MESSAGES_READY
 }
+
+data class PeerPresence(
+    val isOnline: Boolean,
+    val lastActiveAt: String? = null
+)
 
 data class ChatUiState(
     val currentUserId: String? = null,
@@ -71,6 +77,8 @@ data class ChatUiState(
     val isSending: Boolean = false,
     val error: String? = null,
     val typingUserId: String? = null,
+    val typingConversationIds: Set<String> = emptySet(),
+    val peerPresence: Map<String, PeerPresence> = emptyMap(),
     val unreadCount: Int = 0,
     val messageRequestsCount: Int = 0,
     val aiSuggestions: List<String> = emptyList(),
@@ -102,6 +110,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     private var loadMessagesJob: Job? = null
     private var preloadJob: Job? = null
     private var typingIndicatorTimeoutJob: Job? = null
+    private val listTypingTimeoutJobs = mutableMapOf<String, Job>()
     private var outgoingTypingStopJob: Job? = null
     private val readReceiptJobs = mutableMapOf<String, Job>()
     private var hasLoadedConversations: Boolean = false
@@ -246,7 +255,11 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         viewModelScope.launch {
             ChatSocketManager.typingFlow.collect { (conversationId, userId, isTyping) ->
                 val state = _uiState.value
-                if (state.selectedConversation?.id != conversationId || userId == state.currentUserId) {
+                if (conversationId.isBlank() || userId == state.currentUserId) {
+                    return@collect
+                }
+                updateListTypingState(conversationId, isTyping)
+                if (state.selectedConversation?.id != conversationId) {
                     return@collect
                 }
                 if (isTyping) {
@@ -257,6 +270,124 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 _uiState.update { currentState ->
                     if (currentState.selectedConversation?.id != conversationId) return@update currentState
                     currentState.copy(typingUserId = if (isTyping) userId else null)
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            ChatSocketManager.presenceFlow.collect { event ->
+                if (event.userId.isBlank() || event.userId == _uiState.value.currentUserId) {
+                    return@collect
+                }
+                _uiState.update { state ->
+                    state.copy(
+                        peerPresence = state.peerPresence +
+                            (event.userId to PeerPresence(event.isOnline, event.lastActiveAt))
+                    )
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            ChatSocketManager.messagesDeliveredFlow.collect { event ->
+                if (event.conversationId.isBlank()) return@collect
+                val currentUserId = ensureCurrentUserId() ?: return@collect
+                if (event.deliveredTo == currentUserId) return@collect
+
+                _uiState.update { state ->
+                    val updatedMessages = if (state.selectedConversation?.id == event.conversationId) {
+                        state.messages.map { message ->
+                            if (message.senderId == currentUserId && message.status.equals("SENT", ignoreCase = true)) {
+                                message.copy(
+                                    status = "DELIVERED",
+                                    deliveredAt = event.deliveredAt.takeIf { it.isNotBlank() } ?: message.deliveredAt
+                                )
+                            } else {
+                                message
+                            }
+                        }
+                    } else {
+                        state.messages
+                    }
+                    state.copy(
+                        messages = updatedMessages,
+                        conversations = state.conversations.map { conversation ->
+                            val lastMessage = conversation.lastMessage
+                            if (
+                                conversation.id == event.conversationId &&
+                                lastMessage != null &&
+                                lastMessage.senderId == currentUserId &&
+                                lastMessage.status.equals("SENT", ignoreCase = true)
+                            ) {
+                                conversation.copy(lastMessage = lastMessage.copy(status = "DELIVERED"))
+                            } else {
+                                conversation
+                            }
+                        }
+                    )
+                }
+                chatCacheRepository.markOwnMessagesAsDeliveredToPeer(
+                    cacheOwnerId = currentUserId,
+                    conversationId = event.conversationId,
+                    currentUserId = currentUserId,
+                    deliveredAt = event.deliveredAt
+                )
+                if (_uiState.value.selectedConversation?.id == event.conversationId) {
+                    persistSelectedConversationSnapshot()
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            ChatSocketManager.messageDeliveredFlow.collect { event ->
+                if (event.messageId.isBlank() || event.conversationId.isBlank()) return@collect
+                val currentUserId = ensureCurrentUserId() ?: return@collect
+
+                _uiState.update { state ->
+                    val updatedMessages = if (state.selectedConversation?.id == event.conversationId) {
+                        state.messages.map { message ->
+                            if (
+                                message.id == event.messageId &&
+                                message.senderId == currentUserId &&
+                                message.status.equals("SENT", ignoreCase = true)
+                            ) {
+                                message.copy(
+                                    status = "DELIVERED",
+                                    deliveredAt = event.deliveredAt.takeIf { it.isNotBlank() } ?: message.deliveredAt
+                                )
+                            } else {
+                                message
+                            }
+                        }
+                    } else {
+                        state.messages
+                    }
+                    state.copy(
+                        messages = updatedMessages,
+                        conversations = state.conversations.map { conversation ->
+                            val lastMessage = conversation.lastMessage
+                            if (
+                                conversation.id == event.conversationId &&
+                                lastMessage != null &&
+                                lastMessage.id == event.messageId &&
+                                lastMessage.senderId == currentUserId &&
+                                lastMessage.status.equals("SENT", ignoreCase = true)
+                            ) {
+                                conversation.copy(lastMessage = lastMessage.copy(status = "DELIVERED"))
+                            } else {
+                                conversation
+                            }
+                        }
+                    )
+                }
+                chatCacheRepository.markCachedMessageDelivered(
+                    cacheOwnerId = currentUserId,
+                    conversationId = event.conversationId,
+                    messageId = event.messageId,
+                    deliveredAt = event.deliveredAt
+                )
+                if (_uiState.value.selectedConversation?.id == event.conversationId) {
+                    persistSelectedConversationSnapshot()
                 }
             }
         }
@@ -404,6 +535,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 val currentUserId = ensureCurrentUserId()
                 stopOutgoingTyping()
                 clearTypingIndicator()
+                clearListTypingState()
                 hasLoadedConversations = true
                 conversationsLastLoadedAt = System.currentTimeMillis()
                 ChatSocketManager.activeConversationId = null
@@ -552,6 +684,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
 
         ChatSocketManager.joinChat(conversation.id)
         ensureSocketConnected()
+        ChatSocketManager.checkUserStatus(conversation.otherParticipant.id)
 
         viewModelScope.launch {
             val currentUserId = ensureCurrentUserId()
@@ -1775,6 +1908,8 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     private fun resetForSession(currentUserId: String?) {
         stopOutgoingTyping()
         clearTypingIndicator()
+        listTypingTimeoutJobs.values.forEach { it.cancel() }
+        listTypingTimeoutJobs.clear()
         _uiState.value.selectedConversation?.let { ChatSocketManager.leaveChat(it.id) }
         ChatSocketManager.activeConversationId = null
         hasLoadedConversations = false
@@ -2202,6 +2337,47 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         typingIndicatorTimeoutJob = null
     }
 
+    private fun updateListTypingState(conversationId: String, isTyping: Boolean) {
+        listTypingTimeoutJobs.remove(conversationId)?.cancel()
+        _uiState.update { state ->
+            val updatedTypingIds = if (isTyping) {
+                state.typingConversationIds + conversationId
+            } else {
+                state.typingConversationIds - conversationId
+            }
+            if (updatedTypingIds == state.typingConversationIds) {
+                state
+            } else {
+                state.copy(typingConversationIds = updatedTypingIds)
+            }
+        }
+        if (isTyping) {
+            listTypingTimeoutJobs[conversationId] = viewModelScope.launch {
+                delay(LIST_TYPING_TIMEOUT_MS)
+                listTypingTimeoutJobs.remove(conversationId)
+                _uiState.update { state ->
+                    if (conversationId in state.typingConversationIds) {
+                        state.copy(typingConversationIds = state.typingConversationIds - conversationId)
+                    } else {
+                        state
+                    }
+                }
+            }
+        }
+    }
+
+    private fun clearListTypingState() {
+        listTypingTimeoutJobs.values.forEach { it.cancel() }
+        listTypingTimeoutJobs.clear()
+        _uiState.update { state ->
+            if (state.typingConversationIds.isEmpty()) {
+                state
+            } else {
+                state.copy(typingConversationIds = emptySet())
+            }
+        }
+    }
+
     private fun stopOutgoingTyping(conversationId: String? = _uiState.value.selectedConversation?.id) {
         outgoingTypingStopJob?.cancel()
         outgoingTypingStopJob = null
@@ -2296,6 +2472,8 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         stopOutgoingTyping()
         readReceiptJobs.values.forEach { it.cancel() }
         readReceiptJobs.clear()
+        listTypingTimeoutJobs.values.forEach { it.cancel() }
+        listTypingTimeoutJobs.clear()
         _uiState.value.selectedConversation?.let { ChatSocketManager.leaveChat(it.id) }
         clearTypingIndicator()
         super.onCleared()

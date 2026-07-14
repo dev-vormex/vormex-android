@@ -47,7 +47,7 @@ object SettingsPreferences {
     private val DISCOVERABLE_BY_PHONE = booleanPreferencesKey("discoverable_by_phone")
     
     // ==================== APPEARANCE SETTINGS ====================
-    private val THEME_MODE = stringPreferencesKey("theme_mode") // "glass", "warm_paper", "black_green", "light", "dark", "midnight_neon", "soft_graphite", "emerald_focus"
+    private val THEME_MODE = stringPreferencesKey("theme_mode") // "glass", "warm_paper", "black_green", "light", "dark"
     private val GLASS_BACKGROUND_PRESET = stringPreferencesKey("glass_background_preset")
     private val ACCENT_PALETTE = stringPreferencesKey("accent_palette")
     private val GLASS_MOTION_STYLE = stringPreferencesKey("glass_motion_style")
@@ -142,10 +142,14 @@ object SettingsPreferences {
     // ==================== APPEARANCE GETTERS ====================
     
     fun themeMode(context: Context): Flow<String> =
-        context.settingsDataStore.data.map { it[THEME_MODE] ?: com.kyant.backdrop.catalog.linkedin.DefaultThemeModeKey }
+        context.settingsDataStore.data.map {
+            com.kyant.backdrop.catalog.linkedin.normalizeThemeModeKey(it[THEME_MODE])
+        }
 
     fun glassBackgroundPreset(context: Context): Flow<String> =
-        context.settingsDataStore.data.map { it[GLASS_BACKGROUND_PRESET] ?: "wallpaper" }
+        context.settingsDataStore.data.map {
+            com.kyant.backdrop.catalog.linkedin.normalizeGlassBackgroundPresetKey(it[GLASS_BACKGROUND_PRESET])
+        }
 
     fun accentPalette(context: Context): Flow<String> =
         context.settingsDataStore.data.map { it[ACCENT_PALETTE] ?: "linkedin" }
@@ -267,11 +271,13 @@ object SettingsPreferences {
     // ==================== APPEARANCE SETTERS ====================
     
     suspend fun setThemeMode(context: Context, value: String) {
-        context.settingsDataStore.edit { it[THEME_MODE] = value }
+        val normalized = com.kyant.backdrop.catalog.linkedin.normalizeThemeModeKey(value)
+        context.settingsDataStore.edit { it[THEME_MODE] = normalized }
     }
 
     suspend fun setGlassBackgroundPreset(context: Context, value: String) {
-        context.settingsDataStore.edit { it[GLASS_BACKGROUND_PRESET] = value }
+        val normalized = com.kyant.backdrop.catalog.linkedin.normalizeGlassBackgroundPresetKey(value)
+        context.settingsDataStore.edit { it[GLASS_BACKGROUND_PRESET] = normalized }
     }
 
     suspend fun setAccentPalette(context: Context, value: String) {

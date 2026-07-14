@@ -155,8 +155,8 @@ fun AddEditCertificateScreen(
     // Theme preference: "glass", "light", "dark"
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
     val appearance = currentVormexAppearance(themeMode)
-    val isGlassTheme = appearance.isGlassTheme
-    val isDarkTheme = appearance.isDarkTheme
+    val isGlassTheme = false
+    val isDarkTheme = false
     
     // Validation
     val isNameValid = name.trim().length in 2..100
@@ -292,7 +292,7 @@ fun AddEditCertificateScreen(
                         }
                     )
                     isDarkTheme -> Modifier.background(Color(0xFF0E0E12))
-                    else -> Modifier.background(Color(0xFFF7F7FA))
+                    else -> Modifier.background(Color.White)
                 }
             )
     ) {
@@ -376,7 +376,7 @@ fun AddEditCertificateScreen(
                                         doesNotExpire = doesNotExpire,
                                         credentialId = credentialId.takeIf { it.isNotBlank() }?.trim(),
                                         credentialUrl = credentialUrl.takeIf { it.isNotBlank() }?.trim(),
-                                        color = selectedColor
+                                        color = null
                                     )
                                     
                                     val result = if (isEditMode && certificateId != null) {
@@ -589,7 +589,7 @@ fun AddEditCertificateScreen(
                 }
                 
                 // Card Color (Optional - client-side only)
-                Column {
+                if (false) Column {
                     BasicText(
                         "Card Color (optional)",
                         style = TextStyle(contentColor, 13.sp, FontWeight.Medium)
@@ -900,7 +900,8 @@ private fun CertificateDetailPage(
                 .fillMaxWidth()
                 .align(Alignment.Center)
                 .clip(RoundedCornerShape(18.dp))
-                .background(contentColor.copy(alpha = 0.08f))
+                .background(Color.White)
+                .border(1.dp, contentColor.copy(alpha = 0.12f), RoundedCornerShape(18.dp))
                 .clickable(onClick = {})
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)
@@ -912,11 +913,11 @@ private fun CertificateDetailPage(
             ) {
                 BasicText(
                     pageLabel ?: "Certification",
-                    style = TextStyle(Color.White.copy(alpha = 0.58f), 12.sp, FontWeight.Medium)
+                    style = TextStyle(contentColor.copy(alpha = 0.58f), 12.sp, FontWeight.Medium)
                 )
                 BasicText(
                     "Close",
-                    style = TextStyle(Color.White.copy(alpha = 0.84f), 12.sp, FontWeight.SemiBold),
+                    style = TextStyle(contentColor.copy(alpha = 0.84f), 12.sp, FontWeight.SemiBold),
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .clickable(onClick = onDismiss)
@@ -936,20 +937,20 @@ private fun CertificateDetailPage(
                         .fillMaxWidth()
                         .height(180.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White.copy(alpha = 0.05f))
+                        .background(Color(0xFFF3F4F6))
                 )
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 BasicText(
                     certificate.name,
-                    style = TextStyle(Color.White, 24.sp, FontWeight.Bold, lineHeight = 29.sp),
+                    style = TextStyle(contentColor, 24.sp, FontWeight.Bold, lineHeight = 29.sp),
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis
                 )
                 BasicText(
                     certificate.issuingOrg,
-                    style = TextStyle(Color.White.copy(alpha = 0.66f), 14.sp, FontWeight.Medium),
+                    style = TextStyle(contentColor.copy(alpha = 0.66f), 14.sp, FontWeight.Medium),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -990,10 +991,10 @@ private fun PlainDetailRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        BasicText(label, style = TextStyle(Color.White.copy(alpha = 0.5f), 12.sp))
+        BasicText(label, style = TextStyle(Color(0xFF111827).copy(alpha = 0.5f), 12.sp))
         BasicText(
             value,
-            style = TextStyle(Color.White.copy(alpha = 0.9f), 13.sp, FontWeight.SemiBold),
+            style = TextStyle(Color(0xFF111827).copy(alpha = 0.9f), 13.sp, FontWeight.SemiBold),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
@@ -1006,7 +1007,7 @@ private fun PlainDetailDivider() {
         Modifier
             .fillMaxWidth()
             .height(1.dp)
-            .background(Color.White.copy(alpha = 0.08f))
+            .background(Color(0xFF111827).copy(alpha = 0.08f))
     )
 }
 

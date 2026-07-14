@@ -201,8 +201,8 @@ fun AddEditAchievementScreen(
     // Theme preference: "glass", "light", "dark"
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
     val appearance = currentVormexAppearance(themeMode)
-    val isGlassTheme = appearance.isGlassTheme
-    val isDarkTheme = appearance.isDarkTheme
+    val isGlassTheme = false
+    val isDarkTheme = false
     
     // Validation
     val isTitleValid = title.trim().length in 2..100
@@ -331,7 +331,7 @@ fun AddEditAchievementScreen(
                             }
                         )
                         isDarkTheme -> Modifier.background(Color(0xFF0E0E12))
-                        else -> Modifier.background(Color(0xFFF7F7FA))
+                        else -> Modifier.background(Color.White)
                     }
                 )
         ) {
@@ -414,7 +414,7 @@ fun AddEditAchievementScreen(
                                             date = date,
                                             description = description.trim().ifEmpty { null },
                                             certificateUrl = certificateUrl.trim().ifEmpty { null },
-                                            color = selectedColor
+                                            color = null
                                         )
                                         
                                         val result = if (isEditMode) {
@@ -491,11 +491,11 @@ fun AddEditAchievementScreen(
                                         .clip(RoundedCornerShape(12.dp))
                                         .background(
                                             if (isSelected) accentColor.copy(alpha = 0.2f)
-                                            else Color.White.copy(alpha = 0.08f)
+                                            else contentColor.copy(alpha = 0.06f)
                                         )
                                         .border(
                                             width = if (isSelected) 2.dp else 1.dp,
-                                            color = if (isSelected) accentColor else Color.White.copy(alpha = 0.15f),
+                                            color = if (isSelected) accentColor else contentColor.copy(alpha = 0.12f),
                                             shape = RoundedCornerShape(12.dp)
                                         )
                                         .clickable { selectedType = type }
@@ -510,13 +510,13 @@ fun AddEditAchievementScreen(
                                             contentDescription = type,
                                             modifier = Modifier.size(18.dp),
                                             colorFilter = ColorFilter.tint(
-                                                if (isSelected) accentColor else Color.White.copy(alpha = 0.7f)
+                                                if (isSelected) accentColor else contentColor.copy(alpha = 0.7f)
                                             )
                                         )
                                         BasicText(
                                             type,
                                             style = TextStyle(
-                                                if (isSelected) accentColor else Color.White,
+                                                if (isSelected) accentColor else contentColor,
                                                 13.sp,
                                                 FontWeight.Medium
                                             )
@@ -538,13 +538,13 @@ fun AddEditAchievementScreen(
                             Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(Color.White.copy(alpha = 0.08f))
+                                .background(contentColor.copy(alpha = 0.06f))
                                 .padding(16.dp)
                         ) {
                             BasicTextField(
                                 value = title,
                                 onValueChange = { if (it.length <= 100) title = it },
-                                textStyle = TextStyle(Color.White, 15.sp),
+                                textStyle = TextStyle(contentColor, 15.sp),
                                 cursorBrush = SolidColor(accentColor),
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
@@ -582,13 +582,13 @@ fun AddEditAchievementScreen(
                             Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(Color.White.copy(alpha = 0.08f))
+                                .background(contentColor.copy(alpha = 0.06f))
                                 .padding(16.dp)
                         ) {
                             BasicTextField(
                                 value = organization,
                                 onValueChange = { if (it.length <= 100) organization = it },
-                                textStyle = TextStyle(Color.White, 15.sp),
+                                textStyle = TextStyle(contentColor, 15.sp),
                                 cursorBrush = SolidColor(accentColor),
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
@@ -626,7 +626,7 @@ fun AddEditAchievementScreen(
                             Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(Color.White.copy(alpha = 0.08f))
+                                .background(contentColor.copy(alpha = 0.06f))
                                 .clickable { showDatePicker = true }
                                 .padding(16.dp)
                         ) {
@@ -638,7 +638,7 @@ fun AddEditAchievementScreen(
                                 BasicText(
                                     if (date.isNotEmpty()) formatFullDate(date) else "Select date",
                                     style = TextStyle(
-                                        if (date.isNotEmpty()) Color.White else Color.White.copy(alpha = 0.4f),
+                                        if (date.isNotEmpty()) contentColor else contentColor.copy(alpha = 0.4f),
                                         15.sp
                                     )
                                 )
@@ -646,14 +646,14 @@ fun AddEditAchievementScreen(
                                     painter = painterResource(R.drawable.ic_calendar),
                                     contentDescription = "Select date",
                                     modifier = Modifier.size(20.dp),
-                                    colorFilter = ColorFilter.tint(Color.White.copy(alpha = 0.5f))
+                                    colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.5f))
                                 )
                             }
                         }
                     }
                     
                     // Card color
-                    Column {
+                    if (false) Column {
                         BasicText(
                             "Card color",
                             style = TextStyle(contentColor, 14.sp, FontWeight.Medium)
@@ -700,13 +700,13 @@ fun AddEditAchievementScreen(
                             Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(Color.White.copy(alpha = 0.08f))
+                                .background(contentColor.copy(alpha = 0.06f))
                                 .padding(16.dp)
                         ) {
                             BasicTextField(
                                 value = description,
                                 onValueChange = { if (it.length <= 2000) description = it },
-                                textStyle = TextStyle(Color.White, 15.sp),
+                                textStyle = TextStyle(contentColor, 15.sp),
                                 cursorBrush = SolidColor(accentColor),
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -746,7 +746,7 @@ fun AddEditAchievementScreen(
                             Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(Color.White.copy(alpha = 0.05f))
+                                .background(contentColor.copy(alpha = 0.05f))
                         ) {
                             Box(
                                 Modifier
@@ -763,7 +763,7 @@ fun AddEditAchievementScreen(
                                 BasicText(
                                     "Upload file",
                                     style = TextStyle(
-                                        if (proofInputMode == "upload") accentColor else Color.White.copy(alpha = 0.6f),
+                                        if (proofInputMode == "upload") accentColor else contentColor.copy(alpha = 0.6f),
                                         14.sp,
                                         FontWeight.Medium
                                     )
@@ -784,7 +784,7 @@ fun AddEditAchievementScreen(
                                 BasicText(
                                     "Link URL",
                                     style = TextStyle(
-                                        if (proofInputMode == "url") accentColor else Color.White.copy(alpha = 0.6f),
+                                        if (proofInputMode == "url") accentColor else contentColor.copy(alpha = 0.6f),
                                         14.sp,
                                         FontWeight.Medium
                                     )
@@ -803,7 +803,7 @@ fun AddEditAchievementScreen(
                                             .fillMaxWidth()
                                             .aspectRatio(16f / 9f)
                                             .clip(RoundedCornerShape(12.dp))
-                                            .background(Color.White.copy(alpha = 0.08f))
+                                            .background(contentColor.copy(alpha = 0.06f))
                                     ) {
                                         AsyncImage(
                                             model = ImageRequest.Builder(context)
@@ -839,10 +839,10 @@ fun AddEditAchievementScreen(
                                         .fillMaxWidth()
                                         .height(120.dp)
                                         .clip(RoundedCornerShape(12.dp))
-                                        .background(Color.White.copy(alpha = 0.08f))
+                                        .background(contentColor.copy(alpha = 0.06f))
                                         .border(
                                             2.dp,
-                                            Color.White.copy(alpha = 0.15f),
+                                            contentColor.copy(alpha = 0.15f),
                                             RoundedCornerShape(12.dp)
                                         )
                                         .clickable(enabled = !isUploadingImage) {
@@ -861,12 +861,12 @@ fun AddEditAchievementScreen(
                                                 painter = painterResource(R.drawable.ic_upload),
                                                 contentDescription = "Upload",
                                                 modifier = Modifier.size(32.dp),
-                                                colorFilter = ColorFilter.tint(Color.White.copy(alpha = 0.5f))
+                                                colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.5f))
                                             )
                                             Spacer(Modifier.height(8.dp))
                                             BasicText(
                                                 "Tap to upload proof or certificate",
-                                                style = TextStyle(Color.White.copy(alpha = 0.6f), 14.sp)
+                                                style = TextStyle(contentColor.copy(alpha = 0.6f), 14.sp)
                                             )
                                         }
                                     }
@@ -878,13 +878,13 @@ fun AddEditAchievementScreen(
                                 Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(Color.White.copy(alpha = 0.08f))
+                                    .background(contentColor.copy(alpha = 0.06f))
                                     .padding(16.dp)
                             ) {
                                 BasicTextField(
                                     value = certificateUrl,
                                     onValueChange = { certificateUrl = it },
-                                    textStyle = TextStyle(Color.White, 15.sp),
+                                    textStyle = TextStyle(contentColor, 15.sp),
                                     cursorBrush = SolidColor(accentColor),
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true,
@@ -1002,7 +1002,8 @@ private fun AchievementDetailPage(
                 .fillMaxWidth()
                 .align(Alignment.Center)
                 .clip(RoundedCornerShape(18.dp))
-                .background(contentColor.copy(alpha = 0.08f))
+                .background(Color.White)
+                .border(1.dp, contentColor.copy(alpha = 0.12f), RoundedCornerShape(18.dp))
                 .clickable(onClick = {})
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)
@@ -1014,11 +1015,11 @@ private fun AchievementDetailPage(
             ) {
                 BasicText(
                     pageLabel ?: "Achievement",
-                    style = TextStyle(Color.White.copy(alpha = 0.58f), 12.sp, FontWeight.Medium)
+                    style = TextStyle(contentColor.copy(alpha = 0.58f), 12.sp, FontWeight.Medium)
                 )
                 BasicText(
                     "Close",
-                    style = TextStyle(Color.White.copy(alpha = 0.84f), 12.sp, FontWeight.SemiBold),
+                    style = TextStyle(contentColor.copy(alpha = 0.84f), 12.sp, FontWeight.SemiBold),
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .clickable(onClick = onDismiss)
@@ -1038,20 +1039,20 @@ private fun AchievementDetailPage(
                         .fillMaxWidth()
                         .height(180.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White.copy(alpha = 0.05f))
+                        .background(Color(0xFFF3F4F6))
                 )
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 BasicText(
                     achievement.title,
-                    style = TextStyle(Color.White, 24.sp, FontWeight.Bold, lineHeight = 29.sp),
+                    style = TextStyle(contentColor, 24.sp, FontWeight.Bold, lineHeight = 29.sp),
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis
                 )
                 BasicText(
                     achievement.organization,
-                    style = TextStyle(Color.White.copy(alpha = 0.66f), 14.sp, FontWeight.Medium),
+                    style = TextStyle(contentColor.copy(alpha = 0.66f), 14.sp, FontWeight.Medium),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -1065,10 +1066,10 @@ private fun AchievementDetailPage(
 
             achievement.description?.takeIf { it.isNotBlank() }?.let { desc ->
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    BasicText("Description", style = TextStyle(Color.White.copy(alpha = 0.5f), 12.sp))
+                    BasicText("Description", style = TextStyle(contentColor.copy(alpha = 0.5f), 12.sp))
                     BasicText(
                         desc,
-                        style = TextStyle(Color.White.copy(alpha = 0.82f), 13.sp, lineHeight = 20.sp)
+                        style = TextStyle(contentColor.copy(alpha = 0.82f), 13.sp, lineHeight = 20.sp)
                     )
                 }
             }
@@ -1098,10 +1099,10 @@ private fun PlainAchievementRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        BasicText(label, style = TextStyle(Color.White.copy(alpha = 0.5f), 12.sp))
+        BasicText(label, style = TextStyle(Color(0xFF111827).copy(alpha = 0.5f), 12.sp))
         BasicText(
             value,
-            style = TextStyle(Color.White.copy(alpha = 0.9f), 13.sp, FontWeight.SemiBold),
+            style = TextStyle(Color(0xFF111827).copy(alpha = 0.9f), 13.sp, FontWeight.SemiBold),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
@@ -1114,7 +1115,7 @@ private fun PlainAchievementDivider() {
         Modifier
             .fillMaxWidth()
             .height(1.dp)
-            .background(Color.White.copy(alpha = 0.08f))
+            .background(Color(0xFF111827).copy(alpha = 0.08f))
     )
 }
 

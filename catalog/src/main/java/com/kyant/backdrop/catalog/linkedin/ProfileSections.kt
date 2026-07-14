@@ -60,6 +60,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -84,10 +85,6 @@ import com.kyant.backdrop.catalog.ai.VormexAiStatusCard
 import com.kyant.backdrop.catalog.ai.VormexAiSurface
 import com.kyant.backdrop.catalog.ai.VormexAiTextResult
 import com.kyant.backdrop.catalog.network.models.*
-import com.kyant.backdrop.drawBackdrop
-import com.kyant.backdrop.effects.blur
-import com.kyant.backdrop.effects.vibrancy
-import com.kyant.shapes.RoundedRectangle
 import java.text.SimpleDateFormat
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -112,61 +109,59 @@ private fun SectionCard(
     accentColor: Color,
     isOwner: Boolean = false,
     onAdd: (() -> Unit)? = null,
+    actionIconRes: Int? = null,
     content: @Composable () -> Unit
 ) {
-    Box(
+    val appearance = currentVormexAppearance()
+    Column(
         Modifier
             .fillMaxWidth()
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = { profileCardBackdropShape() },
-                effects = {
-                    vibrancy()
-                    blur(12f.dp.toPx())
-                },
-                onDrawSurface = {
-                    drawRect(Color.White.copy(alpha = 0.08f))
-                }
-            )
-            .padding(16.dp)
+            .background(appearance.cardColor)
+            .padding(horizontal = 18.dp, vertical = 20.dp)
     ) {
-        Column {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BasicText(
+                    title,
+                    style = TextStyle(contentColor, 20.sp, FontWeight.Bold)
+                )
+                count?.let {
+                    Spacer(Modifier.width(6.dp))
                     BasicText(
-                        title,
-                        style = TextStyle(contentColor, 18.sp, FontWeight.Bold)
+                        "($it)",
+                        style = TextStyle(contentColor.copy(alpha = 0.55f), 14.sp)
                     )
-                    count?.let {
-                        Spacer(Modifier.width(6.dp))
-                        BasicText(
-                            "($it)",
-                            style = TextStyle(contentColor.copy(alpha = 0.5f), 14.sp)
-                        )
-                    }
-                }
-
-                if (isOwner && onAdd != null) {
-                    Box(
-                        Modifier
-                            .clip(CircleShape)
-                            .background(accentColor.copy(alpha = 0.2f))
-                            .clickable(onClick = onAdd)
-                            .padding(8.dp)
-                    ) {
-                        BasicText("+", style = TextStyle(accentColor, 16.sp, FontWeight.Bold))
-                    }
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
-
-            content()
+            if (isOwner && onAdd != null) {
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onAdd),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (actionIconRes != null) {
+                        Image(
+                            painter = painterResource(actionIconRes),
+                            contentDescription = "Edit $title",
+                            modifier = Modifier.size(20.dp),
+                            colorFilter = ColorFilter.tint(contentColor)
+                        )
+                    } else {
+                        BasicText("+", style = TextStyle(contentColor, 25.sp, FontWeight.Normal))
+                    }
+                }
+            }
         }
+
+        Spacer(Modifier.height(16.dp))
+        content()
     }
 }
 
@@ -230,11 +225,12 @@ fun AboutSection(
         contentColor = contentColor,
         accentColor = accentColor,
         isOwner = isOwner,
-        onAdd = if (user.bio.isNullOrEmpty() && isOwner) onEditBio else null
+        onAdd = if (isOwner) onEditBio else null,
+        actionIconRes = R.drawable.ic_vx_edit
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             // Bio
-            if (isEditingBio) {
+            if (false && isEditingBio) {
                 Column {
                     BasicTextField(
                         value = editedBio,
@@ -404,7 +400,7 @@ fun AboutSection(
                         )
                     }
 
-                    if (isOwner) {
+                    if (false && isOwner) {
                         BasicText(
                             "Edit",
                             style = TextStyle(accentColor, 13.sp, FontWeight.Medium),
@@ -414,10 +410,15 @@ fun AboutSection(
                         )
                     }
                 }
+            } else {
+                BasicText(
+                    if (isOwner) "Add an about summary so people know what you do." else "No about information yet.",
+                    style = TextStyle(contentColor.copy(alpha = 0.58f), 14.sp)
+                )
             }
 
             // Interests
-            if (arrangedInterests.isNotEmpty()) {
+            if (false && arrangedInterests.isNotEmpty()) {
                 InterestsPanel(
                     interests = arrangedInterests,
                     contentColor = contentColor,
@@ -433,7 +434,7 @@ fun AboutSection(
                 user.currentYear?.let { "Year $it" },
                 user.graduationYear?.let { "Class of $it" }
             ).joinToString(" • ")
-            if (eduDetails.isNotEmpty()) {
+            if (false && eduDetails.isNotEmpty()) {
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -458,7 +459,7 @@ fun AboutSection(
             }
 
             // Open to opportunities toggle (owner only)
-            if (isOwner) {
+            if (false && isOwner) {
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -502,6 +503,58 @@ fun AboutSection(
     }
 }
 
+@Composable
+fun InterestsSection(
+    interests: List<String>,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    isOwner: Boolean,
+    onEditInterests: () -> Unit
+) {
+    val normalizedInterests = remember(interests) {
+        interests
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase(Locale.getDefault()) }
+    }
+    SectionCard(
+        title = "Interests",
+        backdrop = backdrop,
+        contentColor = contentColor,
+        accentColor = accentColor,
+        isOwner = isOwner,
+        onAdd = if (isOwner) onEditInterests else null,
+        actionIconRes = R.drawable.ic_vx_edit
+    ) {
+        if (normalizedInterests.isEmpty()) {
+            BasicText(
+                if (isOwner) "Add interests to help people discover what you care about." else "No interests added yet.",
+                style = TextStyle(contentColor.copy(alpha = 0.58f), 14.sp)
+            )
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                normalizedInterests.chunked(3).forEach { columnInterests ->
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        columnInterests.forEach { interest ->
+                            DefaultInterestChip(
+                                text = interest,
+                                contentColor = contentColor,
+                                accentColor = accentColor
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun InterestsPanel(
@@ -529,17 +582,9 @@ private fun InterestsPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .width(3.dp)
-                        .height(22.dp)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(accentColor)
-                )
-                Spacer(Modifier.width(10.dp))
                 BasicText(
                     "Interests",
-                    style = TextStyle(contentColor.copy(alpha = 0.86f), 13.sp, FontWeight.SemiBold)
+                    style = TextStyle(contentColor.copy(alpha = 0.86f), 14.sp, FontWeight.SemiBold)
                 )
             }
 
@@ -548,10 +593,8 @@ private fun InterestsPanel(
                     if (expanded) "Show less" else "Show all",
                     style = TextStyle(accentColor, 11.sp, FontWeight.SemiBold),
                     modifier = Modifier
-                        .clip(RoundedCornerShape(9.dp))
                         .clickable(onClick = onToggleExpanded)
-                        .background(accentColor.copy(alpha = 0.09f))
-                        .padding(horizontal = 9.dp, vertical = 6.dp)
+                        .padding(horizontal = 4.dp, vertical = 6.dp)
                 )
             }
         }
@@ -634,7 +677,6 @@ fun GitHubSection(
     contentColor: Color,
     accentColor: Color,
     isOwner: Boolean,
-    isVisible: Boolean,
     isConnecting: Boolean = false,
     isSyncing: Boolean = false,
     isDisconnecting: Boolean = false,
@@ -651,7 +693,6 @@ fun GitHubSection(
         contentColor = contentColor,
         accentColor = accentColor
     ) {
-        val stats = github.stats
         val contributionCalendar = github.contributionCalendar
         actionError?.takeIf { it.isNotBlank() }?.let { error ->
             Box(
@@ -775,17 +816,10 @@ fun GitHubSection(
                 }
 
                 if (contributionCalendar != null) {
-                    GitHubSignalGraph(
-                        contributionCalendar = contributionCalendar,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        isVisible = isVisible
-                    )
                     GitHubContributionGraph(
                         contributionCalendar = contributionCalendar,
                         contentColor = contentColor,
-                        accentColor = accentColor,
-                        isVisible = isVisible
+                        accentColor = accentColor
                     )
                 } else {
                     Box(
@@ -812,95 +846,6 @@ fun GitHubSection(
                     }
                 }
 
-                stats?.let { githubStats ->
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                GitHubMetricCard(
-                                    modifier = Modifier.weight(1f),
-                                    iconRes = R.drawable.ic_code,
-                                    value = githubStats.totalPublicRepos.toString(),
-                                    label = "Repos",
-                                    tint = Color(0xFF60A5FA),
-                                    progress = githubMetricProgress(githubStats.totalPublicRepos, 80),
-                                    contentColor = contentColor,
-                                    isVisible = isVisible,
-                                    delayMillis = 260
-                                )
-                                GitHubMetricCard(
-                                    modifier = Modifier.weight(1f),
-                                    iconRes = R.drawable.ic_favorite,
-                                    value = githubStats.totalStars.toString(),
-                                    label = "Stars",
-                                    tint = Color(0xFFFBBF24),
-                                    progress = githubMetricProgress(githubStats.totalStars, 1500),
-                                    contentColor = contentColor,
-                                    isVisible = isVisible,
-                                    delayMillis = 560
-                                )
-                            }
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                GitHubMetricCard(
-                                    modifier = Modifier.weight(1f),
-                                    iconRes = R.drawable.ic_share,
-                                    value = githubStats.totalForks.toString(),
-                                    label = "Forks",
-                                    tint = Color(0xFFC084FC),
-                                    progress = githubMetricProgress(githubStats.totalForks, 400),
-                                    contentColor = contentColor,
-                                    isVisible = isVisible,
-                                    delayMillis = 860
-                                )
-                                GitHubMetricCard(
-                                    modifier = Modifier.weight(1f),
-                                    iconRes = R.drawable.ic_users,
-                                    value = githubStats.followers.toString(),
-                                    label = "Followers",
-                                    tint = Color(0xFF34D399),
-                                    progress = githubMetricProgress(githubStats.followers, 1000),
-                                    contentColor = contentColor,
-                                    isVisible = isVisible,
-                                    delayMillis = 1160
-                                )
-                            }
-                        }
-
-                        if (githubStats.topLanguages.isNotEmpty()) {
-                            GitHubLanguageOrbit(
-                                languages = githubStats.topLanguages.entries
-                                    .sortedByDescending { it.value.percentage }
-                                    .take(5),
-                                contentColor = contentColor,
-                                accentColor = accentColor,
-                                isVisible = isVisible
-                            )
-                        }
-
-                        if (githubStats.topRepos.isNotEmpty()) {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                BasicText(
-                                    "Top Repositories",
-                                    style = TextStyle(contentColor.copy(alpha = 0.68f), 12.sp, FontWeight.Medium)
-                                )
-                                githubStats.topRepos.take(3).forEach { repo ->
-                                    GitHubRepositoryCard(
-                                        repo = repo,
-                                        contentColor = contentColor,
-                                        onOpen = {
-                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(repo.url)))
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
             }
         } else if (isOwner) {
             // Not connected - show connect button
@@ -1046,18 +991,8 @@ private fun GitHubMetricCard(
 private fun GitHubContributionGraph(
     contributionCalendar: GitHubContributionCalendar,
     contentColor: Color,
-    accentColor: Color,
-    isVisible: Boolean
+    accentColor: Color
 ) {
-    val graphRevealProgress by animateFloatAsState(
-        targetValue = if (isVisible) 1f else 0f,
-        animationSpec = tween(
-            durationMillis = GitHubContributionRevealDurationMs,
-            delayMillis = GitHubContributionRevealDelayMs,
-            easing = LinearEasing
-        ),
-        label = "githubGraphReveal"
-    )
     val scrollState = rememberScrollState()
     var selectedDay by remember(contributionCalendar) { mutableStateOf<GitHubContributionDay?>(null) }
     val allDays = remember(contributionCalendar) {
@@ -1088,10 +1023,6 @@ private fun GitHubContributionGraph(
     Box(
         Modifier
             .fillMaxWidth()
-            .graphicsLayer {
-                alpha = 0.68f + (0.32f * graphRevealProgress)
-                translationY = (1f - graphRevealProgress) * 18f
-            }
             .clip(ProfileCardShape)
             .background(
                 Brush.verticalGradient(
@@ -1221,15 +1152,6 @@ private fun GitHubContributionGraph(
                                         Box(
                                             Modifier
                                                 .size(cellSize)
-                                                .graphicsLayer {
-                                                    val activeScale = if (day.contributionCount > 0) {
-                                                        0.82f + (0.18f * graphRevealProgress)
-                                                    } else {
-                                                        1f
-                                                    }
-                                                    scaleX = activeScale
-                                                    scaleY = activeScale
-                                                }
                                                 .clip(RoundedCornerShape(3.dp))
                                                 .background(
                                                     if (day.contributionCount <= 0) {
@@ -1759,11 +1681,22 @@ private fun GitHubSignalGraph(
             .takeLast(6)
             .ifEmpty { listOf("Jan", "Mar", "May", "Jul", "Sep", "Now") }
     }
-    val lineColors = listOf(
-        Color(0xFF42D9FF),
-        Color(0xFFFF5DA2),
-        Color(0xFFFFB444)
-    )
+    // Light content color means a dark surface: keep the neon palette there,
+    // switch to deeper tones on light themes where neon washes out.
+    val isDarkSurface = contentColor.luminance() > 0.5f
+    val lineColors = if (isDarkSurface) {
+        listOf(
+            Color(0xFF42D9FF),
+            Color(0xFFFF5DA2),
+            Color(0xFFFFB444)
+        )
+    } else {
+        listOf(
+            Color(0xFF0284C7),
+            Color(0xFFDB2777),
+            Color(0xFFD97706)
+        )
+    }
 
     Box(
         Modifier
@@ -1838,7 +1771,7 @@ private fun GitHubSignalGraph(
                 val chartWidth = size.width - leftPadding - rightPadding
                 val chartHeight = size.height - topPadding - bottomPadding
                 val baselineY = topPadding + chartHeight
-                val gridColor = Color.White.copy(alpha = 0.08f)
+                val gridColor = contentColor.copy(alpha = 0.10f)
 
                 for (index in 0..4) {
                     val y = topPadding + ((chartHeight / 4f) * index)
@@ -1853,7 +1786,7 @@ private fun GitHubSignalGraph(
                 for (index in 0..6) {
                     val x = leftPadding + ((chartWidth / 6f) * index)
                     drawLine(
-                        color = gridColor.copy(alpha = 0.74f),
+                        color = gridColor.copy(alpha = 0.06f),
                         start = Offset(x, topPadding),
                         end = Offset(x, baselineY),
                         strokeWidth = 1f
@@ -1914,7 +1847,7 @@ private fun GitHubSignalGraph(
                             center = point
                         )
                         drawCircle(
-                            color = Color.White.copy(alpha = 0.88f),
+                            color = contentColor.copy(alpha = 0.88f),
                             radius = 4.2f,
                             center = point
                         )
@@ -1947,7 +1880,7 @@ private fun GitHubSignalLegendPill(
     Row(
         modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(Color.White.copy(alpha = 0.07f))
+            .background(contentColor.copy(alpha = 0.07f))
             .padding(horizontal = 10.dp, vertical = 7.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
@@ -2498,18 +2431,26 @@ private fun AdaptiveSkillRows(
     isOwner: Boolean,
     onRemoveSkill: (UserSkill) -> Unit
 ) {
-    val skillRows = remember(skills) { skills.chunked(3) }
+    val skillColumns = remember(skills) { skills.chunked(3) }
 
-    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-        skillRows.forEachIndexed { rowIndex, rowSkills ->
-            SkillAdaptiveRow(
-                skills = rowSkills,
-                rowIndex = rowIndex,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isOwner = isOwner,
-                onRemoveSkill = onRemoveSkill
-            )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        skillColumns.forEach { columnSkills ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                columnSkills.forEach { skill ->
+                    SkillCompactChip(
+                        skill = skill,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = isOwner,
+                        onRemove = { onRemoveSkill(skill) }
+                    )
+                }
+            }
         }
     }
 }
@@ -2732,8 +2673,8 @@ fun ProjectsSection(
                         ProjectBadge(
                             iconRes = R.drawable.ic_sparkles,
                             label = "Featured",
-                            tint = Color(0xFFFFD66B),
-                            background = Color(0xFFFFD66B).copy(alpha = 0.16f)
+                            tint = Color(0xFF0A66C2),
+                            background = Color(0xFF0A66C2).copy(alpha = 0.12f)
                         )
                     }
                 }
@@ -2762,7 +2703,6 @@ fun ProjectsSection(
                         project = orderedProjects[page],
                         backdrop = backdrop,
                         contentColor = contentColor,
-                        accentColor = accentColor,
                         isOwner = isOwner,
                         onView = { onViewProject(orderedProjects[page]) },
                         onEdit = { onEditProject(orderedProjects[page]) },
@@ -2989,33 +2929,28 @@ private fun ProjectCard(
     project: Project,
     backdrop: LayerBackdrop,
     contentColor: Color,
-    accentColor: Color,
     isOwner: Boolean,
     onView: () -> Unit,
     onEdit: () -> Unit,
     onToggleFeatured: () -> Unit
 ) {
     val context = LocalContext.current
-    val heroAccent = if (project.featured) Color(0xFFFFD66B) else accentColor
-    val cardBorder = if (project.featured) heroAccent.copy(alpha = 0.34f) else Color.White.copy(alpha = 0.08f)
-    val subduedSurface = Color.White.copy(alpha = 0.08f)
+    val heroAccent = Color(0xFF0A66C2)
+    val cardBorder = contentColor.copy(alpha = 0.12f)
+    val subduedSurface = contentColor.copy(alpha = 0.06f)
     val hasLinks = !project.projectUrl.isNullOrBlank() || !project.githubUrl.isNullOrBlank() || !project.otherLinks.isNullOrEmpty()
 
     Box(
         modifier
-            .drawBackdrop(
+            .vormexSurface(
                 backdrop = backdrop,
-                shape = { profileCardBackdropShape() },
-                effects = {
-                    vibrancy()
-                    blur(16f.dp.toPx())
-                },
-                onDrawSurface = {
-                    drawRect(Color.White.copy(alpha = 0.08f))
-                }
+                tone = VormexSurfaceTone.Subtle,
+                cornerRadius = ProfileCardCornerRadius,
+                blurRadius = 16.dp,
+                lensRadius = 0.dp,
+                lensDepth = 0.dp,
+                borderColor = cardBorder
             )
-            .border(1.dp, cardBorder, ProfileCardShape)
-            .clip(ProfileCardShape)
             .clickable(onClick = onView)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -3255,7 +3190,7 @@ private fun ProjectCard(
                         label = "View",
                         tint = contentColor,
                         background = subduedSurface,
-                        borderColor = Color.White.copy(alpha = 0.08f),
+                        borderColor = contentColor.copy(alpha = 0.12f),
                         onClick = onView
                     )
 
@@ -3277,7 +3212,7 @@ private fun ProjectCard(
                             label = "Source",
                             tint = contentColor,
                             background = subduedSurface,
-                            borderColor = Color.White.copy(alpha = 0.08f),
+                            borderColor = contentColor.copy(alpha = 0.12f),
                             onClick = {
                                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                             }
@@ -3299,1294 +3234,6 @@ private fun ProjectCard(
                     }
                 }
             }
-        }
-    }
-}
-
-// ==================== Profile Showcase Sections ====================
-
-@Composable
-private fun ProfileShowcaseSection(
-    title: String,
-    subtitle: String,
-    iconRes: Int,
-    count: Int,
-    backdrop: LayerBackdrop,
-    contentColor: Color,
-    accentColor: Color,
-    isOwner: Boolean,
-    addLabel: String,
-    onAdd: () -> Unit,
-    content: @Composable () -> Unit
-) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .width(3.dp)
-                        .height(38.dp)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(contentColor.copy(alpha = 0.82f))
-                )
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    BasicText(
-                        title,
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 19.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontFamily = FontFamily.SansSerif,
-                            lineHeight = 21.sp
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    BasicText(
-                        editorialEntryLabel(count, subtitle),
-                        style = editorialMetaStyle(contentColor.copy(alpha = 0.56f), 10.sp),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            if (isOwner) {
-                ShowcaseAddButton(
-                    label = addLabel,
-                    contentColor = contentColor,
-                    onClick = onAdd
-                )
-            }
-        }
-
-        content()
-    }
-}
-
-@Composable
-private fun ShowcaseAddButton(
-    label: String,
-    contentColor: Color,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(15.dp)
-                .clip(CircleShape)
-                .border(1.dp, contentColor.copy(alpha = 0.72f), CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            Image(
-                painter = painterResource(R.drawable.ic_plus),
-                contentDescription = label,
-                modifier = Modifier.size(10.dp),
-                colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.82f))
-            )
-        }
-        BasicText(
-            label.uppercase(Locale.getDefault()),
-            style = editorialMetaStyle(contentColor, 10.sp),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-@Composable
-private fun ShowcaseEmptyState(
-    iconRes: Int,
-    title: String,
-    subtitle: String,
-    actionLabel: String,
-    contentColor: Color,
-    accentColor: Color,
-    isOwner: Boolean,
-    onAction: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(contentColor.copy(alpha = 0.025f))
-            .border(1.dp, contentColor.copy(alpha = 0.11f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 18.dp, vertical = 22.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        EditorialMediaTile(
-            iconRes = iconRes,
-            imageUrl = null,
-            contentColor = contentColor,
-            tileSize = 54.dp,
-            iconSize = 24.dp
-        )
-        Spacer(Modifier.height(14.dp))
-        BasicText(
-            title,
-            style = TextStyle(
-                color = contentColor,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Serif
-            ),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Spacer(Modifier.height(5.dp))
-        BasicText(
-            subtitle,
-            style = TextStyle(contentColor.copy(alpha = 0.62f), 12.sp, lineHeight = 17.sp),
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis
-        )
-
-        if (isOwner) {
-            Spacer(Modifier.height(16.dp))
-            ShowcaseAddButton(
-                label = actionLabel,
-                contentColor = contentColor,
-                onClick = onAction
-            )
-        }
-    }
-}
-
-@Composable
-private fun ShowcaseIconButton(
-    iconRes: Int,
-    tint: Color,
-    contentDescription: String,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(tint.copy(alpha = 0.018f))
-            .border(1.dp, tint.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(8.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Image(
-            painter = painterResource(iconRes),
-            contentDescription = contentDescription,
-            modifier = Modifier.size(14.dp),
-            colorFilter = ColorFilter.tint(tint.copy(alpha = 0.72f))
-        )
-    }
-}
-
-@Composable
-private fun ShowcaseInfoPill(
-    iconRes: Int,
-    text: String,
-    tint: Color,
-    background: Color,
-    modifier: Modifier = Modifier,
-    onClick: (() -> Unit)? = null
-) {
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(4.dp))
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 1.dp, vertical = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Image(
-            painter = painterResource(iconRes),
-            contentDescription = null,
-            modifier = Modifier.size(11.dp),
-            colorFilter = ColorFilter.tint(tint.copy(alpha = 0.62f))
-        )
-        BasicText(
-            text.uppercase(Locale.getDefault()),
-            style = editorialMetaStyle(tint.copy(alpha = 0.78f), 10.sp),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-@Composable
-private fun ShowcaseReadToggle(
-    expanded: Boolean,
-    accentColor: Color,
-    onToggle: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(4.dp))
-            .clickable(onClick = onToggle)
-            .padding(horizontal = 1.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Image(
-            painter = painterResource(R.drawable.ic_visibility),
-            contentDescription = null,
-            modifier = Modifier.size(11.dp),
-            colorFilter = ColorFilter.tint(accentColor.copy(alpha = 0.62f))
-        )
-        BasicText(
-            if (expanded) "Show less" else "Read more",
-            style = editorialMetaStyle(accentColor.copy(alpha = 0.78f), 10.sp)
-        )
-    }
-}
-
-@Composable
-private fun EditorialMediaTile(
-    iconRes: Int,
-    imageUrl: String?,
-    contentColor: Color,
-    tileSize: androidx.compose.ui.unit.Dp = 52.dp,
-    iconSize: androidx.compose.ui.unit.Dp = 22.dp
-) {
-    val context = LocalContext.current
-    Box(
-        modifier = Modifier
-            .size(tileSize)
-            .clip(RoundedCornerShape(8.dp))
-            .background(contentColor.copy(alpha = 0.035f))
-            .border(1.dp, contentColor.copy(alpha = 0.14f), RoundedCornerShape(8.dp)),
-        contentAlignment = Alignment.Center
-    ) {
-        if (!imageUrl.isNullOrBlank()) {
-            AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(imageUrl)
-                    .crossfade(true)
-                    .build(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Canvas(Modifier.fillMaxSize()) {
-                val gap = 9.dp.toPx()
-                val strokeWidth = 0.8.dp.toPx()
-                var startX = -size.height
-                while (startX < size.width) {
-                    drawLine(
-                        color = contentColor.copy(alpha = 0.075f),
-                        start = Offset(startX, size.height),
-                        end = Offset(startX + size.height, 0f),
-                        strokeWidth = strokeWidth
-                    )
-                    startX += gap
-                }
-            }
-            Image(
-                painter = painterResource(iconRes),
-                contentDescription = null,
-                modifier = Modifier.size(iconSize),
-                colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.82f))
-            )
-        }
-    }
-}
-
-@Composable
-private fun DossierRecordRail(
-    recordNumber: Int,
-    contentColor: Color
-) {
-    Column(
-        modifier = Modifier.width(26.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        BasicText(
-            recordNumber.toString().padStart(2, '0'),
-            style = editorialMetaStyle(contentColor.copy(alpha = 0.5f), 10.sp)
-        )
-        Spacer(Modifier.height(8.dp))
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .border(1.dp, contentColor.copy(alpha = 0.42f), CircleShape)
-        )
-        Spacer(Modifier.height(8.dp))
-        Box(
-            modifier = Modifier
-                .width(1.dp)
-                .height(74.dp)
-                .background(contentColor.copy(alpha = 0.12f))
-        )
-    }
-}
-
-@Composable
-private fun EditorialDivider(contentColor: Color) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(1.dp)
-            .background(contentColor.copy(alpha = 0.1f))
-    )
-}
-
-private fun editorialEntryLabel(count: Int, _fallback: String): String {
-    return "${count.toString().padStart(2, '0')} · ENTRIES"
-}
-
-private fun editorialMetaStyle(color: Color, fontSize: androidx.compose.ui.unit.TextUnit): TextStyle {
-    return TextStyle(
-        color = color,
-        fontSize = fontSize,
-        fontWeight = FontWeight.Medium,
-        fontFamily = FontFamily.Monospace
-    )
-}
-
-private fun showcaseRangeText(startDate: String, endDate: String?, isCurrent: Boolean): String {
-    val start = formatDate(startDate)
-    val end = if (isCurrent) "Present" else endDate?.let { formatDate(it) }.orEmpty()
-    return listOf(start, end).filter { it.isNotBlank() }.joinToString(" - ")
-}
-
-private fun experienceTimelineText(experience: Experience): String {
-    val range = showcaseRangeText(experience.startDate, experience.endDate, experience.isCurrent)
-    val duration = calculateDuration(experience.startDate, experience.endDate, experience.isCurrent)
-    return listOf(range, duration.takeIf { it.isNotBlank() }?.let { "for $it" })
-        .filterNotNull()
-        .joinToString(" ")
-}
-
-private fun educationTimelineText(education: Education): String {
-    return showcaseRangeText(education.startDate, education.endDate, education.isCurrent)
-}
-
-private fun calculateDuration(startDate: String, endDate: String?, isCurrent: Boolean): String {
-    return try {
-        val formatter = java.time.format.DateTimeFormatter.ISO_DATE
-        val start = java.time.LocalDate.parse(startDate.take(10), formatter)
-        val end = if (isCurrent) java.time.LocalDate.now()
-        else endDate?.let { java.time.LocalDate.parse(it.take(10), formatter) }
-            ?: return ""
-
-        val period = java.time.Period.between(start, end)
-        val years = period.years
-        val months = period.months
-
-        buildString {
-            if (years > 0) {
-                append("$years yr")
-                if (years > 1) append("s")
-            }
-            if (months > 0) {
-                if (years > 0) append(" ")
-                append("$months mo")
-                if (months > 1) append("s")
-            }
-            if (years == 0 && months == 0) {
-                append("under 1 mo")
-            }
-        }
-    } catch (e: Exception) {
-        ""
-    }
-}
-
-// ==================== Experience Section ====================
-
-@Composable
-fun ExperienceSection(
-    experiences: List<Experience>,
-    backdrop: LayerBackdrop,
-    contentColor: Color,
-    accentColor: Color,
-    isOwner: Boolean,
-    onAddExperience: () -> Unit = {},
-    onEditExperience: (Experience) -> Unit = {},
-    onViewExperience: (Experience) -> Unit = {}
-) {
-    ProfileShowcaseSection(
-        title = "Experience",
-        subtitle = "Career highlights",
-        iconRes = R.drawable.ic_work,
-        count = experiences.size,
-        backdrop = backdrop,
-        contentColor = contentColor,
-        accentColor = accentColor,
-        isOwner = isOwner,
-        addLabel = "Add",
-        onAdd = onAddExperience
-    ) {
-        if (experiences.isEmpty()) {
-            ShowcaseEmptyState(
-                iconRes = R.drawable.ic_work,
-                title = "Build your career story",
-                subtitle = if (isOwner) "Add roles, internships, freelance work, and the skills you used." else "This profile has not shared work experience yet.",
-                actionLabel = "Add experience",
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isOwner = isOwner,
-                onAction = onAddExperience
-            )
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                experiences.forEachIndexed { index, exp ->
-                    ExperienceShowcaseCard(
-                        recordNumber = index + 1,
-                        experience = exp,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        isOwner = isOwner,
-                        onEdit = { onEditExperience(exp) },
-                        onView = { onViewExperience(exp) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ExperienceShowcaseCard(
-    recordNumber: Int,
-    experience: Experience,
-    contentColor: Color,
-    accentColor: Color,
-    isOwner: Boolean,
-    onEdit: () -> Unit,
-    onView: () -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val dateText = remember(experience.startDate, experience.endDate, experience.isCurrent) {
-        experienceTimelineText(experience)
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(contentColor.copy(alpha = 0.025f))
-            .border(1.dp, contentColor.copy(alpha = 0.11f), RoundedCornerShape(8.dp))
-            .clickable(onClick = onView)
-            .padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            DossierRecordRail(recordNumber = recordNumber, contentColor = contentColor)
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top
-        ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                EditorialMediaTile(
-                    iconRes = R.drawable.ic_work,
-                    imageUrl = experience.logo,
-                    contentColor = contentColor,
-                    tileSize = 52.dp,
-                    iconSize = 22.dp
-                )
-
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    ShowcaseInfoPill(
-                        iconRes = if (experience.isCurrent) R.drawable.ic_check else R.drawable.ic_work,
-                        text = if (experience.isCurrent) "Current role" else experience.type,
-                        tint = contentColor.copy(alpha = 0.62f),
-                        background = Color.Transparent
-                    )
-                    BasicText(
-                        experience.title,
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Serif,
-                            lineHeight = 21.sp
-                        ),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    BasicText(
-                        experience.company,
-                        style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp, FontWeight.SemiBold),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            if (isOwner) {
-                ShowcaseIconButton(
-                    iconRes = R.drawable.ic_edit,
-                    tint = contentColor,
-                    contentDescription = "Edit experience",
-                    onClick = onEdit
-                )
-            }
-        }
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (dateText.isNotBlank()) {
-                ShowcaseInfoPill(
-                    iconRes = R.drawable.ic_calendar,
-                    text = dateText,
-                    tint = contentColor.copy(alpha = 0.68f),
-                    background = contentColor.copy(alpha = 0.065f)
-                )
-            }
-            experience.location?.takeIf { it.isNotBlank() }?.let { loc ->
-                ShowcaseInfoPill(
-                    iconRes = R.drawable.ic_location,
-                    text = loc,
-                    tint = contentColor.copy(alpha = 0.62f),
-                    background = contentColor.copy(alpha = 0.055f)
-                )
-            }
-            if (experience.isCurrent) {
-                ShowcaseInfoPill(
-                    iconRes = R.drawable.ic_tag,
-                    text = experience.type,
-                    tint = contentColor.copy(alpha = 0.62f),
-                    background = Color.Transparent
-                )
-            }
-        }
-
-        experience.description?.takeIf { it.isNotBlank() }?.let { desc ->
-            BasicText(
-                desc,
-                style = TextStyle(contentColor.copy(alpha = 0.75f), 13.sp, lineHeight = 18.sp),
-                maxLines = if (expanded) Int.MAX_VALUE else 3,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (desc.length > 110 || desc.contains("\n")) {
-                ShowcaseReadToggle(
-                    expanded = expanded,
-                    accentColor = contentColor,
-                    onToggle = { expanded = !expanded }
-                )
-            }
-        }
-
-        if (experience.skills.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Image(
-                        painter = painterResource(R.drawable.ic_sparkles),
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.62f))
-                    )
-                    BasicText(
-                        "Skills used",
-                        style = editorialMetaStyle(contentColor.copy(alpha = 0.62f), 10.sp)
-                    )
-                }
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    verticalArrangement = Arrangement.spacedBy(7.dp)
-                ) {
-                    experience.skills.take(6).forEach { skill ->
-                        ShowcaseInfoPill(
-                            iconRes = R.drawable.ic_check,
-                            text = skill,
-                            tint = contentColor.copy(alpha = 0.62f),
-                            background = Color.Transparent
-                        )
-                    }
-                    val remaining = experience.skills.size - 6
-                    if (remaining > 0) {
-                        ShowcaseInfoPill(
-                            iconRes = R.drawable.ic_list,
-                            text = "$remaining more",
-                            tint = contentColor.copy(alpha = 0.58f),
-                            background = contentColor.copy(alpha = 0.065f)
-                        )
-                    }
-                }
-            }
-        }
-    }
-        }
-    }
-}
-
-// ==================== Education Section ====================
-
-@Composable
-fun EducationSection(
-    education: List<Education>,
-    backdrop: LayerBackdrop,
-    contentColor: Color,
-    accentColor: Color,
-    isOwner: Boolean,
-    onAddEducation: () -> Unit = {},
-    onEditEducation: (Education) -> Unit = {},
-    onViewEducation: (Education) -> Unit = {}
-) {
-    ProfileShowcaseSection(
-        title = "Education",
-        subtitle = "Academic path",
-        iconRes = R.drawable.ic_education,
-        count = education.size,
-        backdrop = backdrop,
-        contentColor = contentColor,
-        accentColor = accentColor,
-        isOwner = isOwner,
-        addLabel = "Add",
-        onAdd = onAddEducation
-    ) {
-        if (education.isEmpty()) {
-            ShowcaseEmptyState(
-                iconRes = R.drawable.ic_education,
-                title = "Add your academic path",
-                subtitle = if (isOwner) "Show schools, degrees, fields of study, grades, and societies." else "This profile has not shared education details yet.",
-                actionLabel = "Add education",
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isOwner = isOwner,
-                onAction = onAddEducation
-            )
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                education.forEachIndexed { index, edu ->
-                    EducationShowcaseCard(
-                        recordNumber = index + 1,
-                        education = edu,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        isOwner = isOwner,
-                        onEdit = { onEditEducation(edu) },
-                        onView = { onViewEducation(edu) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun EducationShowcaseCard(
-    recordNumber: Int,
-    education: Education,
-    contentColor: Color,
-    accentColor: Color,
-    isOwner: Boolean,
-    onEdit: () -> Unit,
-    onView: () -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val programText = listOf(education.degree, education.fieldOfStudy)
-        .filter { it.isNotBlank() }
-        .joinToString(" in ")
-    val dateText = remember(education.startDate, education.endDate, education.isCurrent) {
-        educationTimelineText(education)
-    }
-    val hasLongDescription = (education.description?.length ?: 0) > 110 || education.description?.contains("\n") == true
-    val hasLongActivities = (education.activities?.length ?: 0) > 110 || education.activities?.contains("\n") == true
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(contentColor.copy(alpha = 0.025f))
-            .border(1.dp, contentColor.copy(alpha = 0.11f), RoundedCornerShape(8.dp))
-            .clickable(onClick = onView)
-            .padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            DossierRecordRail(recordNumber = recordNumber, contentColor = contentColor)
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top
-        ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                EditorialMediaTile(
-                    iconRes = R.drawable.ic_education,
-                    imageUrl = null,
-                    contentColor = contentColor,
-                    tileSize = 52.dp,
-                    iconSize = 22.dp
-                )
-
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    ShowcaseInfoPill(
-                        iconRes = if (education.isCurrent) R.drawable.ic_check else R.drawable.ic_education,
-                        text = if (education.isCurrent) "Studying now" else "Education",
-                        tint = contentColor.copy(alpha = 0.62f),
-                        background = Color.Transparent
-                    )
-                    BasicText(
-                        education.school,
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Serif,
-                            lineHeight = 21.sp
-                        ),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (programText.isNotBlank()) {
-                        BasicText(
-                            programText,
-                            style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp, FontWeight.SemiBold),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
-
-            if (isOwner) {
-                ShowcaseIconButton(
-                    iconRes = R.drawable.ic_edit,
-                    tint = contentColor,
-                    contentDescription = "Edit education",
-                    onClick = onEdit
-                )
-            }
-        }
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (dateText.isNotBlank()) {
-                ShowcaseInfoPill(
-                    iconRes = R.drawable.ic_calendar,
-                    text = dateText,
-                    tint = contentColor.copy(alpha = 0.68f),
-                    background = contentColor.copy(alpha = 0.065f)
-                )
-            }
-            education.grade?.takeIf { it.isNotBlank() }?.let { grade ->
-                ShowcaseInfoPill(
-                    iconRes = R.drawable.ic_medal,
-                    text = "Grade $grade",
-                    tint = contentColor.copy(alpha = 0.62f),
-                    background = Color.Transparent
-                )
-            }
-        }
-
-        education.description?.takeIf { it.isNotBlank() }?.let { desc ->
-            BasicText(
-                desc,
-                style = TextStyle(contentColor.copy(alpha = 0.75f), 13.sp, lineHeight = 18.sp),
-                maxLines = if (expanded) Int.MAX_VALUE else 3,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-
-        education.activities?.takeIf { it.isNotBlank() }?.let { activities ->
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color.White.copy(alpha = 0.07f))
-                    .border(1.dp, contentColor.copy(alpha = 0.075f), RoundedCornerShape(8.dp))
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Image(
-                    painter = painterResource(R.drawable.ic_users),
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.62f))
-                )
-                BasicText(
-                    "Activities and societies",
-                    style = editorialMetaStyle(contentColor.copy(alpha = 0.62f), 10.sp)
-                )
-                }
-                BasicText(
-                    activities,
-                    style = TextStyle(contentColor.copy(alpha = 0.7f), 12.sp, lineHeight = 17.sp),
-                    maxLines = if (expanded) Int.MAX_VALUE else 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-
-        if (hasLongDescription || hasLongActivities) {
-            ShowcaseReadToggle(
-                expanded = expanded,
-                accentColor = contentColor,
-                onToggle = { expanded = !expanded }
-            )
-        }
-    }
-        }
-    }
-}
-
-// ==================== Licenses & Certifications Section ====================
-
-private fun isExpired(expiryDate: String?): Boolean {
-    if (expiryDate.isNullOrEmpty()) return false
-    return try {
-        val expiry = java.time.LocalDate.parse(expiryDate.take(10))
-        expiry.isBefore(java.time.LocalDate.now())
-    } catch (e: Exception) {
-        false
-    }
-}
-
-@Composable
-fun CertificatesSection(
-    certificates: List<Certificate>,
-    backdrop: LayerBackdrop,
-    contentColor: Color,
-    accentColor: Color,
-    isOwner: Boolean,
-    onAddCertificate: () -> Unit = {},
-    onEditCertificate: (Certificate) -> Unit = {},
-    onViewCertificate: (Certificate) -> Unit = {}
-) {
-    ProfileShowcaseSection(
-        title = "Licenses & Certifications",
-        subtitle = "Certifications and credentials",
-        iconRes = R.drawable.ic_award,
-        count = certificates.size,
-        backdrop = backdrop,
-        contentColor = contentColor,
-        accentColor = accentColor,
-        isOwner = isOwner,
-        addLabel = "Add",
-        onAdd = onAddCertificate
-    ) {
-        if (certificates.isEmpty()) {
-            ShowcaseEmptyState(
-                iconRes = R.drawable.ic_award,
-                title = "Show verified learning",
-                subtitle = if (isOwner) "Add certifications, license numbers, and credential links." else "This profile has not shared licenses or certifications yet.",
-                actionLabel = "Add certification",
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isOwner = isOwner,
-                onAction = onAddCertificate
-            )
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                certificates.forEachIndexed { index, cert ->
-                    CertificateShowcaseCard(
-                        recordNumber = index + 1,
-                        certificate = cert,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        isOwner = isOwner,
-                        onEdit = { onEditCertificate(cert) },
-                        onView = { onViewCertificate(cert) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun CertificateShowcaseCard(
-    recordNumber: Int,
-    certificate: Certificate,
-    contentColor: Color,
-    accentColor: Color,
-    isOwner: Boolean,
-    onEdit: () -> Unit,
-    onView: () -> Unit
-) {
-    val context = LocalContext.current
-    val expired = !certificate.doesNotExpire && isExpired(certificate.expiryDate)
-    val credentialUrl = certificate.credentialUrl?.takeIf { it.isNotBlank() }
-    val hasImage = credentialUrl?.let { isImageUrl(it) } ?: false
-    val statusText = when {
-        expired -> "Expired"
-        certificate.doesNotExpire -> "No expiration"
-        certificate.expiryDate != null -> "Expires ${formatDate(certificate.expiryDate)}"
-        else -> "Active credential"
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(contentColor.copy(alpha = 0.025f))
-            .border(1.dp, contentColor.copy(alpha = 0.11f), RoundedCornerShape(8.dp))
-            .clickable(onClick = onView)
-            .padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            DossierRecordRail(recordNumber = recordNumber, contentColor = contentColor)
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top
-        ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                EditorialMediaTile(
-                    iconRes = R.drawable.ic_award,
-                    imageUrl = if (hasImage) credentialUrl else null,
-                    contentColor = contentColor,
-                    tileSize = 52.dp,
-                    iconSize = 22.dp
-                )
-
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    ShowcaseInfoPill(
-                        iconRes = if (expired) R.drawable.ic_warning else R.drawable.ic_check,
-                        text = statusText,
-                        tint = contentColor.copy(alpha = 0.62f),
-                        background = Color.Transparent
-                    )
-                    BasicText(
-                        certificate.name,
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Serif,
-                            lineHeight = 21.sp
-                        ),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    BasicText(
-                        certificate.issuingOrg,
-                        style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp, FontWeight.SemiBold),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                credentialUrl?.let { url ->
-                    ShowcaseIconButton(
-                        iconRes = R.drawable.ic_open_in_browser,
-                        tint = contentColor,
-                        contentDescription = "Open credential",
-                        onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-                    )
-                }
-                if (isOwner) {
-                    ShowcaseIconButton(
-                        iconRes = R.drawable.ic_edit,
-                        tint = contentColor,
-                        contentDescription = "Edit certification",
-                        onClick = onEdit
-                    )
-                }
-            }
-        }
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            ShowcaseInfoPill(
-                iconRes = R.drawable.ic_calendar,
-                text = "Issued ${formatDate(certificate.issueDate)}",
-                tint = contentColor.copy(alpha = 0.68f),
-                background = contentColor.copy(alpha = 0.065f)
-            )
-            certificate.credentialId?.takeIf { it.isNotBlank() }?.let { id ->
-                ShowcaseInfoPill(
-                    iconRes = R.drawable.ic_tag,
-                    text = id,
-                    tint = contentColor.copy(alpha = 0.62f),
-                    background = contentColor.copy(alpha = 0.055f)
-                )
-            }
-            credentialUrl?.let { url ->
-                ShowcaseInfoPill(
-                    iconRes = R.drawable.ic_open_in_browser,
-                    text = "View credential",
-                    tint = contentColor.copy(alpha = 0.82f),
-                    background = Color.Transparent,
-                    onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-                )
-            }
-        }
-    }
-        }
-    }
-}
-
-// ==================== Achievements Section ====================
-
-@Composable
-fun AchievementsSection(
-    achievements: List<Achievement>,
-    backdrop: LayerBackdrop,
-    contentColor: Color,
-    accentColor: Color,
-    isOwner: Boolean,
-    onAddAchievement: () -> Unit = {},
-    onEditAchievement: (Achievement) -> Unit = {},
-    onViewAchievement: (Achievement) -> Unit = {}
-) {
-    ProfileShowcaseSection(
-        title = "Achievements",
-        subtitle = "Awards and proof of work",
-        iconRes = R.drawable.ic_trophy,
-        count = achievements.size,
-        backdrop = backdrop,
-        contentColor = contentColor,
-        accentColor = accentColor,
-        isOwner = isOwner,
-        addLabel = "Add",
-        onAdd = onAddAchievement
-    ) {
-        if (achievements.isEmpty()) {
-            ShowcaseEmptyState(
-                iconRes = R.drawable.ic_trophy,
-                title = "Celebrate the wins",
-                subtitle = if (isOwner) "Add hackathons, awards, scholarships, and recognitions with proof links." else "This profile has not shared achievements yet.",
-                actionLabel = "Add achievement",
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isOwner = isOwner,
-                onAction = onAddAchievement
-            )
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                achievements.forEachIndexed { index, achievement ->
-                    AchievementShowcaseCard(
-                        recordNumber = index + 1,
-                        achievement = achievement,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        isOwner = isOwner,
-                        onEdit = { onEditAchievement(achievement) },
-                        onView = { onViewAchievement(achievement) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun AchievementShowcaseCard(
-    recordNumber: Int,
-    achievement: Achievement,
-    contentColor: Color,
-    accentColor: Color,
-    isOwner: Boolean,
-    onEdit: () -> Unit,
-    onView: () -> Unit
-) {
-    val context = LocalContext.current
-    val proofUrl = achievement.certificateUrl?.takeIf { it.isNotBlank() }
-    val hasImage = proofUrl?.let { isImageUrl(it) } ?: false
-    val typeIcon = when (achievement.type.lowercase()) {
-        "hackathon" -> R.drawable.ic_target
-        "competition" -> R.drawable.ic_trophy
-        "award" -> R.drawable.ic_medal
-        "scholarship" -> R.drawable.ic_gift
-        "recognition" -> R.drawable.ic_sparkles
-        else -> R.drawable.ic_trophy
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(contentColor.copy(alpha = 0.025f))
-            .border(1.dp, contentColor.copy(alpha = 0.11f), RoundedCornerShape(8.dp))
-            .clickable(onClick = onView)
-            .padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            DossierRecordRail(recordNumber = recordNumber, contentColor = contentColor)
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top
-        ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                EditorialMediaTile(
-                    iconRes = typeIcon,
-                    imageUrl = if (hasImage) proofUrl else null,
-                    contentColor = contentColor,
-                    tileSize = 52.dp,
-                    iconSize = 22.dp
-                )
-
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    ShowcaseInfoPill(
-                        iconRes = typeIcon,
-                        text = achievement.type,
-                        tint = contentColor.copy(alpha = 0.62f),
-                        background = Color.Transparent
-                    )
-                    BasicText(
-                        achievement.title,
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Serif,
-                            lineHeight = 21.sp
-                        ),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    BasicText(
-                        achievement.organization,
-                        style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp, FontWeight.SemiBold),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                proofUrl?.let { url ->
-                    ShowcaseIconButton(
-                        iconRes = R.drawable.ic_open_in_browser,
-                        tint = contentColor,
-                        contentDescription = "Open proof",
-                        onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-                    )
-                }
-                if (isOwner) {
-                    ShowcaseIconButton(
-                        iconRes = R.drawable.ic_edit,
-                        tint = contentColor,
-                        contentDescription = "Edit achievement",
-                        onClick = onEdit
-                    )
-                }
-            }
-        }
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            ShowcaseInfoPill(
-                iconRes = R.drawable.ic_calendar,
-                text = formatDate(achievement.date),
-                tint = contentColor.copy(alpha = 0.68f),
-                background = contentColor.copy(alpha = 0.065f)
-            )
-            proofUrl?.let { url ->
-                ShowcaseInfoPill(
-                    iconRes = R.drawable.ic_visibility,
-                    text = "View proof",
-                    tint = contentColor.copy(alpha = 0.82f),
-                    background = Color.Transparent,
-                    onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-                )
-            }
-        }
-
-        achievement.description?.takeIf { it.isNotBlank() }?.let { desc ->
-            EditorialDivider(contentColor)
-            BasicText(
-                desc,
-                style = TextStyle(contentColor.copy(alpha = 0.74f), 13.sp, lineHeight = 18.sp),
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
         }
     }
 }
@@ -4615,6 +3262,8 @@ fun ActivityFeedHeaderSection(
         accentColor = accentColor
     ) {
         Column {
+            val selectedTextColor =
+                if (accentColor.luminance() > 0.6f) Color(0xFF111111) else Color.White
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -4625,20 +3274,25 @@ fun ActivityFeedHeaderSection(
                     val isSelected = currentFilter == filter
                     Box(
                         Modifier
-                            .clip(RoundedCornerShape(20.dp))
+                            .clip(RoundedCornerShape(999.dp))
                             .background(
-                                if (isSelected) accentColor.copy(alpha = 0.2f)
-                                else Color.Transparent
+                                if (isSelected) accentColor
+                                else contentColor.copy(alpha = 0.06f)
+                            )
+                            .border(
+                                1.dp,
+                                if (isSelected) Color.Transparent else contentColor.copy(alpha = 0.1f),
+                                RoundedCornerShape(999.dp)
                             )
                             .clickable { onFilterChange(filter) }
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .padding(horizontal = 14.dp, vertical = 7.dp)
                     ) {
                         BasicText(
                             label,
                             style = TextStyle(
-                                if (isSelected) accentColor else contentColor.copy(alpha = 0.6f),
+                                if (isSelected) selectedTextColor else contentColor.copy(alpha = 0.65f),
                                 13.sp,
-                                if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                                if (isSelected) FontWeight.SemiBold else FontWeight.Medium
                             )
                         )
                     }
@@ -4663,11 +3317,11 @@ fun ActivityFeedGridSection(
     ActivityFeedSurface {
         when {
             gridItems.isNotEmpty() -> {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     gridItems.chunked(3).forEach { rowItems ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             rowItems.forEach { gridItem ->
                                 ActivityFeedGridTile(
@@ -4701,8 +3355,8 @@ fun ActivityFeedGridSection(
                 ) {
                     EmptySectionPlaceholder(
                         icon = "",
-                        iconRes = R.drawable.ic_image,
-                        message = "No photo or video posts yet",
+                        iconRes = R.drawable.ic_vx_gallery,
+                        message = "No activity found for this filter",
                         contentColor = contentColor
                     )
                 }
@@ -4765,8 +3419,6 @@ private fun activityGridItemFor(item: FeedItem): ActivityGridItem? {
         else -> null
     }
 
-    if (thumbnailUrl == null && !hasDefaultVideo) return null
-
     return ActivityGridItem(
         item = item,
         thumbnailUrl = thumbnailUrl,
@@ -4788,14 +3440,12 @@ private fun ActivityFeedGridTile(
 ) {
     val context = LocalContext.current
     val item = gridItem.item
-    val canDelete = isOwner && item.entityType?.equals("post", ignoreCase = true) == true
-    var showMenu by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
             .aspectRatio(1f)
-            .clip(RoundedCornerShape(3.dp))
-            .background(contentColor.copy(alpha = 0.07f))
+            .clip(RoundedCornerShape(10.dp))
+            .background(contentColor.copy(alpha = 0.06f))
             .clickable { onOpenItem(item) }
     ) {
         if (gridItem.thumbnailUrl != null) {
@@ -4824,6 +3474,29 @@ private fun ActivityFeedGridTile(
                     contentScale = ContentScale.Crop
                 )
             }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(accentColor.copy(alpha = 0.14f))
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                BasicText(
+                    text = when (item.contentType) {
+                        "article" -> "ARTICLE"
+                        "short_video" -> "REEL"
+                        else -> "POST"
+                    },
+                    style = TextStyle(accentColor, 10.sp, FontWeight.Bold, letterSpacing = 0.7.sp)
+                )
+                BasicText(
+                    text = item.title?.takeIf { it.isNotBlank() } ?: item.content,
+                    style = TextStyle(contentColor, 13.sp, FontWeight.SemiBold, lineHeight = 16.sp),
+                    maxLines = 5,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
 
         Box(
@@ -4838,79 +3511,25 @@ private fun ActivityFeedGridTile(
                 )
         )
 
-        if (gridItem.isVideo) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.42f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Image(
-                    painter = painterResource(R.drawable.ic_play_arrow),
-                    contentDescription = "Video",
-                    modifier = Modifier.size(22.dp),
-                    colorFilter = ColorFilter.tint(Color.White)
-                )
-            }
-        }
-
         if (gridItem.mediaCount > 1) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(6.dp)
-                    .size(26.dp)
+                    .size(24.dp)
                     .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.42f)),
+                    .background(Color.Black.copy(alpha = 0.45f)),
                 contentAlignment = Alignment.Center
             ) {
                 Image(
-                    painter = painterResource(R.drawable.ic_image),
+                    painter = painterResource(R.drawable.ic_vx_layers),
                     contentDescription = "Multiple media",
-                    modifier = Modifier.size(15.dp),
+                    modifier = Modifier.size(13.dp),
                     colorFilter = ColorFilter.tint(Color.White)
                 )
             }
         }
 
-        if (canDelete) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(6.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.42f))
-                        .clickable { showMenu = true },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        painter = painterResource(R.drawable.ic_more),
-                        contentDescription = "Post options",
-                        modifier = Modifier.size(17.dp),
-                        colorFilter = ColorFilter.tint(Color.White)
-                    )
-                }
-
-                DropdownMenu(
-                    expanded = showMenu,
-                    onDismissRequest = { showMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { BasicText("Delete post", style = TextStyle(Color(0xFFDC2626), 13.sp)) },
-                        onClick = {
-                            showMenu = false
-                            onDeletePost(item.id)
-                        }
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -4938,37 +3557,13 @@ fun ActivityFeedLoadingSection(
 }
 
 @Composable
-fun ActivityFeedLoadMoreSection(
-    contentColor: Color,
-    accentColor: Color,
-    onLoadMore: () -> Unit
-) {
-    ActivityFeedSurface {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .clip(ProfileCardShape)
-                .background(contentColor.copy(alpha = 0.05f))
-                .clickable(onClick = onLoadMore)
-                .padding(12.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            BasicText(
-                "Load more",
-                style = TextStyle(accentColor, 13.sp, FontWeight.Medium)
-            )
-        }
-    }
-}
-
-@Composable
 private fun ActivityFeedSurface(
     content: @Composable () -> Unit
 ) {
     Box(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp)
+            .padding(horizontal = 12.dp)
     ) {
         content()
     }

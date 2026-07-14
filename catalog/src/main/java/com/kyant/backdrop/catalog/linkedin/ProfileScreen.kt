@@ -34,6 +34,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -76,6 +77,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -123,6 +125,8 @@ import com.kyant.backdrop.catalog.data.SettingsPreferences
 import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.components.LiquidSlider
 import com.kyant.backdrop.catalog.network.ApiClient
+import com.kyant.backdrop.catalog.network.PostsApiService
+import com.kyant.backdrop.catalog.deeplink.VormexDeepLinks
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -224,6 +228,7 @@ fun ProfileScreen(
     var showReportProfileDialog by remember { mutableStateOf(false) }
     var isSubmittingProfileReport by remember { mutableStateOf(false) }
     var isBlockingProfileUser by remember { mutableStateOf(false) }
+    var openedActivityItemId by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     fun dismissProjectDetail(afterDismiss: (() -> Unit)? = null) {
@@ -320,7 +325,7 @@ fun ProfileScreen(
     
     // Handle back button for profile overlays, or navigate back from profile
     BackHandler(
-        enabled = uiState.isEditingProfile ||
+        enabled = uiState.isEditingProfile || uiState.isEditingBio || uiState.isEditingInterests ||
                 showAddProject || editingProject != null || projectDetailProject != null ||
                 showAddExperience || editingExperience != null ||
                 showAddEducation || editingEducation != null ||
@@ -331,7 +336,10 @@ fun ProfileScreen(
     ) {
         when {
             // Close any open dialogs/overlays first
+            openedActivityItemId != null -> openedActivityItemId = null
             uiState.isEditingProfile -> screenViewModel.cancelEditingProfile()
+            uiState.isEditingBio -> screenViewModel.cancelEditingBio()
+            uiState.isEditingInterests -> screenViewModel.cancelEditingInterests()
             showAddProject -> showAddProject = false
             editingProject != null -> editingProject = null
             projectDetailProject != null -> dismissProjectDetail()
@@ -355,449 +363,523 @@ fun ProfileScreen(
         screenViewModel.loadProfile(userId)
     }
     
-    Box(Modifier.fillMaxSize()) {
-        // Prefer cached profile while refreshing (stale-while-revalidate). Checking isLoading first
-        // would flash the skeleton on every tab revisit because loadProfile(forceRefresh) sets loading.
-        when {
-            uiState.profile != null -> {
-                ProfileContent(
-                    uiState = uiState,
+    // Sections and dialogs resolve theme via LocalVormexAppearance; without this the
+    // composition local is unset here and they silently fall back to the Light palette.
+    CompositionLocalProvider(LocalVormexAppearance provides appearance) {
+        Box(Modifier.fillMaxSize()) {
+            // Prefer cached profile while refreshing (stale-while-revalidate). Checking isLoading first
+            // would flash the skeleton on every tab revisit because loadProfile(forceRefresh) sets loading.
+            when {
+                uiState.profile != null -> {
+                    ProfileContent(
+                        uiState = uiState,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isGlassTheme = isGlassTheme,
+                        isDarkTheme = isDarkTheme,
+                        profileThemeOverride = profileThemePreference,
+                        showOwnerProfileLocation = showProfileLocation,
+                        onEditProfile = { screenViewModel.startEditingProfile() },
+                        onConnect = { screenViewModel.sendConnectionRequest() },
+                        onCancelRequest = { screenViewModel.cancelConnectionRequest() },
+                        onAcceptRequest = { screenViewModel.acceptConnectionRequest() },
+                        onRejectRequest = { screenViewModel.rejectConnectionRequest() },
+                        onRemoveConnection = { screenViewModel.removeConnection() },
+                        onToggleFollow = { screenViewModel.toggleFollow() },
+                        onToggleProfileSave = { screenViewModel.toggleProfileSave() },
+                        onFilterChange = { screenViewModel.setFeedFilter(it) },
+                        onYearChange = { screenViewModel.loadActivityForYear(it) },
+                        onEditBio = { screenViewModel.startEditingBio() },
+                        onSaveBio = { screenViewModel.saveEditedBio() },
+                        onCancelEditBio = { screenViewModel.cancelEditingBio() },
+                        onBioChange = { screenViewModel.updateEditedBio(it) },
+                        onEditInterests = { screenViewModel.startEditingInterests() },
+                        onToggleOpenToWork = { screenViewModel.updateOpenToOpportunities(it) },
+                        onOpenConnections = { screenViewModel.openConnectionsSheet() },
+                        onOpenFollowers = { screenViewModel.openFollowersSheet() },
+                        onMessage = onMessage,
+                        showStartConversation = showStartConversation,
+                        isPreparingConversationStarter = isPreparingConversationStarter,
+                        onStartConversation = onStartConversation,
+                        onOpenProfile = onOpenProfile,
+                        onOpenFeedItem = { item -> openedActivityItemId = item.id },
+                        onVotePoll = { postId, optionId -> screenViewModel.votePoll(postId, optionId) },
+                        onUploadAvatar = { screenViewModel.uploadAvatar(it) },
+                        onUploadBanner = { screenViewModel.uploadBanner(it) },
+                        onReportUser = { showReportProfileDialog = true },
+                        onBlockUser = { blockProfileUser() },
+                        onConnectGitHub = {
+                            screenViewModel.startGitHubOAuth { authUrl ->
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)))
+                                }.onFailure {
+                                    screenViewModel.reportGitHubBrowserOpenFailure(
+                                        "Couldn't open GitHub authorization"
+                                    )
+                                }
+                            }
+                        },
+                        onSyncGitHub = { screenViewModel.syncGitHubStats() },
+                        onDisconnectGitHub = { screenViewModel.disconnectGitHub() },
+                        // Project callbacks
+                        onAddProject = { showAddProject = true },
+                        onEditProject = { editingProject = it },
+                        onViewProject = {
+                            projectDetailProject = it
+                            projectDetailVisible = true
+                        },
+                        onToggleProjectFeatured = { screenViewModel.toggleProjectFeatured(it.id) },
+                        // Experience callbacks
+                        onAddExperience = { showAddExperience = true },
+                        onEditExperience = { editingExperience = it },
+                        onViewExperience = { /* Experiences view in place */ },
+                        onDeleteExperience = { experience ->
+                            screenViewModel.deleteExperience(
+                                experienceId = experience.id,
+                                onSuccess = {},
+                                onError = { /* Show error toast */ }
+                            )
+                        },
+                        // Education callbacks
+                        onAddEducation = { showAddEducation = true },
+                        onEditEducation = { editingEducation = it },
+                        onViewEducation = { /* Education view in place */ },
+                        onDeleteEducation = { education ->
+                            screenViewModel.deleteEducation(
+                                educationId = education.id,
+                                onSuccess = {},
+                                onError = { /* Show error toast */ }
+                            )
+                        },
+                        // Certificate callbacks
+                        onAddCertificate = { showAddCertificate = true },
+                        onEditCertificate = { editingCertificate = it },
+                        onViewCertificate = { viewingCertificate = it },
+                        onDeleteCertificate = { certificate ->
+                            screenViewModel.deleteCertificate(
+                                certificateId = certificate.id,
+                                onSuccess = {},
+                                onError = { /* Show error toast */ }
+                            )
+                        },
+                        // Achievement callbacks
+                        onAddAchievement = { showAddAchievement = true },
+                        onEditAchievement = { editingAchievement = it },
+                        onViewAchievement = { viewingAchievement = it },
+                        onDeleteAchievement = { achievement ->
+                            screenViewModel.deleteAchievement(
+                                achievementId = achievement.id,
+                                onSuccess = {},
+                                onError = { /* Show error toast */ }
+                            )
+                        },
+                        // Skills callbacks
+                        onAddSkill = { showAddSkill = true },
+                        onRemoveSkill = { skill -> screenViewModel.removeLocalSkill(skill.id) },
+                        onDeleteFeedPost = { postId ->
+                            screenViewModel.deleteFeedPost(
+                                postId = postId,
+                                onSuccess = {},
+                                onError = { }
+                            )
+                        }
+                    )
+                }
+                uiState.error != null -> {
+                    ProfileError(
+                        error = uiState.error!!,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onRetry = { screenViewModel.retry() }
+                    )
+                }
+                uiState.isLoading -> {
+                    ProfileLoadingContent(
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        visitLoaderGiftId = uiState.visitLoaderGiftIdHint,
+                        reduceAnimations = reduceAnimations
+                    )
+                }
+                else -> {
+                    ProfileLoadingContent(
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        visitLoaderGiftId = uiState.visitLoaderGiftIdHint,
+                        reduceAnimations = reduceAnimations
+                    )
+                }
+            }
+
+            openedActivityItemId?.let { selectedItemId ->
+                ProfileActivityFeedOverlay(
+                    items = uiState.feedItems,
+                    selectedItemId = selectedItemId,
+                    profileUser = uiState.profile?.user ?: return@let,
+                    currentFilter = uiState.feedFilter,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    isDarkTheme = isDarkTheme,
+                    onDismiss = { openedActivityItemId = null },
+                    onOpenItem = onOpenFeedItem,
+                    onVotePoll = { postId, optionId -> screenViewModel.votePoll(postId, optionId) }
+                )
+            }
+
+            if (uiState.peopleSheet.isVisible) {
+                ProfilePeopleSheetDialog(
+                    sheetState = uiState.peopleSheet,
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     isGlassTheme = isGlassTheme,
                     isDarkTheme = isDarkTheme,
-                    profileThemeOverride = profileThemePreference,
-                    showOwnerProfileLocation = showProfileLocation,
-                    onEditProfile = { screenViewModel.startEditingProfile() },
-                    onConnect = { screenViewModel.sendConnectionRequest() },
-                    onCancelRequest = { screenViewModel.cancelConnectionRequest() },
-                    onAcceptRequest = { screenViewModel.acceptConnectionRequest() },
-                    onRejectRequest = { screenViewModel.rejectConnectionRequest() },
-                    onRemoveConnection = { screenViewModel.removeConnection() },
-                    onToggleFollow = { screenViewModel.toggleFollow() },
-                    onToggleProfileSave = { screenViewModel.toggleProfileSave() },
-                    onFilterChange = { screenViewModel.setFeedFilter(it) },
-                    onLoadMore = { screenViewModel.loadMoreFeed() },
-                    onYearChange = { screenViewModel.loadActivityForYear(it) },
-                    onEditBio = { screenViewModel.startEditingBio() },
-                    onSaveBio = { screenViewModel.saveEditedBio() },
-                    onCancelEditBio = { screenViewModel.cancelEditingBio() },
-                    onBioChange = { screenViewModel.updateEditedBio(it) },
-                    onToggleOpenToWork = { screenViewModel.updateOpenToOpportunities(it) },
-                    onOpenConnections = { screenViewModel.openConnectionsSheet() },
-                    onOpenFollowers = { screenViewModel.openFollowersSheet() },
-                    onMessage = onMessage,
-                    showStartConversation = showStartConversation,
-                    isPreparingConversationStarter = isPreparingConversationStarter,
-                    onStartConversation = onStartConversation,
-                    onOpenProfile = onOpenProfile,
-                    onOpenFeedItem = onOpenFeedItem,
-                    onVotePoll = { postId, optionId -> screenViewModel.votePoll(postId, optionId) },
-                    onUploadAvatar = { screenViewModel.uploadAvatar(it) },
-                    onUploadBanner = { screenViewModel.uploadBanner(it) },
-                    onReportUser = { showReportProfileDialog = true },
-                    onBlockUser = { blockProfileUser() },
-                    onConnectGitHub = {
-                        screenViewModel.startGitHubOAuth { authUrl ->
-                            runCatching {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)))
-                            }.onFailure {
-                                screenViewModel.reportGitHubBrowserOpenFailure(
-                                    "Couldn't open GitHub authorization"
-                                )
-                            }
+                    onDismiss = { screenViewModel.dismissPeopleSheet() },
+                    onRetry = { screenViewModel.retryPeopleSheet() },
+                    onLoadMore = { screenViewModel.loadMorePeopleSheet() },
+                    onPersonClick = onOpenProfile?.let { callback ->
+                        { personId ->
+                            screenViewModel.dismissPeopleSheet()
+                            callback(personId)
                         }
-                    },
-                    onSyncGitHub = { screenViewModel.syncGitHubStats() },
-                    onDisconnectGitHub = { screenViewModel.disconnectGitHub() },
-                    // Project callbacks
-                    onAddProject = { showAddProject = true },
-                    onEditProject = { editingProject = it },
-                    onViewProject = {
-                        projectDetailProject = it
-                        projectDetailVisible = true
-                    },
-                    onToggleProjectFeatured = { screenViewModel.toggleProjectFeatured(it.id) },
-                    // Experience callbacks
-                    onAddExperience = { showAddExperience = true },
-                    onEditExperience = { editingExperience = it },
-                    onViewExperience = { /* Experiences view in place */ },
-                    // Education callbacks
-                    onAddEducation = { showAddEducation = true },
-                    onEditEducation = { editingEducation = it },
-                    onViewEducation = { /* Education view in place */ },
-                    // Certificate callbacks
-                    onAddCertificate = { showAddCertificate = true },
-                    onEditCertificate = { editingCertificate = it },
-                    onViewCertificate = { viewingCertificate = it },
-                    // Achievement callbacks
-                    onAddAchievement = { showAddAchievement = true },
-                    onEditAchievement = { editingAchievement = it },
-                    onViewAchievement = { viewingAchievement = it },
-                    // Skills callbacks
-                    onAddSkill = { showAddSkill = true },
-                    onRemoveSkill = { skill -> screenViewModel.removeLocalSkill(skill.id) },
-                    onDeleteFeedPost = { postId ->
-                        screenViewModel.deleteFeedPost(
-                            postId = postId,
-                            onSuccess = {},
-                            onError = { }
-                        )
                     }
                 )
             }
-            uiState.error != null -> {
-                ProfileError(
-                    error = uiState.error!!,
+
+            if (showReportProfileDialog) {
+                SafetyReportDialog(
+                    title = "Report profile",
+                    subtitle = "Tell Trust & Safety what is wrong with this profile.",
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    blockLabel = "Also block this user",
+                    isSubmitting = isSubmittingProfileReport,
+                    onDismiss = {
+                        if (!isSubmittingProfileReport) showReportProfileDialog = false
+                    },
+                    onSubmit = ::submitProfileReport
+                )
+            }
+
+            val profileEditDraft = uiState.profileEditDraft
+            if (uiState.isEditingProfile && profileEditDraft != null) {
+                EditProfileScreen(
+                    draft = profileEditDraft,
+                    isSaving = uiState.isSavingProfile,
+                    error = uiState.profileEditError,
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
-                    onRetry = { screenViewModel.retry() }
+                    isGameProfileTheme = isGameProfileTheme,
+                    onDraftChange = { screenViewModel.updateProfileEditDraft { _ -> it } },
+                    onDraftTransform = { transform -> screenViewModel.updateProfileEditDraft(transform) },
+                    onDismiss = { screenViewModel.cancelEditingProfile() },
+                    onSave = { screenViewModel.saveProfileEdits() }
                 )
             }
-            uiState.isLoading -> {
-                ProfileLoadingContent(
+
+            if (uiState.isEditingBio) {
+                EditAboutScreen(
+                    value = uiState.editedBio,
+                    isSaving = uiState.isSavingBio,
+                    error = uiState.bioEditError,
                     contentColor = contentColor,
                     accentColor = accentColor,
-                    visitLoaderGiftId = uiState.visitLoaderGiftIdHint,
-                    reduceAnimations = reduceAnimations
+                    onValueChange = { screenViewModel.updateEditedBio(it) },
+                    onDismiss = { screenViewModel.cancelEditingBio() },
+                    onSave = { screenViewModel.saveEditedBio() }
                 )
             }
-            else -> {
-                ProfileLoadingContent(
+
+            if (uiState.isEditingInterests) {
+                EditInterestsScreen(
+                    interests = uiState.editedInterests,
+                    isSaving = uiState.isSavingInterests,
+                    error = uiState.interestsEditError,
                     contentColor = contentColor,
                     accentColor = accentColor,
-                    visitLoaderGiftId = uiState.visitLoaderGiftIdHint,
-                    reduceAnimations = reduceAnimations
+                    onInterestsChange = { screenViewModel.updateEditedInterests(it) },
+                    onDismiss = { screenViewModel.cancelEditingInterests() },
+                    onSave = { screenViewModel.saveEditedInterests() }
                 )
             }
-        }
-
-        if (uiState.peopleSheet.isVisible) {
-            ProfilePeopleSheetDialog(
-                sheetState = uiState.peopleSheet,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isGlassTheme = isGlassTheme,
-                isDarkTheme = isDarkTheme,
-                onDismiss = { screenViewModel.dismissPeopleSheet() },
-                onRetry = { screenViewModel.retryPeopleSheet() },
-                onLoadMore = { screenViewModel.loadMorePeopleSheet() },
-                onPersonClick = onOpenProfile?.let { callback ->
-                    { personId ->
-                        screenViewModel.dismissPeopleSheet()
-                        callback(personId)
-                    }
-                }
-            )
-        }
-
-        if (showReportProfileDialog) {
-            SafetyReportDialog(
-                title = "Report profile",
-                subtitle = "Tell Trust & Safety what is wrong with this profile.",
-                contentColor = contentColor,
-                accentColor = accentColor,
-                blockLabel = "Also block this user",
-                isSubmitting = isSubmittingProfileReport,
-                onDismiss = {
-                    if (!isSubmittingProfileReport) showReportProfileDialog = false
-                },
-                onSubmit = ::submitProfileReport
-            )
-        }
-
-        val profileEditDraft = uiState.profileEditDraft
-        if (uiState.isEditingProfile && profileEditDraft != null) {
-            EditProfileScreen(
-                draft = profileEditDraft,
-                isSaving = uiState.isSavingProfile,
-                error = uiState.profileEditError,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isGameProfileTheme = isGameProfileTheme,
-                onDraftChange = { screenViewModel.updateProfileEditDraft { _ -> it } },
-                onDraftTransform = { transform -> screenViewModel.updateProfileEditDraft(transform) },
-                onDismiss = { screenViewModel.cancelEditingProfile() },
-                onSave = { screenViewModel.saveProfileEdits() }
-            )
-        }
         
-        // Add Project Screen
-        if (showAddProject) {
-            AddEditProjectScreen(
-                project = null,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isGameProfileTheme = isGameProfileTheme,
-                onSave = { showAddProject = false },
-                onDelete = null,
-                onCancel = { showAddProject = false }
-            )
-        }
+            // Add Project Screen
+            if (showAddProject) {
+                AddEditProjectScreen(
+                    project = null,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    isGameProfileTheme = isGameProfileTheme,
+                    onSave = { showAddProject = false },
+                    onDelete = null,
+                    onCancel = { showAddProject = false }
+                )
+            }
         
-        // Edit Project Screen
-        editingProject?.let { project ->
-            AddEditProjectScreen(
-                project = project,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isGameProfileTheme = isGameProfileTheme,
-                onSave = { editingProject = null },
-                onDelete = {
-                    screenViewModel.deleteProject(
-                        projectId = project.id,
-                        onSuccess = { editingProject = null },
-                        onError = { /* Show error toast */ }
-                    )
-                },
-                onCancel = { editingProject = null }
-            )
-        }
-        
-        AnimatedVisibility(
-            visible = projectDetailProject != null && projectDetailVisible,
-            enter = fadeIn(animationSpec = tween(180)) + scaleIn(
-                initialScale = 0.94f,
-                animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
-            ),
-            exit = fadeOut(animationSpec = tween(180)) + scaleOut(
-                targetScale = 0.98f,
-                animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)
-            )
-        ) {
-            projectDetailProject?.let { project ->
-                val orderedProjects = remember(uiState.profile?.projects) {
-                    uiState.profile?.projects.orEmpty().sortedWith(
-                        compareByDescending<Project> { it.featured }
-                            .thenByDescending { it.isCurrent }
-                            .thenByDescending { it.startDate }
-                    )
-                }.ifEmpty { listOf(project) }
-                val initialProjectPage = orderedProjects.indexOfFirst { it.id == project.id }.coerceAtLeast(0)
-
-                key(project.id, orderedProjects.size) {
-                    val projectPagerState = rememberPagerState(
-                        initialPage = initialProjectPage,
-                        pageCount = { orderedProjects.size }
-                    )
-
-                    HorizontalPager(
-                        state = projectPagerState,
-                        modifier = Modifier.fillMaxSize()
-                    ) { page ->
-                        val pageProject = orderedProjects[page]
-                        ProjectDetailScreen(
-                            project = pageProject,
-                            backdrop = backdrop,
-                            contentColor = contentColor,
-                            accentColor = accentColor,
-                            isGameProfileTheme = isGameProfileTheme,
-                            isOwner = uiState.isOwner,
-                            onEdit = {
-                                dismissProjectDetail {
-                                    editingProject = pageProject
-                                }
-                            },
-                            onBack = { dismissProjectDetail() }
+            // Edit Project Screen
+            editingProject?.let { project ->
+                AddEditProjectScreen(
+                    project = project,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    isGameProfileTheme = isGameProfileTheme,
+                    onSave = { editingProject = null },
+                    onDelete = {
+                        screenViewModel.deleteProject(
+                            projectId = project.id,
+                            onSuccess = { editingProject = null },
+                            onError = { /* Show error toast */ }
                         )
+                    },
+                    onCancel = { editingProject = null }
+                )
+            }
+        
+            AnimatedVisibility(
+                visible = projectDetailProject != null && projectDetailVisible,
+                enter = fadeIn(animationSpec = tween(180)) + scaleIn(
+                    initialScale = 0.94f,
+                    animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                ),
+                exit = fadeOut(animationSpec = tween(180)) + scaleOut(
+                    targetScale = 0.98f,
+                    animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)
+                )
+            ) {
+                projectDetailProject?.let { project ->
+                    val orderedProjects = remember(uiState.profile?.projects) {
+                        uiState.profile?.projects.orEmpty().sortedWith(
+                            compareByDescending<Project> { it.featured }
+                                .thenByDescending { it.isCurrent }
+                                .thenByDescending { it.startDate }
+                        )
+                    }.ifEmpty { listOf(project) }
+                    val initialProjectPage = orderedProjects.indexOfFirst { it.id == project.id }.coerceAtLeast(0)
+
+                    key(project.id, orderedProjects.size) {
+                        val projectPagerState = rememberPagerState(
+                            initialPage = initialProjectPage,
+                            pageCount = { orderedProjects.size }
+                        )
+
+                        HorizontalPager(
+                            state = projectPagerState,
+                            modifier = Modifier.fillMaxSize()
+                        ) { page ->
+                            val pageProject = orderedProjects[page]
+                            ProjectDetailScreen(
+                                project = pageProject,
+                                backdrop = backdrop,
+                                contentColor = contentColor,
+                                accentColor = accentColor,
+                                isGameProfileTheme = isGameProfileTheme,
+                                isOwner = uiState.isOwner,
+                                onEdit = {
+                                    dismissProjectDetail {
+                                        editingProject = pageProject
+                                    }
+                                },
+                                onBack = { dismissProjectDetail() }
+                            )
+                        }
                     }
                 }
             }
-        }
-        // Add Experience Screen
-        if (showAddExperience) {
-            AddEditExperienceScreen(
-                experience = null,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedExperience ->
-                    screenViewModel.addExperience(savedExperience)
-                    showAddExperience = false
-                },
-                onDelete = null,
-                onCancel = { showAddExperience = false }
-            )
-        }
+            // Add Experience Screen
+            if (showAddExperience) {
+                AddEditExperienceScreen(
+                    experience = null,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onSave = { savedExperience ->
+                        screenViewModel.addExperience(savedExperience)
+                        showAddExperience = false
+                    },
+                    onDelete = null,
+                    onCancel = { showAddExperience = false }
+                )
+            }
         
-        // Add Skill Screen
-        if (showAddSkill) {
-            AddSkillDialog(
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { name, proficiency ->
-                    screenViewModel.addLocalSkill(name = name, proficiency = proficiency)
-                    showAddSkill = false
-                },
-                onCancel = { showAddSkill = false }
-            )
-        }
+            // Add Skill Screen
+            if (showAddSkill) {
+                AddSkillDialog(
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onSave = { name, proficiency ->
+                        screenViewModel.addLocalSkill(name = name, proficiency = proficiency)
+                        showAddSkill = false
+                    },
+                    onCancel = { showAddSkill = false }
+                )
+            }
         
-        // Edit Experience Screen
-        editingExperience?.let { experience ->
-            AddEditExperienceScreen(
-                experience = experience,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedExperience ->
-                    screenViewModel.updateExperience(savedExperience)
-                    editingExperience = null
-                },
-                onDelete = {
-                    screenViewModel.deleteExperience(
-                        experienceId = experience.id,
-                        onSuccess = { editingExperience = null },
-                        onError = { /* Show error toast */ }
-                    )
-                },
-                onCancel = { editingExperience = null }
-            )
-        }
+            // Edit Experience Screen
+            editingExperience?.let { experience ->
+                AddEditExperienceScreen(
+                    experience = experience,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onSave = { savedExperience ->
+                        screenViewModel.updateExperience(savedExperience)
+                        editingExperience = null
+                    },
+                    onDelete = {
+                        screenViewModel.deleteExperience(
+                            experienceId = experience.id,
+                            onSuccess = { editingExperience = null },
+                            onError = { /* Show error toast */ }
+                        )
+                    },
+                    onCancel = { editingExperience = null }
+                )
+            }
         
-        // Add Education Screen
-        if (showAddEducation) {
-            AddEditEducationScreen(
-                education = null,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedEducation ->
-                    screenViewModel.addEducation(savedEducation)
-                    showAddEducation = false
-                },
-                onDelete = null,
-                onCancel = { showAddEducation = false }
-            )
-        }
+            // Add Education Screen
+            if (showAddEducation) {
+                AddEditEducationScreen(
+                    education = null,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onSave = { savedEducation ->
+                        screenViewModel.addEducation(savedEducation)
+                        showAddEducation = false
+                    },
+                    onDelete = null,
+                    onCancel = { showAddEducation = false }
+                )
+            }
         
-        // Edit Education Screen
-        editingEducation?.let { education ->
-            AddEditEducationScreen(
-                education = education,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedEducation ->
-                    screenViewModel.updateEducation(savedEducation)
-                    editingEducation = null
-                },
-                onDelete = {
-                    screenViewModel.deleteEducation(
-                        educationId = education.id,
-                        onSuccess = { editingEducation = null },
-                        onError = { /* Show error toast */ }
-                    )
-                },
-                onCancel = { editingEducation = null }
-            )
-        }
+            // Edit Education Screen
+            editingEducation?.let { education ->
+                AddEditEducationScreen(
+                    education = education,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onSave = { savedEducation ->
+                        screenViewModel.updateEducation(savedEducation)
+                        editingEducation = null
+                    },
+                    onDelete = {
+                        screenViewModel.deleteEducation(
+                            educationId = education.id,
+                            onSuccess = { editingEducation = null },
+                            onError = { /* Show error toast */ }
+                        )
+                    },
+                    onCancel = { editingEducation = null }
+                )
+            }
         
-        // Add Certificate Screen
-        if (showAddCertificate) {
-            AddEditCertificateScreen(
-                certificate = null,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedCertificate ->
-                    screenViewModel.addCertificate(savedCertificate)
-                    showAddCertificate = false
-                },
-                onDelete = null,
-                onCancel = { showAddCertificate = false }
-            )
-        }
+            // Add Certificate Screen
+            if (showAddCertificate) {
+                AddEditCertificateScreen(
+                    certificate = null,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    onSave = { savedCertificate ->
+                        screenViewModel.addCertificate(savedCertificate)
+                        showAddCertificate = false
+                    },
+                    onDelete = null,
+                    onCancel = { showAddCertificate = false }
+                )
+            }
         
-        // Edit Certificate Screen
-        editingCertificate?.let { certificate ->
-            AddEditCertificateScreen(
-                certificate = certificate,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedCertificate ->
-                    screenViewModel.updateCertificate(savedCertificate)
-                    editingCertificate = null
-                },
-                onDelete = {
-                    screenViewModel.deleteCertificate(
-                        certificateId = certificate.id,
-                        onSuccess = { editingCertificate = null },
-                        onError = { /* Show error toast */ }
-                    )
-                },
-                onCancel = { editingCertificate = null }
-            )
-        }
+            // Edit Certificate Screen
+            editingCertificate?.let { certificate ->
+                AddEditCertificateScreen(
+                    certificate = certificate,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    onSave = { savedCertificate ->
+                        screenViewModel.updateCertificate(savedCertificate)
+                        editingCertificate = null
+                    },
+                    onDelete = {
+                        screenViewModel.deleteCertificate(
+                            certificateId = certificate.id,
+                            onSuccess = { editingCertificate = null },
+                            onError = { /* Show error toast */ }
+                        )
+                    },
+                    onCancel = { editingCertificate = null }
+                )
+            }
         
-        // View Certificate Detail Modal
-        viewingCertificate?.let { certificate ->
-            CertificateDetailModal(
-                certificate = certificate,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                certificates = uiState.profile?.certificates.orEmpty(),
-                onDismiss = { viewingCertificate = null }
-            )
-        }
+            // View Certificate Detail Modal
+            viewingCertificate?.let { certificate ->
+                CertificateDetailModal(
+                    certificate = certificate,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    certificates = uiState.profile?.certificates.orEmpty(),
+                    onDismiss = { viewingCertificate = null }
+                )
+            }
         
-        // Add Achievement Screen
-        if (showAddAchievement) {
-            AddEditAchievementScreen(
-                achievement = null,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedAchievement ->
-                    screenViewModel.addAchievement(savedAchievement)
-                    showAddAchievement = false
-                },
-                onDelete = null,
-                onCancel = { showAddAchievement = false }
-            )
-        }
+            // Add Achievement Screen
+            if (showAddAchievement) {
+                AddEditAchievementScreen(
+                    achievement = null,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    onSave = { savedAchievement ->
+                        screenViewModel.addAchievement(savedAchievement)
+                        showAddAchievement = false
+                    },
+                    onDelete = null,
+                    onCancel = { showAddAchievement = false }
+                )
+            }
         
-        // Edit Achievement Screen
-        editingAchievement?.let { achievement ->
-            AddEditAchievementScreen(
-                achievement = achievement,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedAchievement ->
-                    screenViewModel.updateAchievement(savedAchievement)
-                    editingAchievement = null
-                },
-                onDelete = {
-                    screenViewModel.deleteAchievement(
-                        achievementId = achievement.id,
-                        onSuccess = { editingAchievement = null },
-                        onError = { /* Show error toast */ }
-                    )
-                },
-                onCancel = { editingAchievement = null }
-            )
-        }
-        
-        // View Achievement Detail Modal
-        viewingAchievement?.let { achievement ->
-            AchievementDetailModal(
-                achievement = achievement,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                achievements = uiState.profile?.achievements.orEmpty(),
-                onDismiss = { viewingAchievement = null }
-            )
+            // Edit Achievement Screen
+            editingAchievement?.let { achievement ->
+                AddEditAchievementScreen(
+                    achievement = achievement,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    onSave = { savedAchievement ->
+                        screenViewModel.updateAchievement(savedAchievement)
+                        editingAchievement = null
+                    },
+                    onDelete = {
+                        screenViewModel.deleteAchievement(
+                            achievementId = achievement.id,
+                            onSuccess = { editingAchievement = null },
+                            onError = { /* Show error toast */ }
+                        )
+                    },
+                    onCancel = { editingAchievement = null }
+                )
+            }
+
+            // View Achievement Detail Modal
+            viewingAchievement?.let { achievement ->
+                AchievementDetailModal(
+                    achievement = achievement,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    achievements = uiState.profile?.achievements.orEmpty(),
+                    onDismiss = { viewingAchievement = null }
+                )
+            }
         }
     }
 }
@@ -1170,19 +1252,6 @@ private fun EditProfileScreen(
                     )
                 }
                 item {
-                    ProfileEditTextField(
-                        label = "About",
-                        value = draft.bio,
-                        placeholder = "Tell people what you are building, learning, or looking for",
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        isGameProfileTheme = isGameProfileTheme,
-                        singleLine = false,
-                        minHeight = 116.dp,
-                        onValueChange = { onDraftChange(draft.copy(bio = it)) }
-                    )
-                }
-                item {
                     ProfileEditLocationField(
                         value = draft.location,
                         contentColor = contentColor,
@@ -1196,73 +1265,6 @@ private fun EditProfileScreen(
                             deviceLocationMessage = null
                             deviceLocationError = null
                             onDraftChange(draft.copy(location = it))
-                        }
-                    )
-                }
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        ProfileEditTextField(
-                            label = "College",
-                            value = draft.college,
-                            placeholder = "College name",
-                            contentColor = contentColor,
-                            accentColor = accentColor,
-                            isGameProfileTheme = isGameProfileTheme,
-                            modifier = Modifier.weight(1f),
-                            onValueChange = { onDraftChange(draft.copy(college = it)) }
-                        )
-                        ProfileEditTextField(
-                            label = "Branch",
-                            value = draft.branch,
-                            placeholder = "CSE, ECE...",
-                            contentColor = contentColor,
-                            accentColor = accentColor,
-                            isGameProfileTheme = isGameProfileTheme,
-                            modifier = Modifier.weight(1f),
-                            onValueChange = { onDraftChange(draft.copy(branch = it)) }
-                        )
-                    }
-                }
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        ProfileEditTextField(
-                            label = "Degree",
-                            value = draft.degree,
-                            placeholder = "B.Tech",
-                            contentColor = contentColor,
-                            accentColor = accentColor,
-                            isGameProfileTheme = isGameProfileTheme,
-                            modifier = Modifier.weight(1f),
-                            onValueChange = { onDraftChange(draft.copy(degree = it)) }
-                        )
-                        ProfileEditTextField(
-                            label = "Current Year",
-                            value = draft.currentYear,
-                            placeholder = "1-5",
-                            contentColor = contentColor,
-                            accentColor = accentColor,
-                            isGameProfileTheme = isGameProfileTheme,
-                            modifier = Modifier.weight(1f),
-                            onValueChange = { value ->
-                                onDraftChange(
-                                    draft.copy(currentYear = value.filter { it.isDigit() }.take(1))
-                                )
-                            }
-                        )
-                    }
-                }
-                item {
-                    ProfileEditTextField(
-                        label = "Graduation Year",
-                        value = draft.graduationYear,
-                        placeholder = "2027",
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        isGameProfileTheme = isGameProfileTheme,
-                        onValueChange = { value ->
-                            onDraftChange(
-                                draft.copy(graduationYear = value.filter { it.isDigit() }.take(4))
-                            )
                         }
                     )
                 }
@@ -1723,12 +1725,12 @@ private fun ProfileContent(
     onToggleFollow: () -> Unit,
     onToggleProfileSave: () -> Unit,
     onFilterChange: (String) -> Unit,
-    onLoadMore: () -> Unit,
     onYearChange: (Int) -> Unit,
     onEditBio: () -> Unit,
     onSaveBio: () -> Unit,
     onCancelEditBio: () -> Unit,
     onBioChange: (String) -> Unit,
+    onEditInterests: () -> Unit,
     onToggleOpenToWork: (Boolean) -> Unit,
     onOpenConnections: () -> Unit,
     onOpenFollowers: () -> Unit,
@@ -1755,24 +1757,29 @@ private fun ProfileContent(
     onAddExperience: () -> Unit = {},
     onEditExperience: (Experience) -> Unit = {},
     onViewExperience: (Experience) -> Unit = {},
+    onDeleteExperience: (Experience) -> Unit = {},
     // Education callbacks
     onAddEducation: () -> Unit = {},
     onEditEducation: (Education) -> Unit = {},
     onViewEducation: (Education) -> Unit = {},
+    onDeleteEducation: (Education) -> Unit = {},
     // Certificate callbacks
     onAddCertificate: () -> Unit = {},
     onEditCertificate: (Certificate) -> Unit = {},
     onViewCertificate: (Certificate) -> Unit = {},
+    onDeleteCertificate: (Certificate) -> Unit = {},
     // Achievement callbacks
     onAddAchievement: () -> Unit = {},
     onEditAchievement: (Achievement) -> Unit = {},
     onViewAchievement: (Achievement) -> Unit = {},
+    onDeleteAchievement: (Achievement) -> Unit = {},
     // Skills callbacks
     onAddSkill: () -> Unit = {},
     onRemoveSkill: (UserSkill) -> Unit = {},
     onDeleteFeedPost: (String) -> Unit = {}
 ) {
     val profile = uiState.profile!!
+    val profileAppearance = currentVormexAppearance()
     val profileThemeKey = if (uiState.isOwner) {
         normalizeProfileThemeKey(profileThemeOverride ?: profile.user.profileTheme)
     } else {
@@ -1780,41 +1787,16 @@ private fun ProfileContent(
     }
     val isGameProfileTheme = profileThemeKey == GameRetroProfileThemeKey
     val listState = rememberLazyListState()
-    val isGitHubItemVisible by remember(listState, profile.github.connected, uiState.isOwner) {
-        derivedStateOf {
-            if (!(profile.github.connected || uiState.isOwner)) return@derivedStateOf false
-
-            val layoutInfo = listState.layoutInfo
-            val githubItem = layoutInfo.visibleItemsInfo.firstOrNull { it.key == ProfileGitHubSectionKey }
-                ?: return@derivedStateOf false
-
-            val viewportStart = layoutInfo.viewportStartOffset
-            val viewportEnd = layoutInfo.viewportEndOffset
-            val visibleTop = max(githubItem.offset, viewportStart)
-            val visibleBottom = min(githubItem.offset + githubItem.size, viewportEnd)
-            val visibleHeight = (visibleBottom - visibleTop).coerceAtLeast(0)
-            val visibleRatio = visibleHeight.toFloat() / githubItem.size.coerceAtLeast(1)
-            visibleRatio >= 0.22f
-        }
+    val profileSectionSeparatorColor = if (isDarkTheme) {
+        contentColor.copy(alpha = 0.08f)
+    } else {
+        Color(0xFFF3F2EF)
     }
-    var shouldAnimateGitHubSection by remember(
-        profile.user.username,
-        profile.github.username,
-        profile.github.lastSyncedAt,
-        profile.github.contributionCalendar?.totalContributions,
-        uiState.isOwner
-    ) { mutableStateOf(false) }
-
-    LaunchedEffect(isGitHubItemVisible) {
-        if (isGitHubItemVisible) {
-            shouldAnimateGitHubSection = true
-        }
-    }
-    
     LazyColumn(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
+            .background(if (isGameProfileTheme || isDarkTheme) profileAppearance.backgroundColor else profileSectionSeparatorColor)
             .then(if (isGameProfileTheme) Modifier.background(RetroGameCream) else Modifier),
         contentPadding = PaddingValues(bottom = 100.dp)
     ) {
@@ -1884,7 +1866,7 @@ private fun ProfileContent(
         
         // About Section
         if (!isGameProfileTheme) item {
-            Spacer(Modifier.height(12.dp))
+            ProfileSectionSeparator(profileSectionSeparatorColor)
             AboutSection(
                 user = profile.user,
                 backdrop = backdrop,
@@ -1902,18 +1884,29 @@ private fun ProfileContent(
                 onToggleOpenToWork = onToggleOpenToWork
             )
         }
+
+        if (!isGameProfileTheme && (profile.user.interests.isNotEmpty() || uiState.isOwner)) item {
+            ProfileSectionSeparator(profileSectionSeparatorColor)
+            InterestsSection(
+                interests = profile.user.interests,
+                backdrop = backdrop,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                isOwner = uiState.isOwner,
+                onEditInterests = onEditInterests
+            )
+        }
         
         // GitHub Stats Section
         if (!isGameProfileTheme && (profile.github.connected || uiState.isOwner)) {
             item(key = ProfileGitHubSectionKey) {
-                Spacer(Modifier.height(12.dp))
+                ProfileSectionSeparator(profileSectionSeparatorColor)
                 GitHubSection(
                     github = profile.github,
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     isOwner = uiState.isOwner,
-                    isVisible = shouldAnimateGitHubSection,
                     isConnecting = uiState.isGitHubConnecting,
                     isSyncing = uiState.isGitHubSyncing,
                     isDisconnecting = uiState.isGitHubDisconnecting,
@@ -1927,7 +1920,7 @@ private fun ProfileContent(
         
         // Activity Calendar Section
         if (!isGameProfileTheme) item {
-            Spacer(Modifier.height(12.dp))
+            ProfileSectionSeparator(profileSectionSeparatorColor)
             ActivityCalendarSection(
                 heatmap = uiState.activityHeatmap,
                 stats = profile.stats,
@@ -1943,7 +1936,7 @@ private fun ProfileContent(
         // Skills Section
         if (profile.skills.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
+                ProfileSectionSeparator(profileSectionSeparatorColor)
                 if (isGameProfileTheme) {
                     RetroGameSkillsSection(
                         skills = profile.skills,
@@ -1968,7 +1961,7 @@ private fun ProfileContent(
         // Projects Section
         if (profile.projects.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
+                ProfileSectionSeparator(profileSectionSeparatorColor)
                 if (isGameProfileTheme) {
                     RetroGameProjectsSection(
                         projects = profile.projects,
@@ -1997,7 +1990,7 @@ private fun ProfileContent(
         // Experience Section
         if (profile.experiences.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
+                ProfileSectionSeparator(profileSectionSeparatorColor)
                 if (isGameProfileTheme) {
                     RetroGameExperienceSection(
                         experiences = profile.experiences,
@@ -2015,7 +2008,8 @@ private fun ProfileContent(
                         isOwner = uiState.isOwner,
                         onAddExperience = onAddExperience,
                         onEditExperience = onEditExperience,
-                        onViewExperience = onViewExperience
+                        onViewExperience = onViewExperience,
+                        onDeleteExperience = onDeleteExperience
                     )
                 }
             }
@@ -2024,7 +2018,7 @@ private fun ProfileContent(
         // Education Section
         if (profile.education.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
+                ProfileSectionSeparator(profileSectionSeparatorColor)
                 if (isGameProfileTheme) {
                     RetroGameEducationSection(
                         education = profile.education,
@@ -2042,7 +2036,8 @@ private fun ProfileContent(
                         isOwner = uiState.isOwner,
                         onAddEducation = onAddEducation,
                         onEditEducation = onEditEducation,
-                        onViewEducation = onViewEducation
+                        onViewEducation = onViewEducation,
+                        onDeleteEducation = onDeleteEducation
                     )
                 }
             }
@@ -2051,7 +2046,7 @@ private fun ProfileContent(
         // Certificates Section
         if (profile.certificates.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
+                ProfileSectionSeparator(profileSectionSeparatorColor)
                 if (isGameProfileTheme) {
                     RetroGameCertificatesSection(
                         certificates = profile.certificates,
@@ -2069,7 +2064,8 @@ private fun ProfileContent(
                         isOwner = uiState.isOwner,
                         onAddCertificate = onAddCertificate,
                         onEditCertificate = onEditCertificate,
-                        onViewCertificate = onViewCertificate
+                        onViewCertificate = onViewCertificate,
+                        onDeleteCertificate = onDeleteCertificate
                     )
                 }
             }
@@ -2078,7 +2074,7 @@ private fun ProfileContent(
         // Achievements Section
         if (profile.achievements.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
+                ProfileSectionSeparator(profileSectionSeparatorColor)
                 if (isGameProfileTheme) {
                     RetroGameAchievementsSection(
                         achievements = profile.achievements,
@@ -2096,15 +2092,16 @@ private fun ProfileContent(
                         isOwner = uiState.isOwner,
                         onAddAchievement = onAddAchievement,
                         onEditAchievement = onEditAchievement,
-                        onViewAchievement = onViewAchievement
+                        onViewAchievement = onViewAchievement,
+                        onDeleteAchievement = onDeleteAchievement
                     )
                 }
             }
         }
         
-        // Activity Feed Section
+        // Profile activity feed cards
         item(key = "profile_activity_header", contentType = "profile_activity_header") {
-            Spacer(Modifier.height(12.dp))
+            ProfileSectionSeparator(profileSectionSeparatorColor)
             if (isGameProfileTheme) {
                 RetroGameActivityFeedHeaderSection(
                     currentFilter = uiState.feedFilter,
@@ -2121,20 +2118,12 @@ private fun ProfileContent(
             }
         }
 
-        item(key = "profile_activity_grid", contentType = "profile_activity_grid") {
-            Spacer(Modifier.height(12.dp))
-            if (isGameProfileTheme) {
-                RetroGameActivityFeedGridSection(
-                    items = uiState.feedItems,
-                    isLoading = uiState.isLoadingFeed,
-                    isOwner = uiState.isOwner,
-                    onOpenItem = onOpenFeedItem,
-                    onDeletePost = onDeleteFeedPost
-                )
-            } else {
+        if (uiState.feedItems.isEmpty() && !uiState.isLoadingFeed) {
+            item(key = "profile_activity_empty", contentType = "profile_activity_status") {
+                ProfileSectionSeparator(profileSectionSeparatorColor)
                 ActivityFeedGridSection(
-                    items = uiState.feedItems,
-                    isLoading = uiState.isLoadingFeed,
+                    items = emptyList(),
+                    isLoading = false,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     isOwner = uiState.isOwner,
@@ -2142,11 +2131,28 @@ private fun ProfileContent(
                     onDeletePost = onDeleteFeedPost
                 )
             }
+        } else {
+            items(
+                items = uiState.feedItems,
+                key = { "profile_activity_${it.entityType}_${it.id}" },
+                contentType = { "profile_activity_post" }
+            ) { item ->
+                ProfileSectionSeparator(profileSectionSeparatorColor)
+                ProfileActivityPostCard(
+                    item = item,
+                    profileUser = profile.user,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onOpenItem = onOpenFeedItem,
+                    onVotePoll = onVotePoll
+                )
+            }
         }
 
         if (uiState.isLoadingFeed) {
             item(key = "profile_activity_loading", contentType = "profile_activity_status") {
-                Spacer(Modifier.height(12.dp))
+                ProfileSectionSeparator(profileSectionSeparatorColor)
                 if (isGameProfileTheme) {
                     RetroGameActivityFeedLoadingSection()
                 } else {
@@ -2158,21 +2164,239 @@ private fun ProfileContent(
             }
         }
 
-        if (uiState.feedHasMore && !uiState.isLoadingFeed) {
-            item(key = "profile_activity_load_more", contentType = "profile_activity_status") {
-                Spacer(Modifier.height(12.dp))
-                if (isGameProfileTheme) {
-                    RetroGameActivityFeedLoadMoreSection(onLoadMore = onLoadMore)
-                } else {
-                    ActivityFeedLoadMoreSection(
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        onLoadMore = onLoadMore
-                    )
-                }
+    }
+}
+
+@Composable
+private fun ProfileActivityFeedOverlay(
+    items: List<FeedItem>,
+    selectedItemId: String,
+    profileUser: ProfileUser,
+    currentFilter: String,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    isDarkTheme: Boolean,
+    onDismiss: () -> Unit,
+    onOpenItem: (FeedItem) -> Unit,
+    onVotePoll: (String, String) -> Unit
+) {
+    BackHandler(onBack = onDismiss)
+
+    val initialIndex = remember(items, selectedItemId) {
+        items.indexOfFirst { it.id == selectedItemId }.coerceAtLeast(0)
+    }
+    val feedListState = rememberLazyListState(initialFirstVisibleItemIndex = initialIndex)
+    val filterLabel = when (currentFilter) {
+        "posts" -> "Posts"
+        "articles" -> "Articles"
+        "videos" -> "Reels"
+        "forum" -> "Forum"
+        else -> "All activity"
+    }
+    val background = if (isDarkTheme) Color(0xFF121212) else Color(0xFFF3F2EF)
+    val overlayInteractionSource = remember { MutableInteractionSource() }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(background)
+            .clickable(
+                interactionSource = overlayInteractionSource,
+                indication = null,
+                onClick = {}
+            )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(if (isDarkTheme) Color(0xFF191919) else Color.White)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onDismiss),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_back),
+                    contentDescription = "Back to profile",
+                    modifier = Modifier.size(22.dp),
+                    colorFilter = ColorFilter.tint(contentColor)
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                BasicText(
+                    text = "${profileUser.name}'s activity",
+                    style = TextStyle(contentColor, 17.sp, FontWeight.SemiBold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                BasicText(
+                    text = filterLabel,
+                    style = TextStyle(accentColor, 12.sp, FontWeight.Medium)
+                )
+            }
+        }
+
+        LazyColumn(
+            state = feedListState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 0.dp, top = 10.dp, end = 0.dp, bottom = 72.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(items, key = { it.id }) { item ->
+                ProfileActivityPostCard(
+                    item = item,
+                    profileUser = profileUser,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onOpenItem = onOpenItem,
+                    onVotePoll = onVotePoll
+                )
             }
         }
     }
+}
+
+@Composable
+private fun ProfileActivityPostCard(
+    item: FeedItem,
+    profileUser: ProfileUser,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    onOpenItem: (FeedItem) -> Unit,
+    onVotePoll: (String, String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val post = remember(item, profileUser) { item.toProfileActivityPost(profileUser) }
+
+    ApiPostCard(
+        post = post,
+        backdrop = backdrop,
+        contentColor = contentColor,
+        accentColor = accentColor,
+        onLike = {
+            scope.launch {
+                if (item.entityType.equals("reel", ignoreCase = true)) {
+                    ApiClient.toggleReelLike(context, item.id)
+                } else {
+                    ApiClient.toggleLike(context, item.id)
+                }
+            }
+        },
+        onComment = { onOpenItem(item) },
+        onShare = { onOpenItem(item) },
+        onVotePoll = onVotePoll,
+        onProfileClick = {},
+        onMentionClick = {},
+        onMenuAction = { _, action ->
+            when (action) {
+                "save" -> scope.launch {
+                    if (item.entityType.equals("reel", ignoreCase = true)) {
+                        ApiClient.toggleReelSave(context, item.id)
+                    } else {
+                        PostsApiService.toggleSave(context, item.id)
+                    }
+                }
+                "copy_link" -> {
+                    val isReel = item.entityType.equals("reel", ignoreCase = true)
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText(
+                            "Vormex post",
+                            if (isReel) VormexDeepLinks.reelUrl(item.id) else VormexDeepLinks.postUrl(item.id)
+                        )
+                    )
+                    Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
+                    scope.launch {
+                        if (isReel) {
+                            ApiClient.shareReel(context, item.id, shareType = "copy_link")
+                        } else {
+                            PostsApiService.sharePost(context, item.id)
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+private fun FeedItem.toProfileActivityPost(user: ProfileUser): com.kyant.backdrop.catalog.network.models.Post {
+    val media = when {
+        !images.isNullOrEmpty() -> images
+        !mediaUrls.isNullOrEmpty() -> mediaUrls
+        !videoThumbnail.isNullOrBlank() -> listOf(videoThumbnail)
+        !celebrationGifUrl.isNullOrBlank() -> listOf(celebrationGifUrl)
+        else -> emptyList()
+    }
+    val normalizedType = when {
+        contentType.equals("article", ignoreCase = true) -> "ARTICLE"
+        contentType.equals("short_video", ignoreCase = true) -> "VIDEO"
+        entityType.equals("reel", ignoreCase = true) -> "VIDEO"
+        !postType.isNullOrBlank() -> postType.uppercase()
+        media.isNotEmpty() -> "IMAGE"
+        else -> "TEXT"
+    }
+
+    return com.kyant.backdrop.catalog.network.models.Post(
+        id = id,
+        kind = if (entityType.equals("reel", ignoreCase = true)) "REEL" else "POST",
+        type = normalizedType,
+        authorId = user.id,
+        author = Author(
+            id = user.id,
+            username = user.username,
+            name = user.name,
+            profileImage = user.profileImage ?: user.avatar,
+            headline = user.headline,
+            verified = user.verified,
+            isVerified = user.isVerified,
+            profileBadgeStyle = user.profileBadgeStyle,
+            isPremium = user.isPremium
+        ),
+        content = content,
+        mediaUrls = media,
+        mediaCount = media.size,
+        videoUrl = videoUrl,
+        videoThumbnail = videoThumbnail,
+        defaultVideoId = defaultVideoId,
+        linkUrl = linkUrl,
+        linkTitle = linkTitle,
+        linkDescription = linkDescription,
+        linkDomain = linkDomain,
+        articleTitle = title.takeIf { normalizedType == "ARTICLE" },
+        articleCoverImage = media.firstOrNull().takeIf { normalizedType == "ARTICLE" },
+        articleTags = tags.orEmpty(),
+        pollEndsAt = pollEndsAt,
+        pollOptions = pollOptions,
+        userVotedOptionId = userVotedOptionId,
+        showResultsBeforeVote = showResultsBeforeVote,
+        celebrationType = celebrationType,
+        celebrationBadge = celebrationBadge,
+        celebrationGifUrl = celebrationGifUrl,
+        likesCount = likesCount,
+        commentsCount = commentsCount,
+        createdAt = createdAt,
+        updatedAt = updatedAt
+    )
+}
+
+@Composable
+private fun ProfileSectionSeparator(color: Color) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(10.dp)
+            .background(color)
+    )
 }
 
 // ==================== Retro Game Profile Theme ====================
@@ -3141,8 +3365,6 @@ private fun RetroGameActivityGridTile(
 ) {
     val context = LocalContext.current
     val item = gridItem.item
-    val canDelete = isOwner && item.entityType?.equals("post", ignoreCase = true) == true
-    var showMenu by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -3170,6 +3392,29 @@ private fun RetroGameActivityGridTile(
                 height = null,
                 contentScale = ContentScale.Crop
             )
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(RetroGameYellow.copy(alpha = 0.45f))
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                BasicText(
+                    text = when (item.contentType) {
+                        "article" -> "ARTICLE"
+                        "short_video" -> "REEL"
+                        else -> "POST"
+                    },
+                    style = TextStyle(RetroGameRed, 9.sp, FontWeight.Black, letterSpacing = 0.6.sp)
+                )
+                BasicText(
+                    text = item.title?.takeIf { it.isNotBlank() } ?: item.content,
+                    style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black, lineHeight = 14.sp),
+                    maxLines = 5,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
 
         Box(
@@ -3183,24 +3428,6 @@ private fun RetroGameActivityGridTile(
                     )
                 )
         )
-
-        if (gridItem.isVideo) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(42.dp)
-                    .background(RetroGameRed)
-                    .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Image(
-                    painter = painterResource(R.drawable.ic_play_arrow),
-                    contentDescription = "Video",
-                    modifier = Modifier.size(22.dp),
-                    colorFilter = ColorFilter.tint(Color.White)
-                )
-            }
-        }
 
         if (gridItem.mediaCount > 1) {
             Box(
@@ -3221,42 +3448,6 @@ private fun RetroGameActivityGridTile(
             }
         }
 
-        if (canDelete) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(6.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .background(Color.White)
-                        .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
-                        .clickable { showMenu = true },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        painter = painterResource(R.drawable.ic_more),
-                        contentDescription = "Post options",
-                        modifier = Modifier.size(17.dp),
-                        colorFilter = ColorFilter.tint(RetroGameInk)
-                    )
-                }
-
-                DropdownMenu(
-                    expanded = showMenu,
-                    onDismissRequest = { showMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { BasicText("Delete post", style = TextStyle(Color(0xFFDC2626), 13.sp)) },
-                        onClick = {
-                            showMenu = false
-                            onDeletePost(item.id)
-                        }
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -3277,19 +3468,6 @@ private fun RetroGameActivityFeedLoadingSection() {
                 color = RetroGameRed
             )
         }
-    }
-}
-
-@Composable
-private fun RetroGameActivityFeedLoadMoreSection(onLoadMore: () -> Unit) {
-    RetroGameSection(title = "More Posts") {
-        RetroGameButton(
-            label = "LOAD MORE ->",
-            background = RetroGameInk,
-            content = Color.White,
-            modifier = Modifier.fillMaxWidth(),
-            onClick = onLoadMore
-        )
     }
 }
 
@@ -3323,8 +3501,6 @@ private fun retroGameActivityGridItemFor(item: FeedItem): RetroGameActivityGridI
         !item.celebrationGifUrl.isNullOrBlank() -> item.celebrationGifUrl
         else -> null
     }
-
-    if (thumbnailUrl == null && !hasDefaultVideo) return null
 
     return RetroGameActivityGridItem(
         item = item,
@@ -3502,7 +3678,7 @@ private fun ProfileHeader(
     val profileMenuMutedContentColor = profileMenuAppearance.mutedContentColor
     val profileMenuDangerColor = if (profileMenuAppearance.isDarkTheme) Color(0xFFF87171) else Color(0xFFDC2626)
     val profileSaveMenuColor = if (isProfileSaved) accentColor else profileMenuContentColor
-    val profileBodySurfaceColor = if (isGlassTheme) Color.Transparent else profileMenuAppearance.cardColor
+    val profileBodySurfaceColor = profileMenuAppearance.cardColor
     val profileBodyContentColor = profileMenuAppearance.contentColor
     val profileBodyMutedContentColor = profileMenuAppearance.mutedContentColor
     val profileBodySubtleColor = if (isGlassTheme) {
@@ -3511,11 +3687,7 @@ private fun ProfileHeader(
         profileMenuAppearance.subtleColor
     }
     val profileBodyBorderColor = profileMenuAppearance.cardBorderColor
-    val profileAvatarRingColor = if (isGlassTheme) {
-        Color.White.copy(alpha = 0.72f)
-    } else {
-        profileMenuAppearance.cardColor
-    }
+    val profileAvatarRingColor = profileMenuAppearance.cardColor
     
     // Image editor state
     var showAvatarEditor by remember { mutableStateOf(false) }
@@ -3526,7 +3698,7 @@ private fun ProfileHeader(
     // Cache key to force image refresh
     var avatarCacheKey by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var bannerCacheKey by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    val avatarContainerSize = 108.dp
+    val avatarContainerSize = 104.dp
     val bannerImageUrl = user.bannerImageUrl?.takeIf { it.isNotBlank() }
     
     // Image pickers
@@ -3607,28 +3779,7 @@ private fun ProfileHeader(
     Box(
         Modifier
             .fillMaxWidth()
-            .then(
-                when {
-                    isGlassTheme -> Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { profileCardBackdropShape() },
-                        effects = {
-                            vibrancy()
-                            blur(16f.dp.toPx())
-                            lens(8f.dp.toPx(), 16f.dp.toPx())
-                        },
-                        onDrawSurface = {
-                            drawRect(profileMenuAppearance.cardColor)
-                        }
-                    )
-                    isDarkTheme -> Modifier
-                        .clip(ProfileCardShape)
-                        .background(profileMenuAppearance.cardColor)
-                    else -> Modifier
-                        .clip(ProfileCardShape)
-                        .background(profileMenuAppearance.cardColor)
-                }
-            )
+            .background(profileMenuAppearance.cardColor)
     ) {
         Column {
             // Banner
@@ -3823,15 +3974,22 @@ private fun ProfileHeader(
                             Box {
                                 Box(
                                     Modifier
+                                        .size(36.dp)
                                         .clip(CircleShape)
                                         .background(profileBodySubtleColor)
                                         .onGloballyPositioned { shareMenuAnchorBounds = it.boundsInWindow() }
                                         .clickable {
                                             showShareMenu = true
                                         }
-                                        .padding(10.dp)
+                                        .padding(8.dp),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    BasicText("↗", style = TextStyle(profileBodyContentColor, 16.sp))
+                                    Image(
+                                        painter = painterResource(R.drawable.ic_more),
+                                        contentDescription = "More options",
+                                        modifier = Modifier.size(20.dp),
+                                        colorFilter = ColorFilter.tint(profileBodyContentColor)
+                                    )
                                 }
 
                                 if (isGlassTheme) {
@@ -4531,7 +4689,8 @@ private fun ProfileHeader(
                             icon = "in",
                             label = "LinkedIn",
                             url = url,
-                            accentColor = accentColor
+                            accentColor = accentColor,
+                            showTextIcon = true
                         )
                     }
                     user.githubProfileUrl?.let { url ->
@@ -4547,8 +4706,7 @@ private fun ProfileHeader(
                             icon = "",
                             label = "Portfolio",
                             url = url,
-                            accentColor = accentColor,
-                            iconRes = R.drawable.ic_link
+                            accentColor = accentColor
                         )
                     }
                 }
@@ -4960,34 +5118,26 @@ private fun SocialLinkChip(
     label: String,
     url: String,
     accentColor: Color,
-    iconRes: Int? = null  // Optional drawable resource
+    showTextIcon: Boolean = false
 ) {
     val context = LocalContext.current
     
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(accentColor.copy(alpha = 0.15f))
+    Row(
+        modifier = Modifier
             .clickable {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                 context.startActivity(intent)
-            }
-            .padding(horizontal = 10.dp, vertical = 4.dp)
+            },
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (iconRes != null) {
-                Image(
-                    painter = painterResource(iconRes),
-                    contentDescription = label,
-                    modifier = Modifier.size(14.dp),
-                    colorFilter = ColorFilter.tint(accentColor)
-                )
-            } else {
-                BasicText(icon, style = TextStyle(accentColor, 12.sp, FontWeight.Bold))
-            }
+        if (showTextIcon && icon.isNotBlank()) {
+            BasicText(icon, style = TextStyle(accentColor, 12.sp, FontWeight.Bold))
             Spacer(Modifier.width(4.dp))
-            BasicText(label, style = TextStyle(accentColor, 12.sp))
         }
+        BasicText(
+            label,
+            style = TextStyle(accentColor, 12.sp, FontWeight.Medium)
+        )
     }
 }
 
@@ -5989,29 +6139,6 @@ private fun ProfileGamificationRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 10.dp)
-            .then(
-                when {
-                    isGlassTheme -> Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { profileCardBackdropShape() },
-                        effects = {
-                            vibrancy()
-                            blur(12f.dp.toPx())
-                            lens(6f.dp.toPx(), 12f.dp.toPx())
-                        },
-                        onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = 0.08f))
-                        }
-                    )
-                    isDarkTheme -> Modifier
-                        .clip(ProfileCardShape)
-                        .background(Color.White.copy(alpha = 0.06f))
-                    else -> Modifier
-                        .clip(ProfileCardShape)
-                        .background(Color.Black.copy(alpha = 0.035f))
-                }
-            )
-            .border(1.dp, contentColor.copy(alpha = 0.1f), ProfileCardShape)
     ) {
         Row(
             Modifier

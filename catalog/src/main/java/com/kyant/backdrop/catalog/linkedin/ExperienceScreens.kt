@@ -138,9 +138,7 @@ fun AddEditExperienceScreen(
                 isUploadingLogo = true
                 context.contentResolver.openInputStream(it)?.use { stream ->
                     val bytes = stream.readBytes()
-                    // Note: Using project image upload endpoint for now
-                    // In production, would use a dedicated logo upload endpoint
-                    ApiClient.uploadProjectImage(context, bytes)
+                    ApiClient.uploadLogoImage(context, bytes)
                         .onSuccess { imageUrl ->
                             if (imageUrl.isNotEmpty()) {
                                 logo = imageUrl

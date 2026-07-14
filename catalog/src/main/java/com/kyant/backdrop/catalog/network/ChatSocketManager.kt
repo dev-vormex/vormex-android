@@ -89,6 +89,15 @@ object ChatSocketManager {
     private val _reactionFlow = MutableSharedFlow<ReactionEvent>(replay = 0, extraBufferCapacity = 5)
     val reactionFlow = _reactionFlow.asSharedFlow()
 
+    private val _messagesDeliveredFlow = MutableSharedFlow<MessagesDeliveredEvent>(replay = 0, extraBufferCapacity = 8)
+    val messagesDeliveredFlow = _messagesDeliveredFlow.asSharedFlow()
+
+    private val _messageDeliveredFlow = MutableSharedFlow<MessageDeliveredEvent>(replay = 0, extraBufferCapacity = 16)
+    val messageDeliveredFlow = _messageDeliveredFlow.asSharedFlow()
+
+    private val _presenceFlow = MutableSharedFlow<PresenceEvent>(replay = 0, extraBufferCapacity = 16)
+    val presenceFlow = _presenceFlow.asSharedFlow()
+
     private val _allChatsClearedFlow = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 2)
     val allChatsClearedFlow = _allChatsClearedFlow.asSharedFlow()
     
@@ -106,6 +115,24 @@ object ChatSocketManager {
         val userId: String,
         val emoji: String,
         val action: String
+    )
+
+    data class MessagesDeliveredEvent(
+        val conversationId: String,
+        val deliveredTo: String,
+        val deliveredAt: String
+    )
+
+    data class MessageDeliveredEvent(
+        val messageId: String,
+        val conversationId: String,
+        val deliveredAt: String
+    )
+
+    data class PresenceEvent(
+        val userId: String,
+        val isOnline: Boolean,
+        val lastActiveAt: String?
     )
 
     fun isConnected(): Boolean = socket?.connected() == true && isAuthenticated
@@ -229,6 +256,21 @@ object ChatSocketManager {
                 on("chat:messages_read") { args ->
                     handleMessagesRead(args)
                 }
+                on("chat:messages_delivered") { args ->
+                    handleMessagesDelivered(args)
+                }
+                on("chat:message_delivered") { args ->
+                    handleMessageDelivered(args)
+                }
+                on("user:online") { args ->
+                    handlePresence(args, "user:online", fallbackIsOnline = true)
+                }
+                on("user:offline") { args ->
+                    handlePresence(args, "user:offline", fallbackIsOnline = false)
+                }
+                on("user:status") { args ->
+                    handlePresence(args, "user:status", fallbackIsOnline = false)
+                }
                 on("chat:message_deleted") { args ->
                     handleMessageDeleted(args)
                 }
@@ -308,7 +350,31 @@ object ChatSocketManager {
 
         val emitted = _newMessageFlow.tryEmit(conversationId to message.toString())
         Log.d(TAG, "📩 Flow emit result ($source): $emitted")
+        acknowledgeMessageDelivery(conversationId, messageId, message)
         showMessageNotificationIfNeeded(conversationId, message)
+    }
+
+    private fun acknowledgeMessageDelivery(conversationId: String, messageId: String, message: JSONObject) {
+        val userId = currentUserId?.takeIf { it.isNotBlank() } ?: return
+        val senderId = message.optJSONObject("sender")?.optString("id")?.takeIf { it.isNotBlank() }
+            ?: message.optString("senderId")
+        val receiverId = message.optString("receiverId")
+        val targetsCurrentUser = if (receiverId.isNotBlank()) {
+            receiverId == userId
+        } else {
+            senderId.isNotBlank() && senderId != userId
+        }
+        if (!targetsCurrentUser) return
+
+        if (socket?.connected() != true) {
+            Log.d(TAG, "📬 Skipping chat:delivered ack for $messageId - socket not connected")
+            return
+        }
+
+        val payload = JSONObject().put("conversationId", conversationId)
+        messageId.takeIf { it.isNotBlank() }?.let { payload.put("messageId", it) }
+        socket?.emit("chat:delivered", payload)
+        Log.d(TAG, "📬 Emitted chat:delivered conversation=$conversationId message=$messageId")
     }
 
     fun emitExternalIncomingMessage(
@@ -447,6 +513,70 @@ object ChatSocketManager {
         }
     }
     
+    private fun handleMessagesDelivered(args: Array<Any>) {
+        if (args.isEmpty()) return
+        try {
+            val obj = parseSocketObject(args[0]) ?: return
+            Log.d(
+                TAG,
+                "📬 chat:messages_delivered conversation=${obj.optString("conversationId")} " +
+                    "deliveredTo=${obj.optString("deliveredTo")} transport=${currentTransportName ?: "unknown"}"
+            )
+            _messagesDeliveredFlow.tryEmit(
+                MessagesDeliveredEvent(
+                    conversationId = obj.optString("conversationId"),
+                    deliveredTo = obj.optString("deliveredTo"),
+                    deliveredAt = obj.optString("deliveredAt")
+                )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling messages delivered", e)
+        }
+    }
+
+    private fun handleMessageDelivered(args: Array<Any>) {
+        if (args.isEmpty()) return
+        try {
+            val obj = parseSocketObject(args[0]) ?: return
+            Log.d(
+                TAG,
+                "📬 chat:message_delivered message=${obj.optString("messageId")} " +
+                    "conversation=${obj.optString("conversationId")}"
+            )
+            _messageDeliveredFlow.tryEmit(
+                MessageDeliveredEvent(
+                    messageId = obj.optString("messageId"),
+                    conversationId = obj.optString("conversationId"),
+                    deliveredAt = obj.optString("deliveredAt")
+                )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling message delivered", e)
+        }
+    }
+
+    private fun handlePresence(args: Array<Any>, source: String, fallbackIsOnline: Boolean) {
+        if (args.isEmpty()) return
+        try {
+            val obj = parseSocketObject(args[0]) ?: return
+            val userId = obj.optString("userId")
+            if (userId.isBlank()) return
+            val isOnline = obj.optBoolean("isOnline", fallbackIsOnline)
+            val lastActiveAt = obj.optString("lastActiveAt")
+                .takeIf { it.isNotBlank() && it != "null" }
+            Log.d(TAG, "🟢 $source user=$userId isOnline=$isOnline lastActiveAt=${lastActiveAt ?: "unknown"}")
+            _presenceFlow.tryEmit(
+                PresenceEvent(
+                    userId = userId,
+                    isOnline = isOnline,
+                    lastActiveAt = lastActiveAt
+                )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling presence event ($source)", e)
+        }
+    }
+
     private fun handleMessageDeleted(args: Array<Any>) {
         if (args.isEmpty()) return
         try {
@@ -729,5 +859,12 @@ object ChatSocketManager {
 
     fun markRead(conversationId: String) {
         socket?.emit("chat:mark_read", JSONObject().put("conversationId", conversationId))
+    }
+
+    fun checkUserStatus(userId: String) {
+        if (userId.isBlank()) return
+        val activeSocket = socket ?: return
+        Log.d(TAG, "🟢 Emitting user:check_status for user=$userId connected=${activeSocket.connected()}")
+        activeSocket.emit("user:check_status", JSONObject().put("userId", userId))
     }
 }

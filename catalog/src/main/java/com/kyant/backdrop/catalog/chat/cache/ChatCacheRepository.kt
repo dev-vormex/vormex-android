@@ -253,6 +253,50 @@ class ChatCacheRepository(
         }
     }
 
+    suspend fun markOwnMessagesAsDeliveredToPeer(
+        cacheOwnerId: String,
+        conversationId: String,
+        currentUserId: String,
+        deliveredAt: String?
+    ) = withContext(Dispatchers.IO) {
+        val messages = dao.getMessages(cacheOwnerId, conversationId)
+        val updatedMessages = messages.map { entity ->
+            if (entity.senderId == currentUserId && entity.status == "SENT") {
+                entity.copy(
+                    status = "DELIVERED",
+                    deliveredAt = deliveredAt?.takeIf { it.isNotBlank() } ?: entity.deliveredAt,
+                    updatedAtEpochMillis = System.currentTimeMillis()
+                )
+            } else {
+                entity
+            }
+        }
+        if (updatedMessages.isNotEmpty()) {
+            dao.upsertMessages(updatedMessages)
+        }
+    }
+
+    suspend fun markCachedMessageDelivered(
+        cacheOwnerId: String,
+        conversationId: String,
+        messageId: String,
+        deliveredAt: String?
+    ) = withContext(Dispatchers.IO) {
+        val target = dao.getMessages(cacheOwnerId, conversationId)
+            .firstOrNull { it.messageId == messageId }
+            ?: return@withContext
+        if (target.status != "SENT") return@withContext
+        dao.upsertMessages(
+            listOf(
+                target.copy(
+                    status = "DELIVERED",
+                    deliveredAt = deliveredAt?.takeIf { it.isNotBlank() } ?: target.deliveredAt,
+                    updatedAtEpochMillis = System.currentTimeMillis()
+                )
+            )
+        )
+    }
+
     suspend fun updateCachedMessageContent(
         cacheOwnerId: String,
         conversationId: String,

@@ -13,8 +13,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class ProfilePeopleSheetKind(
     val title: String,
@@ -122,6 +124,10 @@ data class ProfileUiState(
     val editedBio: String = "",
     val isSavingBio: Boolean = false,
     val bioEditError: String? = null,
+    val isEditingInterests: Boolean = false,
+    val editedInterests: List<String> = emptyList(),
+    val isSavingInterests: Boolean = false,
+    val interestsEditError: String? = null,
     val isEditingProfile: Boolean = false,
     val profileEditDraft: ProfileEditDraft? = null,
     val isSavingProfile: Boolean = false,
@@ -173,6 +179,8 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
     private val profileCacheStore = ProfileCacheStore(context)
     private var lastCacheOwnerId: String? = null
     private var lastCacheTargetKey: String? = null
+    private var feedRequestVersion: Int = 0
+    private val feedItemsByFilter = mutableMapOf<String, List<FeedItem>>()
     
     fun loadProfile(userId: String? = null, forceRefresh: Boolean = false) {
         val effectiveUserId = userId ?: "me"
@@ -211,13 +219,16 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
             lastCacheOwnerId = cacheOwnerId
             lastCacheTargetKey = cacheTargetKey
             val cachedSnapshot = if (!forceRefresh) {
-                profileCacheStore.get(cacheOwnerId, cacheTargetKey, persistentCacheMaxAgeMillis)
+                withContext(Dispatchers.IO) {
+                    profileCacheStore.get(cacheOwnerId, cacheTargetKey, persistentCacheMaxAgeMillis)
+                }
             } else {
                 null
             }
             val cachedProfile = cachedSnapshot?.profile
             val hasCachedContentToShow = hasStaleContentToShow || cachedProfile != null
             if (!hasStaleContentToShow && cachedProfile != null) {
+                feedItemsByFilter["all"] = cachedProfile.recentActivity.items
                 _uiState.value = _uiState.value.copy(
                     profile = cachedProfile,
                     isLoading = false,
@@ -255,6 +266,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                 !forceRefresh &&
                 (System.currentTimeMillis() - cachedSnapshot.cachedAtMillis) < cacheTtlMillis
             ) {
+                loadCompleteFeed(_uiState.value.feedFilter, keepCurrentItems = true)
                 isProfileRequestInFlight = false
                 return@launch
             }
@@ -344,6 +356,8 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                         feedHasMore = mergedProfile.recentActivity.hasMore,
                         visitLoaderGiftIdHint = mergedProfile.user.visitLoaderGiftId
                     )
+                    feedItemsByFilter["all"] = mergedProfile.recentActivity.items
+                    loadCompleteFeed(_uiState.value.feedFilter, keepCurrentItems = true)
                     
                     if (!isOwner) {
                         HomeFeedInteractionMemory.recordProfileVisit(
@@ -393,8 +407,11 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
             add("@${profile.user.username}")
         }.filter { it.isNotBlank() }
 
-        keys.forEach { targetKey ->
-            profileCacheStore.put(cacheOwnerId, targetKey, profile)
+        // Encodes the full profile JSON per key; keep it off the main thread.
+        viewModelScope.launch(Dispatchers.IO) {
+            keys.forEach { targetKey ->
+                profileCacheStore.put(cacheOwnerId, targetKey, profile)
+            }
         }
     }
 
@@ -612,55 +629,74 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
     }
     
     fun setFeedFilter(filter: String) {
-        val userId = targetUserId ?: return
-        
+        val normalizedFilter = when (filter.lowercase()) {
+            "post" -> "posts"
+            "article" -> "articles"
+            "reel", "reels", "video" -> "videos"
+            else -> filter.lowercase()
+        }
+        if (normalizedFilter !in setOf("all", "posts", "articles", "forum", "videos")) return
+        loadCompleteFeed(normalizedFilter, keepCurrentItems = false)
+    }
+
+    /**
+     * Profile activity is intentionally loaded to completion. The profile grid and the
+     * scrollable activity viewer should never require a manual "Load more" action.
+     */
+    private fun loadCompleteFeed(filter: String, keepCurrentItems: Boolean) {
+        val userId = _uiState.value.profile?.user?.id ?: targetUserId ?: return
+        val requestVersion = ++feedRequestVersion
+        val initialItems = when {
+            keepCurrentItems && _uiState.value.feedFilter == filter -> _uiState.value.feedItems
+            else -> feedItemsByFilter[filter].orEmpty()
+        }
+
         _uiState.value = _uiState.value.copy(
             feedFilter = filter,
             feedPage = 1,
-            feedItems = emptyList(),
+            feedItems = initialItems,
+            feedHasMore = false,
             isLoadingFeed = true
         )
-        
+
         viewModelScope.launch {
-            ApiClient.getProfileFeed(context, userId, page = 1, filter = filter)
-                .onSuccess { response ->
-                    _uiState.value = _uiState.value.copy(
-                        feedItems = response.items,
-                        feedHasMore = response.hasMore,
-                        isLoadingFeed = false
-                    )
+            val loadedItems = mutableListOf<FeedItem>()
+            var page = 1
+            var hasMore: Boolean
+
+            do {
+                val result = ApiClient.getProfileFeed(
+                    context = context,
+                    userId = userId,
+                    page = page,
+                    limit = 100,
+                    filter = filter
+                )
+                if (requestVersion != feedRequestVersion) return@launch
+
+                val response = result.getOrElse {
+                    _uiState.value = _uiState.value.copy(isLoadingFeed = false, feedHasMore = false)
+                    return@launch
                 }
-                .onFailure {
-                    _uiState.value = _uiState.value.copy(isLoadingFeed = false)
-                }
-        }
-    }
-    
-    fun loadMoreFeed() {
-        val userId = targetUserId ?: return
-        if (_uiState.value.isLoadingFeed || !_uiState.value.feedHasMore) return
-        
-        val nextPage = _uiState.value.feedPage + 1
-        _uiState.value = _uiState.value.copy(isLoadingFeed = true)
-        
-        viewModelScope.launch {
-            ApiClient.getProfileFeed(
-                context, 
-                userId, 
-                page = nextPage, 
-                filter = _uiState.value.feedFilter
-            )
-                .onSuccess { response ->
-                    _uiState.value = _uiState.value.copy(
-                        feedItems = _uiState.value.feedItems + response.items,
-                        feedPage = nextPage,
-                        feedHasMore = response.hasMore,
-                        isLoadingFeed = false
-                    )
-                }
-                .onFailure {
-                    _uiState.value = _uiState.value.copy(isLoadingFeed = false)
-                }
+                loadedItems += response.items
+                hasMore = response.hasMore && response.items.isNotEmpty()
+
+                _uiState.value = _uiState.value.copy(
+                    feedItems = loadedItems.distinctBy { it.id },
+                    feedPage = page,
+                    feedHasMore = hasMore,
+                    isLoadingFeed = hasMore
+                )
+                feedItemsByFilter[filter] = _uiState.value.feedItems
+                page += 1
+            } while (hasMore)
+
+            if (requestVersion == feedRequestVersion) {
+                _uiState.value = _uiState.value.copy(
+                    feedHasMore = false,
+                    isLoadingFeed = false
+                )
+            }
         }
     }
 
@@ -987,6 +1023,71 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
         }
     }
 
+    fun startEditingInterests() {
+        _uiState.value = _uiState.value.copy(
+            isEditingInterests = true,
+            editedInterests = _uiState.value.profile?.user?.interests.orEmpty(),
+            interestsEditError = null
+        )
+    }
+
+    fun cancelEditingInterests() {
+        _uiState.value = _uiState.value.copy(
+            isEditingInterests = false,
+            isSavingInterests = false,
+            interestsEditError = null
+        )
+    }
+
+    fun updateEditedInterests(interests: List<String>) {
+        val normalized = interests
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+            .take(10)
+        _uiState.value = _uiState.value.copy(
+            editedInterests = normalized,
+            interestsEditError = null
+        )
+    }
+
+    fun saveEditedInterests() {
+        val state = _uiState.value
+        if (state.isSavingInterests) return
+        val interests = state.editedInterests
+            .map { it.trim() }
+            .filter { it.length in 2..30 }
+            .distinctBy { it.lowercase() }
+            .take(10)
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isSavingInterests = true,
+                interestsEditError = null
+            )
+            ApiClient.updateProfile(context, ProfileUpdateRequest(interests = interests))
+                .onSuccess {
+                    val currentProfile = _uiState.value.profile
+                    _uiState.value = _uiState.value.copy(
+                        isEditingInterests = false,
+                        isSavingInterests = false,
+                        editedInterests = interests,
+                        interestsEditError = null,
+                        profile = currentProfile?.copy(
+                            user = currentProfile.user.copy(interests = interests)
+                        )
+                    )
+                    persistCurrentProfileSnapshot()
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isSavingInterests = false,
+                        interestsEditError = error.message ?: "Failed to save interests"
+                    )
+                }
+        }
+    }
+
     fun startEditingProfile() {
         val user = _uiState.value.profile?.user ?: return
         _uiState.value = _uiState.value.copy(
@@ -1028,37 +1129,8 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
 
         fun optionalText(value: String): String? = value.trim().takeIf { it.isNotBlank() }
 
-        fun parseOptionalInt(
-            value: String,
-            label: String,
-            min: Int,
-            max: Int
-        ): Int? {
-            val trimmed = value.trim()
-            if (trimmed.isBlank()) return null
-            val parsed = trimmed.toIntOrNull()
-            if (parsed == null || parsed !in min..max) {
-                throw IllegalArgumentException("$label must be between $min and $max")
-            }
-            return parsed
-        }
-
-        val currentYear: Int?
-        val graduationYear: Int?
-        try {
-            currentYear = parseOptionalInt(draft.currentYear, "Current year", 1, 5)
-            graduationYear = parseOptionalInt(draft.graduationYear, "Graduation year", 1950, 2100)
-        } catch (e: IllegalArgumentException) {
-            _uiState.value = state.copy(profileEditError = e.message ?: "Please check your profile details")
-            return
-        }
-
         val headline = optionalText(draft.headline)
-        val bio = optionalText(draft.bio)
         val location = optionalText(draft.location)
-        val college = optionalText(draft.college)
-        val branch = optionalText(draft.branch)
-        val degree = optionalText(draft.degree)
         fun optionalUrl(value: String): String? =
             optionalText(value)?.let { trimmed ->
                 if ("://" in trimmed) trimmed else "https://$trimmed"
@@ -1070,13 +1142,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
 
         val explicitNullFields = buildSet {
             if (headline == null) add("headline")
-            if (bio == null) add("bio")
             if (location == null) add("location")
-            if (college == null) add("college")
-            if (branch == null) add("branch")
-            if (degree == null) add("degree")
-            if (draft.currentYear.trim().isBlank()) add("currentYear")
-            if (draft.graduationYear.trim().isBlank()) add("graduationYear")
             if (portfolioUrl == null) add("portfolioUrl")
             if (linkedinUrl == null) add("linkedinUrl")
             if (githubProfileUrl == null) add("githubProfileUrl")
@@ -1093,13 +1159,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                 data = ProfileUpdateRequest(
                     name = name,
                     headline = headline,
-                    bio = bio,
                     location = location,
-                    college = college,
-                    branch = branch,
-                    degree = degree,
-                    currentYear = currentYear,
-                    graduationYear = graduationYear,
                     portfolioUrl = portfolioUrl,
                     linkedinUrl = linkedinUrl,
                     githubProfileUrl = githubProfileUrl,
@@ -1112,13 +1172,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                         user = currentProfile.user.copy(
                             name = name,
                             headline = headline,
-                            bio = bio,
                             location = location,
-                            college = college,
-                            branch = branch,
-                            degree = degree,
-                            currentYear = currentYear,
-                            graduationYear = graduationYear,
                             portfolioUrl = portfolioUrl,
                             linkedinUrl = linkedinUrl,
                             githubProfileUrl = githubProfileUrl,
@@ -1131,7 +1185,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                         isSavingProfile = false,
                         profileEditDraft = null,
                         profileEditError = null,
-                        editedBio = bio.orEmpty()
+                        editedBio = currentProfile.user.bio.orEmpty()
                     )
                     persistCurrentProfileSnapshot()
                 }
@@ -1305,6 +1359,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(
             profile = _uiState.value.profile?.copy(experiences = updatedExperiences)
         )
+        persistCurrentProfileSnapshot()
     }
     
     fun updateExperience(experience: Experience) {
@@ -1319,6 +1374,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(
             profile = _uiState.value.profile?.copy(experiences = updatedExperiences)
         )
+        persistCurrentProfileSnapshot()
     }
     
     fun deleteExperience(experienceId: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
@@ -1351,6 +1407,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(
             profile = _uiState.value.profile?.copy(education = updatedEducation)
         )
+        persistCurrentProfileSnapshot()
     }
     
     fun updateEducation(education: Education) {
@@ -1365,6 +1422,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(
             profile = _uiState.value.profile?.copy(education = updatedEducation)
         )
+        persistCurrentProfileSnapshot()
     }
     
     fun deleteEducation(educationId: String, onSuccess: () -> Unit, onError: (String) -> Unit) {

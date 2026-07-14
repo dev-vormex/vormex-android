@@ -83,6 +83,7 @@ class VormexMessagingService : FirebaseMessagingService() {
         const val ACTION_GROUP_CHAT = "group_chat"
         const val ACTION_HACKATHONS = "hackathons"
         const val ACTION_SKILL_SWAP = "skill_swap"
+        const val ACTION_CROSSED_PATHS = "crossed_paths"
         
         // Intent extras
         const val EXTRA_ACTION = "notification_action"
@@ -280,6 +281,10 @@ class VormexMessagingService : FirebaseMessagingService() {
                 }
                 
                 when {
+                    type.equals("crossed_paths_summary", ignoreCase = true) ||
+                    data["screen"].equals("crossed_paths", ignoreCase = true) -> {
+                        putExtra(EXTRA_ACTION, ACTION_CROSSED_PATHS)
+                    }
                     type.contains("group_message", ignoreCase = true) ||
                         (type.contains("group", ignoreCase = true) && type.contains("message", ignoreCase = true)) -> {
                         putExtra(EXTRA_ACTION, ACTION_GROUP_CHAT)

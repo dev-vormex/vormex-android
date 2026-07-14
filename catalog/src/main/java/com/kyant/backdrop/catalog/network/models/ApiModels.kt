@@ -1131,7 +1131,8 @@ data class Education(
     val isCurrent: Boolean = false,
     val grade: String? = null,
     val activities: String? = null,
-    val description: String? = null
+    val description: String? = null,
+    val logo: String? = null
 )
 
 @Serializable
@@ -1144,7 +1145,8 @@ data class EducationInput(
     val isCurrent: Boolean? = null,
     val grade: String? = null,
     val activities: String? = null,
-    val description: String? = null
+    val description: String? = null,
+    val logo: String? = null
 )
 
 @Serializable
@@ -1211,6 +1213,12 @@ data class FeatureProjectResponse(
 data class ProjectImageUploadResponse(
     val url: String? = null,
     val imageUrl: String? = null
+)
+
+@Serializable
+data class LogoUploadResponse(
+    val logoUrl: String? = null,
+    val url: String? = null
 )
 
 @Serializable
