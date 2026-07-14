@@ -49,6 +49,7 @@ import java.io.IOException
 import java.net.ConnectException
 import java.net.NoRouteToHostException
 import java.net.UnknownHostException
+import java.util.Base64
 import java.util.UUID
 import javax.net.ssl.SSLException
 
@@ -348,6 +349,25 @@ object ApiClient {
         return parts.size == 3 && parts.all { it.isNotBlank() }
     }
 
+    internal fun isJwtExpiringSoon(
+        token: String,
+        nowMillis: Long = System.currentTimeMillis(),
+        refreshSkewMillis: Long = 60_000L
+    ): Boolean {
+        return runCatching {
+            val payload = token.split('.').getOrNull(1)?.takeIf { it.isNotBlank() }
+                ?: return@runCatching true
+            val decodedPayload = String(Base64.getUrlDecoder().decode(payload), Charsets.UTF_8)
+            val expiresAtSeconds = Regex("\"exp\"\\s*:\\s*(\\d+)")
+                .find(decodedPayload)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toLongOrNull()
+                ?: return@runCatching true
+            expiresAtSeconds * 1000L <= nowMillis + refreshSkewMillis
+        }.getOrDefault(true)
+    }
+
     private suspend fun clearAccessToken(context: Context) {
         cachedToken = null
         context.dataStore.edit { prefs ->
@@ -528,7 +548,9 @@ object ApiClient {
 
     suspend fun getRealtimeAccessToken(context: Context): String? {
         val existingToken = getToken(context)?.takeIf { it.isNotBlank() } ?: return null
-        if (getRefreshToken(context) == null) {
+        // Reuse a healthy access token. Refreshing here on every chat send used
+        // to rotate the session, reconnect the socket, and add a REST request.
+        if (!isJwtExpiringSoon(existingToken) || getRefreshToken(context) == null) {
             return existingToken
         }
 

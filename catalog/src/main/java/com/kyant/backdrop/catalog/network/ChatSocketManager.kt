@@ -7,6 +7,7 @@ import io.socket.client.IO
 import io.socket.client.Manager
 import io.socket.client.Socket
 import io.socket.engineio.client.Transport
+import io.socket.engineio.client.transports.Polling
 import io.socket.engineio.client.transports.WebSocket
 import io.socket.emitter.Emitter
 import kotlinx.coroutines.TimeoutCancellationException
@@ -50,7 +51,7 @@ object ChatSocketManager {
     var currentUserId: String? = null
     private var currentTransportName: String? = null
     private const val SEND_ACK_TIMEOUT_MS = 8_000L
-    private const val CONNECT_GRACE_MS = 1_000L
+    private const val CONNECT_GRACE_MS = 10_000L
     
     // Track joined rooms to re-join on reconnect
     private val joinedRooms = mutableSetOf<String>()
@@ -177,13 +178,16 @@ object ChatSocketManager {
                 reconnectionDelay = 1000
                 reconnectionDelayMax = 5000
                 timeout = 20000
-                transports = arrayOf(WebSocket.NAME)
-                upgrade = false
+                // Prefer WebSocket for latency, with polling available on
+                // restrictive mobile/campus networks that block an upgrade.
+                transports = arrayOf(WebSocket.NAME, Polling.NAME)
+                upgrade = true
                 rememberUpgrade = true
                 auth = mapOf("token" to token)
             }
             socket = IO.socket(URI.create(SOCKET_URL), opts).apply {
-                io().on(Manager.EVENT_TRANSPORT) { args ->
+                val manager = io()
+                manager.on(Manager.EVENT_TRANSPORT) { args ->
                     val transport = args.firstOrNull() as? Transport
                     currentTransportName = transport?.name
                     Log.d(TAG, "🚇 Socket transport=${currentTransportName ?: "unknown"} socketId=${id().orEmpty()}")
@@ -227,16 +231,18 @@ object ChatSocketManager {
                     Log.e(TAG, "🔴 Socket connect error: $error")
                     _connectionStateFlow.tryEmit(ConnectionState.ERROR)
                 }
-                on("reconnect") { args ->
+                manager.on(Manager.EVENT_RECONNECT) { args ->
                     Log.d(TAG, "🔄 Socket reconnected: attempt ${args.getOrNull(0)}")
                     isAuthenticated = false
                     _connectionStateFlow.tryEmit(ConnectionState.CONNECTING)
                 }
-                on("reconnect_attempt") { args ->
+                manager.on(Manager.EVENT_RECONNECT_ATTEMPT) { args ->
+                    isConnecting = true
                     Log.d(TAG, "🔄 Socket reconnecting... attempt ${args.getOrNull(0)}")
                     _connectionStateFlow.tryEmit(ConnectionState.CONNECTING)
                 }
-                on("reconnect_failed") {
+                manager.on(Manager.EVENT_RECONNECT_FAILED) {
+                    isConnecting = false
                     Log.e(TAG, "🔴 Socket reconnection failed after all attempts")
                     _connectionStateFlow.tryEmit(ConnectionState.ERROR)
                 }
@@ -644,6 +650,7 @@ object ChatSocketManager {
     fun disconnect() {
         Log.d(TAG, "Disconnecting socket")
         socket?.off()
+        socket?.io()?.off()
         socket?.disconnect()
         socket = null
         currentToken = null
