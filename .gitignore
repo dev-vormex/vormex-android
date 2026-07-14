@@ -16,3 +16,12 @@ local.properties
 
 # Keystore
 keystore/
+
+# Generated Android artifacts
+*.apk
+*.aab
+.kotlin/
+
+# Local verification screenshots
+/current-*.png
+/vormex-*.png

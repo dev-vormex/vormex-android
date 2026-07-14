@@ -1,29 +1,45 @@
 package com.kyant.backdrop.catalog.linkedin
 
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.*
 import androidx.compose.material.icons.outlined.*
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -33,24 +49,43 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.catalog.BuildConfig
+import com.kyant.backdrop.catalog.ads.VormexAdsManager
 import com.kyant.backdrop.catalog.components.LiquidToggle
 import com.kyant.backdrop.catalog.data.SettingsPreferences
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.GrowthApiService
+import com.kyant.backdrop.catalog.network.models.ProfileUpdateRequest
+import com.kyant.backdrop.catalog.notifications.PushTokenRegistrar
+import com.kyant.backdrop.catalog.ui.VormexFontOptions
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 private data class HelpFaqItemData(
     val id: String,
@@ -58,6 +93,8 @@ private data class HelpFaqItemData(
     val title: String,
     val answer: String
 )
+
+private const val ACCOUNT_DELETION_URL = "https://vormex.in/vormex-delete-account"
 
 @Composable
 private fun SettingsScreenContainer(
@@ -159,10 +196,88 @@ fun NotificationSettingsScreen(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    
+    var permissionRefreshKey by remember { mutableIntStateOf(0) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    fun refreshPermissionState() {
+        permissionRefreshKey++
+    }
+
+    fun showPermissionDeniedToast(label: String) {
+        Toast.makeText(
+            context,
+            "$label permission denied. You can enable it from app settings.",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshPermissionState()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        refreshPermissionState()
+        if (granted) {
+            PushTokenRegistrar.syncCurrentToken(context)
+        } else {
+            showPermissionDeniedToast("Notifications")
+        }
+    }
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        refreshPermissionState()
+        val granted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (!granted) showPermissionDeniedToast("Location")
+    }
+    val microphonePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        refreshPermissionState()
+        if (!granted) showPermissionDeniedToast("Microphone")
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        refreshPermissionState()
+        if (!granted) showPermissionDeniedToast("Camera")
+    }
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        refreshPermissionState()
+        if (!granted) showPermissionDeniedToast("Contacts")
+    }
+
     // Check if system notifications are enabled
-    val systemNotificationsEnabled = remember {
+    val systemNotificationsEnabled = remember(permissionRefreshKey) {
         NotificationManagerCompat.from(context).areNotificationsEnabled()
+    }
+    val notificationPermissionGranted = remember(permissionRefreshKey) {
+        isRuntimePermissionGranted(context, Manifest.permission.POST_NOTIFICATIONS) ||
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+    }
+    val locationPermissionGranted = remember(permissionRefreshKey) {
+        isRuntimePermissionGranted(context, Manifest.permission.ACCESS_FINE_LOCATION) ||
+            isRuntimePermissionGranted(context, Manifest.permission.ACCESS_COARSE_LOCATION)
+    }
+    val microphonePermissionGranted = remember(permissionRefreshKey) {
+        isRuntimePermissionGranted(context, Manifest.permission.RECORD_AUDIO)
+    }
+    val cameraPermissionGranted = remember(permissionRefreshKey) {
+        isRuntimePermissionGranted(context, Manifest.permission.CAMERA)
+    }
+    val contactsPermissionGranted = remember(permissionRefreshKey) {
+        isRuntimePermissionGranted(context, Manifest.permission.READ_CONTACTS)
     }
     
     // Collect all notification preferences
@@ -176,80 +291,194 @@ fun NotificationSettingsScreen(
     val commentNotificationsEnabled by SettingsPreferences.commentNotificationsEnabled(context).collectAsState(initial = true)
     val streakRemindersEnabled by SettingsPreferences.streakRemindersEnabled(context).collectAsState(initial = true)
     val weeklySummaryEnabled by SettingsPreferences.weeklySummaryEnabled(context).collectAsState(initial = true)
+    val showProfileLocation by SettingsPreferences.showProfileLocation(context).collectAsState(initial = true)
 
     SettingsScreenContainer(backdrop = backdrop, contentColor = contentColor, accentColor = accentColor) {
             SettingsHeader(
-                title = "Notifications",
+                title = "Permissions & notifications",
                 contentColor = contentColor,
                 onBack = onNavigateBack
             )
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp)
-                    .settingsSurface(
-                        contentColor = contentColor,
-                        cornerRadius = 18.dp,
-                        containerColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.10f else 0.12f),
-                        outlineColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.18f else 0.12f)
-                    )
-                    .padding(horizontal = 16.dp, vertical = 14.dp)
-            ) {
-                Column {
-                    BasicText(
-                        "Notification control center",
-                        style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold)
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    BasicText(
-                        "Fine tune alerts for messages, engagement, reminders, and digests.",
-                        style = TextStyle(contentColor.copy(alpha = 0.66f), 12.sp)
-                    )
-                }
-            }
-
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-            // System notifications
             item {
-                SettingsSectionHeader("System", contentColor)
+                SettingsSectionHeader("App permissions", contentColor)
             }
             
             item {
-                SettingsActionItem(
-                    title = "System Notifications",
-                    subtitle = if (systemNotificationsEnabled) "Enabled" else "Disabled - Tap to enable",
-                    icon = Icons.Outlined.NotificationsActive,
-                    backdrop = backdrop,
+                NotificationActionRow(
+                    title = "Notifications",
+                    subtitle = if (systemNotificationsEnabled) {
+                        "Allowed for push alerts and message updates"
+                    } else {
+                        "Required for push alerts and message updates"
+                    },
+                    icon = if (systemNotificationsEnabled) {
+                        Icons.Outlined.NotificationsActive
+                    } else {
+                        Icons.Outlined.NotificationsOff
+                    },
                     contentColor = contentColor,
                     accentColor = accentColor,
-                    trailingText = if (systemNotificationsEnabled) "On" else "Off",
+                    trailingText = if (systemNotificationsEnabled) "Allowed" else "Allow",
                     onClick = {
-                        openAppNotificationSettings(context)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notificationPermissionGranted) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            openAppNotificationSettings(context)
+                        }
                     }
                 )
             }
-            
-            // Master toggle
+
             item {
-                SettingsSectionHeader("General", contentColor)
+                NotificationActionRow(
+                    title = "Location",
+                    subtitle = if (locationPermissionGranted) {
+                        "Allowed for nearby people and device-based profile location"
+                    } else {
+                        "Needed for nearby people and location autofill"
+                    },
+                    icon = Icons.Outlined.LocationOn,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    trailingText = if (locationPermissionGranted) "Allowed" else "Allow",
+                    onClick = {
+                        if (locationPermissionGranted) {
+                            openAppPermissionSettings(context)
+                        } else {
+                            locationPermissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                                )
+                            )
+                        }
+                    }
+                )
+            }
+
+            item {
+                NotificationActionRow(
+                    title = "Microphone",
+                    subtitle = if (microphonePermissionGranted) {
+                        "Allowed for voice notes, AI voice, and dictation"
+                    } else {
+                        "Needed for voice notes, AI voice, and dictation"
+                    },
+                    icon = Icons.Outlined.Mic,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    trailingText = if (microphonePermissionGranted) "Allowed" else "Allow",
+                    onClick = {
+                        if (microphonePermissionGranted) {
+                            openAppPermissionSettings(context)
+                        } else {
+                            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }
+                )
+            }
+
+            item {
+                NotificationActionRow(
+                    title = "Camera",
+                    subtitle = if (cameraPermissionGranted) {
+                        "Allowed for identity checks and future in-app capture"
+                    } else {
+                        "Needed for identity checks and in-app capture"
+                    },
+                    icon = Icons.Outlined.PhotoCamera,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    trailingText = if (cameraPermissionGranted) "Allowed" else "Allow",
+                    onClick = {
+                        if (cameraPermissionGranted) {
+                            openAppPermissionSettings(context)
+                        } else {
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    }
+                )
+            }
+
+            item {
+                NotificationActionRow(
+                    title = "Contacts",
+                    subtitle = if (contactsPermissionGranted) {
+                        "Allowed for finding people you already know"
+                    } else {
+                        "Needed to find people from your contacts"
+                    },
+                    icon = Icons.Outlined.Contacts,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    trailingText = if (contactsPermissionGranted) "Allowed" else "Allow",
+                    onClick = {
+                        if (contactsPermissionGranted) {
+                            openAppPermissionSettings(context)
+                        } else {
+                            contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                        }
+                    }
+                )
+            }
+
+            item {
+                NotificationActionRow(
+                    title = "Android app permissions",
+                    subtitle = "Open system settings to manage every Vormex permission",
+                    icon = Icons.Outlined.AdminPanelSettings,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    trailingText = "Manage",
+                    onClick = {
+                        openAppPermissionSettings(context)
+                    }
+                )
+            }
+
+            item {
+                SettingsSectionHeader("Profile location", contentColor)
+            }
+
+            item {
+                NotificationLiquidToggleItem(
+                    title = "Show location on profile",
+                    subtitle = "Control whether your profile shows your live/current location",
+                    icon = Icons.Outlined.MyLocation,
+                    checked = showProfileLocation,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onCheckedChange = {
+                        coroutineScope.launch {
+                            SettingsPreferences.setShowProfileLocation(context, it)
+                        }
+                    }
+                )
+            }
+
+            item {
+                SettingsSectionHeader("Notifications", contentColor)
             }
             
             item {
                 NotificationLiquidToggleItem(
-                    title = "Push Notifications",
-                    subtitle = "Receive push notifications",
-                    icon = Icons.Outlined.Notifications,
+                    title = "Push notifications",
+                    subtitle = "Master switch for all app alerts",
+                    icon = Icons.Outlined.NotificationsNone,
                     checked = pushEnabled,
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onCheckedChange = { 
                         coroutineScope.launch { 
-                            SettingsPreferences.setPushNotificationsEnabled(context, it) 
+                            SettingsPreferences.setPushNotificationsEnabled(context, it)
+                            PushTokenRegistrar.setPushEnabled(context, it)
                         }
                     }
                 )
@@ -264,7 +493,7 @@ fun NotificationSettingsScreen(
                 NotificationLiquidToggleItem(
                     title = "Messages",
                     subtitle = "New messages and chat requests",
-                    icon = Icons.Outlined.ChatBubbleOutline,
+                    icon = Icons.Outlined.MarkChatUnread,
                     checked = messageNotificationsEnabled && pushEnabled,
                     enabled = pushEnabled,
                     backdrop = backdrop,
@@ -280,9 +509,9 @@ fun NotificationSettingsScreen(
             
             item {
                 NotificationLiquidToggleItem(
-                    title = "Connections",
+                    title = "Connection requests",
                     subtitle = "Connection requests and acceptances",
-                    icon = Icons.Outlined.Groups,
+                    icon = Icons.Outlined.PersonAddAlt,
                     checked = connectionNotificationsEnabled && pushEnabled,
                     enabled = pushEnabled,
                     backdrop = backdrop,
@@ -341,7 +570,7 @@ fun NotificationSettingsScreen(
                 NotificationLiquidToggleItem(
                     title = "Match Alerts",
                     subtitle = "Daily matches and recommendations",
-                    icon = Icons.Outlined.TrackChanges,
+                    icon = Icons.Outlined.TravelExplore,
                     checked = matchAlertsEnabled && pushEnabled,
                     enabled = pushEnabled,
                     backdrop = backdrop,
@@ -425,6 +654,80 @@ fun NotificationSettingsScreen(
 }
 
 @Composable
+private fun NotificationActionRow(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    contentColor: Color,
+    accentColor: Color,
+    trailingText: String = "",
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 2.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        NotificationPlainIcon(icon = icon, accentColor = accentColor)
+        Spacer(Modifier.width(12.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            BasicText(
+                title,
+                style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            BasicText(
+                subtitle,
+                style = TextStyle(contentColor.copy(alpha = 0.58f), 11.sp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (trailingText.isNotBlank()) {
+            Spacer(Modifier.width(10.dp))
+            BasicText(
+                trailingText,
+                style = TextStyle(accentColor, 11.sp, FontWeight.SemiBold),
+                maxLines = 1
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Icon(
+            imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
+            contentDescription = null,
+            tint = contentColor.copy(alpha = 0.34f),
+            modifier = Modifier.size(16.dp)
+        )
+    }
+}
+
+@Composable
+private fun NotificationPlainIcon(
+    icon: ImageVector,
+    accentColor: Color,
+    alpha: Float = 1f
+) {
+    Box(
+        modifier = Modifier.size(28.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = accentColor.copy(alpha = 0.88f * alpha),
+            modifier = Modifier.size(21.dp)
+        )
+    }
+}
+
+@Composable
 private fun NotificationLiquidToggleItem(
     title: String,
     subtitle: String,
@@ -437,55 +740,57 @@ private fun NotificationLiquidToggleItem(
     onCheckedChange: (Boolean) -> Unit
 ) {
     val alpha = if (enabled) 1f else 0.45f
-    val subtitleColor = contentColor.copy(alpha = 0.55f * alpha)
+    val subtitleColor = contentColor.copy(alpha = 0.58f * alpha)
 
-    Box(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .settingsSurface(contentColor = contentColor, cornerRadius = 16.dp)
+            .clip(RoundedCornerShape(14.dp))
             .clickable(enabled = enabled) { onCheckedChange(!checked) }
-            .padding(horizontal = 16.dp, vertical = 14.dp)
+            .padding(horizontal = 2.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+        NotificationPlainIcon(icon = icon, accentColor = accentColor, alpha = alpha)
+        Spacer(Modifier.width(12.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                SettingsIconBadge(icon = icon, accentColor = accentColor)
-                Spacer(Modifier.width(14.dp))
-                Column {
-                    BasicText(
-                        title,
-                        style = TextStyle(contentColor.copy(alpha = alpha), 16.sp, FontWeight.Medium)
-                    )
-                    if (subtitle.isNotEmpty()) {
-                        BasicText(
-                            subtitle,
-                            style = TextStyle(subtitleColor, 12.sp)
-                        )
-                    }
-                    if (!enabled) {
-                        BasicText(
-                            "Disabled while push notifications are off",
-                            style = TextStyle(accentColor.copy(alpha = 0.7f), 11.sp)
-                        )
-                    }
-                }
-            }
-
-            Box(
-                modifier = Modifier.alpha(alpha)
-            ) {
-                LiquidToggle(
-                    selected = { checked },
-                    onSelect = { if (enabled) onCheckedChange(it) },
-                    backdrop = backdrop
+            BasicText(
+                title,
+                style = TextStyle(contentColor.copy(alpha = alpha), 14.sp, FontWeight.SemiBold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (subtitle.isNotEmpty()) {
+                BasicText(
+                    subtitle,
+                    style = TextStyle(subtitleColor, 11.sp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
+            if (!enabled) {
+                BasicText(
+                    "Disabled while push notifications are off",
+                    style = TextStyle(accentColor.copy(alpha = 0.7f), 11.sp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        Spacer(Modifier.width(10.dp))
+        Box(modifier = Modifier.alpha(alpha)) {
+            LiquidToggle(
+                selected = { checked },
+                onSelect = { if (enabled) onCheckedChange(it) },
+                backdrop = backdrop,
+                trackWidth = 58.dp,
+                trackHeight = 26.dp,
+                thumbWidth = 36.dp,
+                thumbHeight = 22.dp
+            )
         }
     }
 }
@@ -510,7 +815,19 @@ fun PrivacySettingsScreen(
     val showProfileViews by SettingsPreferences.showProfileViews(context).collectAsState(initial = true)
     val discoverableByEmail by SettingsPreferences.discoverableByEmail(context).collectAsState(initial = true)
     val discoverableByPhone by SettingsPreferences.discoverableByPhone(context).collectAsState(initial = false)
-    
+    val showProfileLocation by SettingsPreferences.showProfileLocation(context).collectAsState(initial = true)
+    val privacyOptionsRequired by VormexAdsManager.privacyOptionsRequired.collectAsState()
+    var useLocationForDiscovery by rememberSaveable { mutableStateOf(true) }
+    var isSavingLocationPrivacy by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        ApiClient.getCurrentLocation(context)
+            .onSuccess { location ->
+                SettingsPreferences.setShowProfileLocation(context, location.shareLocationPublic)
+                useLocationForDiscovery = location.locationPermission
+            }
+    }
+
     SettingsScreenContainer(backdrop = backdrop, contentColor = contentColor, accentColor = accentColor) {
         SettingsHeader(
             title = "Privacy",
@@ -518,39 +835,34 @@ fun PrivacySettingsScreen(
             onBack = onNavigateBack
         )
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 12.dp)
-                .settingsSurface(
-                    contentColor = contentColor,
-                    cornerRadius = 20.dp,
-                    containerColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.10f else 0.12f),
-                    outlineColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.18f else 0.12f)
-                )
-                .padding(16.dp)
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                BasicText(
-                    "Privacy controls that feel clear",
-                    style = TextStyle(contentColor, 16.sp, FontWeight.SemiBold)
-                )
-                BasicText(
-                    "Choose who can find you, message you, and see your activity without digging through cramped menus.",
-                    style = TextStyle(contentColor.copy(alpha = 0.66f), 12.sp)
-                )
-            }
-        }
-        
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Profile visibility
             item {
-                SettingsSectionHeader("Profile Visibility", contentColor)
+                Column(
+                    modifier = Modifier.padding(start = 2.dp, end = 2.dp, bottom = 2.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    BasicText(
+                        "Choose what Vormex can show about you.",
+                        style = TextStyle(
+                            color = contentColor,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                    BasicText(
+                        "Changes save immediately and location privacy is synced with your account.",
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.58f),
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
+                        )
+                    )
+                }
             }
-            
+
             item {
                 SettingsOptionItem(
                     title = "Who can see your profile",
@@ -570,6 +882,7 @@ fun PrivacySettingsScreen(
                         "private" to "Only you"
                     ),
                     selectedOption = profileVisibility,
+                    flat = true,
                     onOptionSelected = { 
                         coroutineScope.launch { 
                             SettingsPreferences.setProfileVisibility(context, it) 
@@ -577,12 +890,7 @@ fun PrivacySettingsScreen(
                     }
                 )
             }
-            
-            // Messaging
-            item {
-                SettingsSectionHeader("Messaging", contentColor)
-            }
-            
+
             item {
                 SettingsOptionItem(
                     title = "Who can message you",
@@ -602,6 +910,7 @@ fun PrivacySettingsScreen(
                         "none" to "No one"
                     ),
                     selectedOption = whoCanMessage,
+                    flat = true,
                     onOptionSelected = { 
                         coroutineScope.launch { 
                             SettingsPreferences.setWhoCanMessage(context, it) 
@@ -609,16 +918,15 @@ fun PrivacySettingsScreen(
                     }
                 )
             }
-            
-            // Activity status
+
             item {
-                SettingsSectionHeader("Activity Status", contentColor)
+                SettingsSectionHeader("Activity", contentColor)
             }
-            
+
             item {
-                SettingsSwitchItem(
-                    title = "Show Online Status",
-                    subtitle = "Let others see when you're online",
+                NotificationLiquidToggleItem(
+                    title = "Online status",
+                    subtitle = if (showOnlineStatus) "People can see when you're online" else "Your online state stays hidden",
                     icon = Icons.Outlined.Lens,
                     checked = showOnlineStatus,
                     backdrop = backdrop,
@@ -631,11 +939,11 @@ fun PrivacySettingsScreen(
                     }
                 )
             }
-            
+
             item {
-                SettingsSwitchItem(
-                    title = "Show Activity Status",
-                    subtitle = "Show \"Active X minutes ago\"",
+                NotificationLiquidToggleItem(
+                    title = "Activity status",
+                    subtitle = if (showActivityStatus) "Shows recent active time" else "Recent active time is hidden",
                     icon = Icons.Outlined.Schedule,
                     checked = showActivityStatus,
                     backdrop = backdrop,
@@ -648,11 +956,11 @@ fun PrivacySettingsScreen(
                     }
                 )
             }
-            
+
             item {
-                SettingsSwitchItem(
-                    title = "Show Profile Views",
-                    subtitle = "See who viewed your profile",
+                NotificationLiquidToggleItem(
+                    title = "Profile views",
+                    subtitle = if (showProfileViews) "Profile view insights stay enabled" else "Profile view insights are off",
                     icon = Icons.Outlined.Visibility,
                     checked = showProfileViews,
                     backdrop = backdrop,
@@ -665,16 +973,83 @@ fun PrivacySettingsScreen(
                     }
                 )
             }
-            
-            // Discoverability
+
+            item {
+                SettingsSectionHeader("Location", contentColor)
+            }
+
+            item {
+                NotificationLiquidToggleItem(
+                    title = "Show profile location",
+                    subtitle = if (showProfileLocation) {
+                        "Your profile can show your saved/current location"
+                    } else {
+                        "Your profile location is hidden from others"
+                    },
+                    icon = Icons.Outlined.MyLocation,
+                    checked = showProfileLocation,
+                    enabled = !isSavingLocationPrivacy,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onCheckedChange = { enabled ->
+                        if (!isSavingLocationPrivacy) {
+                            val previous = showProfileLocation
+                            coroutineScope.launch {
+                                isSavingLocationPrivacy = true
+                                SettingsPreferences.setShowProfileLocation(context, enabled)
+                                ApiClient.updateLocationSettings(context, shareLocationPublic = enabled)
+                                    .onFailure {
+                                        SettingsPreferences.setShowProfileLocation(context, previous)
+                                        Toast.makeText(context, "Couldn't update profile location privacy.", Toast.LENGTH_SHORT).show()
+                                    }
+                                isSavingLocationPrivacy = false
+                            }
+                        }
+                    }
+                )
+            }
+
+            item {
+                NotificationLiquidToggleItem(
+                    title = "Nearby discovery",
+                    subtitle = if (useLocationForDiscovery) {
+                        "Your location can be used for nearby people"
+                    } else {
+                        "Nearby people will not use your location"
+                    },
+                    icon = Icons.Outlined.TravelExplore,
+                    checked = useLocationForDiscovery,
+                    enabled = !isSavingLocationPrivacy,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onCheckedChange = { enabled ->
+                        if (!isSavingLocationPrivacy) {
+                            val previous = useLocationForDiscovery
+                            coroutineScope.launch {
+                                isSavingLocationPrivacy = true
+                                useLocationForDiscovery = enabled
+                                ApiClient.updateLocationSettings(context, locationPermission = enabled)
+                                    .onFailure {
+                                        useLocationForDiscovery = previous
+                                        Toast.makeText(context, "Couldn't update location discovery.", Toast.LENGTH_SHORT).show()
+                                    }
+                                isSavingLocationPrivacy = false
+                            }
+                        }
+                    }
+                )
+            }
+
             item {
                 SettingsSectionHeader("Discoverability", contentColor)
             }
-            
+
             item {
-                SettingsSwitchItem(
-                    title = "Discoverable by Email",
-                    subtitle = "Let others find you by email",
+                NotificationLiquidToggleItem(
+                    title = "Email lookup",
+                    subtitle = if (discoverableByEmail) "People can find you by email" else "Email lookup is off",
                     icon = Icons.Outlined.AlternateEmail,
                     checked = discoverableByEmail,
                     backdrop = backdrop,
@@ -687,11 +1062,11 @@ fun PrivacySettingsScreen(
                     }
                 )
             }
-            
+
             item {
-                SettingsSwitchItem(
-                    title = "Discoverable by Phone",
-                    subtitle = "Let others find you by phone number",
+                NotificationLiquidToggleItem(
+                    title = "Phone lookup",
+                    subtitle = if (discoverableByPhone) "People can find you by phone" else "Phone lookup is off",
                     icon = Icons.Outlined.PhoneAndroid,
                     checked = discoverableByPhone,
                     backdrop = backdrop,
@@ -701,6 +1076,38 @@ fun PrivacySettingsScreen(
                         coroutineScope.launch { 
                             SettingsPreferences.setDiscoverableByPhone(context, it) 
                         }
+                    }
+                )
+            }
+
+            item {
+                SettingsSectionHeader("Account data", contentColor)
+            }
+
+            if (privacyOptionsRequired) {
+                item {
+                    NotificationActionRow(
+                        title = "Ad privacy choices",
+                        subtitle = "Manage ad consent and privacy options",
+                        icon = Icons.Outlined.Tune,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onClick = {
+                            VormexAdsManager.showPrivacyOptions(context)
+                        }
+                    )
+                }
+            }
+
+            item {
+                NotificationActionRow(
+                    title = "Delete account",
+                    subtitle = "Request account and associated data deletion",
+                    icon = Icons.Outlined.DeleteOutline,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onClick = {
+                        openUrl(context, ACCOUNT_DELETION_URL)
                     }
                 )
             }
@@ -718,6 +1125,7 @@ fun AppearanceSettingsScreen(
     contentColor: Color,
     accentColor: Color,
     onNavigateBack: () -> Unit,
+    canAccessProfileCustomization: Boolean = false,
     onThemeChange: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -727,13 +1135,13 @@ fun AppearanceSettingsScreen(
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
     val glassBackgroundKey by SettingsPreferences.glassBackgroundPreset(context)
         .collectAsState(initial = DefaultGlassBackgroundPresetKey)
-    val accentPaletteKey by SettingsPreferences.accentPalette(context)
-        .collectAsState(initial = DefaultAccentPaletteKey)
-    val glassMotionStyleKey by SettingsPreferences.glassMotionStyle(context)
-        .collectAsState(initial = DefaultGlassMotionStyleKey)
     val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
-    val selectedAccentColor = glassAccentPalette(accentPaletteKey).color
-    
+    val fontFamily by SettingsPreferences.fontFamily(context)
+        .collectAsState(initial = SettingsPreferences.FONT_FAMILY_SYSTEM)
+    val profileTheme by SettingsPreferences.profileTheme(context)
+        .collectAsState(initial = DefaultProfileThemeKey)
+    val showReelsOnHome by SettingsPreferences.showReelsOnHome(context).collectAsState(initial = false)
+
     SettingsScreenContainer(backdrop = backdrop, contentColor = contentColor, accentColor = accentColor) {
         SettingsHeader(
             title = "Appearance",
@@ -772,60 +1180,38 @@ fun AppearanceSettingsScreen(
             
             // Theme Preview Cards
             item {
+                val selectedThemeKey = VormexThemeMode.fromKey(themeMode).key
+                val themeOptions = listOf(
+                    "glass" to "Glass",
+                    "warm_paper" to "Warm Paper",
+                    "black_green" to "Black Green",
+                    "light" to "White",
+                    "dark" to "Dark"
+                )
+
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // Glass Theme Card
-                    ThemePreviewCard(
-                        modifier = Modifier.weight(1f),
-                        themeName = "Glass",
-                        themeKey = "glass",
-                        isSelected = themeMode == "glass",
-                        contentColor = contentColor,
-                        backdrop = backdrop,
-                        accentColor = accentColor,
-                        onClick = {
-                            coroutineScope.launch {
-                                SettingsPreferences.setThemeMode(context, "glass")
-                                onThemeChange("glass")
+                    themeOptions.forEach { (themeKey, themeName) ->
+                        ThemePreviewCard(
+                            modifier = Modifier.width(132.dp),
+                            themeName = themeName,
+                            themeKey = themeKey,
+                            isSelected = selectedThemeKey == themeKey,
+                            contentColor = contentColor,
+                            backdrop = backdrop,
+                            accentColor = accentColor,
+                            onClick = {
+                                coroutineScope.launch {
+                                    SettingsPreferences.setThemeMode(context, themeKey)
+                                    onThemeChange(themeKey)
+                                }
                             }
-                        }
-                    )
-                    
-                    // White Theme Card
-                    ThemePreviewCard(
-                        modifier = Modifier.weight(1f),
-                        themeName = "White",
-                        themeKey = "light",
-                        isSelected = themeMode == "light",
-                        contentColor = contentColor,
-                        backdrop = backdrop,
-                        accentColor = accentColor,
-                        onClick = {
-                            coroutineScope.launch {
-                                SettingsPreferences.setThemeMode(context, "light")
-                                onThemeChange("light")
-                            }
-                        }
-                    )
-                    
-                    // Dark Theme Card
-                    ThemePreviewCard(
-                        modifier = Modifier.weight(1f),
-                        themeName = "Dark",
-                        themeKey = "dark",
-                        isSelected = themeMode == "dark",
-                        contentColor = contentColor,
-                        backdrop = backdrop,
-                        accentColor = accentColor,
-                        onClick = {
-                            coroutineScope.launch {
-                                SettingsPreferences.setThemeMode(context, "dark")
-                                onThemeChange("dark")
-                            }
-                        }
-                    )
+                        )
+                    }
                 }
             }
 
@@ -852,7 +1238,7 @@ fun AppearanceSettingsScreen(
                                 contentColor = contentColor,
                                 backdrop = backdrop,
                                 accentColor = accentColor,
-                                previewAccentColor = selectedAccentColor,
+                                previewAccentColor = accentColor,
                                 onClick = {
                                     coroutineScope.launch {
                                         SettingsPreferences.setGlassBackgroundPreset(context, preset.key)
@@ -865,94 +1251,79 @@ fun AppearanceSettingsScreen(
             }
 
             item {
-                SettingsSubsectionHeader(
-                    title = "Accent Color",
-                    subtitle = "Color the active glass controls and highlights.",
-                    contentColor = contentColor
+                SettingsOptionItem(
+                    title = "Font Family",
+                    subtitle = "Change the typeface used across Vormex",
+                    icon = Icons.Outlined.TextFields,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    options = VormexFontOptions.map { it.key to it.label },
+                    selectedOption = fontFamily,
+                    onOptionSelected = { nextFontFamily ->
+                        coroutineScope.launch {
+                            SettingsPreferences.setFontFamily(context, nextFontFamily)
+                        }
+                    }
                 )
             }
 
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    GlassAccentPalettes.forEach { palette ->
-                        GlassAccentChoiceCard(
-                            palette = palette,
-                            isSelected = accentPaletteKey == palette.key,
-                            contentColor = contentColor,
-                            backdrop = backdrop,
-                            selectionColor = accentColor,
-                            onClick = {
-                                coroutineScope.launch {
-                                    SettingsPreferences.setAccentPalette(context, palette.key)
+            if (canAccessProfileCustomization) {
+                item {
+                    SettingsOptionItem(
+                        title = "Profile Theme",
+                        subtitle = "Choose how your public profile is styled for everyone",
+                        icon = Icons.Outlined.SportsEsports,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        options = VormexProfileThemeOptions.map { it.key to it.label },
+                        selectedOption = profileTheme,
+                        onOptionSelected = { nextTheme ->
+                            val normalizedTheme = normalizeProfileThemeKey(nextTheme)
+                            coroutineScope.launch {
+                                SettingsPreferences.setProfileTheme(context, normalizedTheme)
+                                val explicitNullFields = if (normalizedTheme == DefaultProfileThemeKey) {
+                                    setOf("profileTheme")
+                                } else {
+                                    emptySet()
                                 }
+                                val request = ProfileUpdateRequest(
+                                    profileTheme = normalizedTheme.takeUnless { it == DefaultProfileThemeKey }
+                                )
+                                ApiClient.updateProfile(context, request, explicitNullFields)
+                                    .onSuccess {
+                                        Toast.makeText(context, "Profile theme updated", Toast.LENGTH_SHORT).show()
+                                    }
+                                    .onFailure { error ->
+                                        SettingsPreferences.setProfileTheme(context, profileTheme)
+                                        Toast.makeText(
+                                            context,
+                                            error.message ?: "Couldn't update profile theme",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
                             }
-                        )
-                    }
+                        }
+                    )
                 }
             }
 
-            if (themeMode == "glass") {
-                item {
-                    SettingsSubsectionHeader(
-                        title = "Glass Motion",
-                        subtitle = "Choose how lively the background feels.",
-                        contentColor = contentColor
-                    )
-                }
-
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        GlassMotionStyles.forEach { motionStyle ->
-                            GlassMotionChoiceCard(
-                                motionStyle = motionStyle,
-                                isSelected = glassMotionStyleKey == motionStyle.key,
-                                reduceAnimations = reduceAnimations,
-                                contentColor = contentColor,
-                                backdrop = backdrop,
-                                accentColor = accentColor,
-                                onClick = {
-                                    coroutineScope.launch {
-                                        SettingsPreferences.setGlassMotionStyle(context, motionStyle.key)
-                                    }
-                                }
-                            )
+            item {
+                SettingsSwitchItem(
+                    title = "Show Reels on Home Page",
+                    subtitle = "Display the trending reels row above your home feed",
+                    icon = Icons.Outlined.VideoLibrary,
+                    checked = showReelsOnHome,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onCheckedChange = {
+                        coroutineScope.launch {
+                            SettingsPreferences.setShowReelsOnHome(context, it)
                         }
                     }
-                }
-
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .settingsSurface(
-                                contentColor = contentColor,
-                                cornerRadius = 16.dp
-                            )
-                            .padding(horizontal = 14.dp, vertical = 12.dp)
-                    ) {
-                        BasicText(
-                            if (reduceAnimations) {
-                                "Reduce Animations is on, so the glass scene stays still until you turn motion back on."
-                            } else {
-                                "Background changes crossfade automatically, and the selected motion style drives the ambient drift."
-                            },
-                            style = TextStyle(
-                                color = contentColor.copy(alpha = 0.7f),
-                                fontSize = 12.sp
-                            )
-                        )
-                    }
-                }
+                )
             }
 
             // Accessibility Section
@@ -1038,11 +1409,46 @@ private fun ThemePreviewCard(
                                 Color(0xFF4DD0E1)
                             )
                         )
+                        "warm_paper" -> Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFFFFFCF7),
+                                Color(0xFFF7F2EA),
+                                Color(0xFFEAD8C3)
+                            )
+                        )
+                        "black_green" -> Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFF020604),
+                                Color(0xFF0B1F13),
+                                Color(0xFF22C55E)
+                            )
+                        )
                         "light" -> Brush.linearGradient(
                             colors = listOf(Color.White, Color(0xFFF5F5F5))
                         )
                         "dark" -> Brush.linearGradient(
                             colors = listOf(Color(0xFF1A1A1A), Color.Black)
+                        )
+                        "midnight_neon" -> Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFF050A12),
+                                Color(0xFF083B5C),
+                                Color(0xFF12C8FF)
+                            )
+                        )
+                        "soft_graphite" -> Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFFF8F9FB),
+                                Color(0xFFE7EAEE),
+                                Color(0xFFB8C1CC)
+                            )
+                        )
+                        "emerald_focus" -> Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFFF2FBF7),
+                                Color(0xFFDDF8EA),
+                                Color(0xFF18A66F)
+                            )
                         )
                         else -> Brush.linearGradient(
                             colors = listOf(Color(0xFF64B5F6), Color(0xFF26C6DA))
@@ -1066,7 +1472,9 @@ private fun ThemePreviewCard(
                         .clip(RoundedCornerShape(3.dp))
                         .background(
                             when (themeKey) {
-                                "dark" -> Color.White.copy(alpha = 0.2f)
+                                "dark", "midnight_neon" -> Color.White.copy(alpha = 0.2f)
+                                "black_green" -> Color(0xFF8EF7B2).copy(alpha = 0.24f)
+                                "warm_paper" -> Color(0xFF2F2A24).copy(alpha = 0.12f)
                                 else -> Color.Black.copy(alpha = 0.1f)
                             }
                         )
@@ -1083,8 +1491,12 @@ private fun ThemePreviewCard(
                             .clip(RoundedCornerShape(4.dp))
                             .background(
                                 when (themeKey) {
-                                    "dark" -> Color.White.copy(alpha = 0.15f)
+                                    "dark", "midnight_neon" -> Color.White.copy(alpha = 0.15f)
                                     "glass" -> Color.White.copy(alpha = 0.4f)
+                                    "black_green" -> Color(0xFF36D072).copy(alpha = 0.22f)
+                                    "warm_paper" -> Color(0xFFC96442).copy(alpha = 0.18f)
+                                    "soft_graphite" -> Color.Black.copy(alpha = 0.12f)
+                                    "emerald_focus" -> Color(0xFF047857).copy(alpha = 0.18f)
                                     else -> Color.Black.copy(alpha = 0.08f)
                                 }
                             )
@@ -1106,7 +1518,10 @@ private fun ThemePreviewCard(
                                 .clip(CircleShape)
                                 .background(
                                     when (themeKey) {
-                                        "dark" -> Color.White.copy(alpha = 0.3f)
+                                        "dark", "midnight_neon" -> Color.White.copy(alpha = 0.3f)
+                                        "black_green" -> Color(0xFF36D072).copy(alpha = 0.54f)
+                                        "warm_paper" -> Color(0xFFC96442).copy(alpha = 0.42f)
+                                        "emerald_focus" -> Color(0xFF047857).copy(alpha = 0.34f)
                                         else -> Color.Black.copy(alpha = 0.2f)
                                     }
                                 )
@@ -1124,9 +1539,14 @@ private fun ThemePreviewCard(
             Icon(
                 imageVector = when (themeKey) {
                     "glass" -> Icons.Outlined.BlurOn
+                    "warm_paper" -> Icons.Outlined.Palette
+                    "black_green" -> Icons.Outlined.DarkMode
                     "light" -> Icons.Outlined.LightMode
                     "dark" -> Icons.Outlined.DarkMode
-                    else -> Icons.Outlined.BlurOn
+                    "midnight_neon" -> Icons.Outlined.DarkMode
+                    "soft_graphite" -> Icons.Outlined.Palette
+                    "emerald_focus" -> Icons.Outlined.Palette
+                    else -> Icons.Outlined.Palette
                 },
                 contentDescription = null,
                 tint = if (isSelected) accentColor else contentColor.copy(alpha = 0.7f),
@@ -1139,7 +1559,9 @@ private fun ThemePreviewCard(
                     color = if (isSelected) accentColor else contentColor,
                     fontSize = 14.sp,
                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                )
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
         
@@ -1275,155 +1697,6 @@ private fun GlassBackgroundChoiceCard(
     }
 }
 
-@Composable
-private fun GlassAccentChoiceCard(
-    palette: GlassAccentPalette,
-    isSelected: Boolean,
-    contentColor: Color,
-    backdrop: LayerBackdrop,
-    selectionColor: Color,
-    onClick: () -> Unit
-) {
-    val borderColor by animateColorAsState(
-        targetValue = if (isSelected) selectionColor else Color.Transparent,
-        label = "accentChoiceBorder"
-    )
-
-    Column(
-        modifier = Modifier
-            .width(112.dp)
-            .settingsSurface(
-                contentColor = contentColor,
-                cornerRadius = 18.dp
-            )
-            .border(
-                width = if (isSelected) 2.dp else 0.dp,
-                color = borderColor,
-                shape = RoundedCornerShape(18.dp)
-            )
-            .clip(RoundedCornerShape(18.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 14.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(56.dp)
-                .clip(CircleShape)
-                .background(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.9f),
-                            palette.color,
-                            palette.color.copy(alpha = 0.7f)
-                        )
-                    )
-                )
-        )
-
-        BasicText(
-            palette.name,
-            style = TextStyle(
-                color = contentColor,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.Center
-            )
-        )
-    }
-}
-
-@Composable
-private fun GlassMotionChoiceCard(
-    motionStyle: GlassMotionStyle,
-    isSelected: Boolean,
-    reduceAnimations: Boolean,
-    contentColor: Color,
-    backdrop: LayerBackdrop,
-    accentColor: Color,
-    onClick: () -> Unit
-) {
-    val borderColor by animateColorAsState(
-        targetValue = if (isSelected) accentColor else Color.Transparent,
-        label = "motionChoiceBorder"
-    )
-
-    Column(
-        modifier = Modifier
-            .width(144.dp)
-            .settingsSurface(
-                contentColor = contentColor,
-                cornerRadius = 18.dp
-            )
-            .border(
-                width = if (isSelected) 2.dp else 0.dp,
-                color = borderColor,
-                shape = RoundedCornerShape(18.dp)
-            )
-            .clip(RoundedCornerShape(18.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(70.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(
-                            accentColor.copy(alpha = 0.26f),
-                            accentColor.copy(alpha = 0.08f),
-                            Color.White.copy(alpha = 0.14f)
-                        )
-                    )
-                )
-                .padding(horizontal = 12.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                repeat(3) { index ->
-                    Box(
-                        modifier = Modifier
-                            .offset(x = if (motionStyle.key == "still") 0.dp else (index * 3).dp)
-                            .size(if (index == 1) 12.dp else 9.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (index == 1) accentColor else accentColor.copy(alpha = 0.55f)
-                            )
-                    )
-                }
-            }
-        }
-
-        BasicText(
-            motionStyle.name,
-            style = TextStyle(
-                color = contentColor,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-        )
-
-        BasicText(
-            if (reduceAnimations && motionStyle.key != "still") {
-                "Saved, but currently paused by Reduce Animations."
-            } else {
-                motionStyle.description
-            },
-            style = TextStyle(
-                color = contentColor.copy(alpha = 0.62f),
-                fontSize = 12.sp
-            )
-        )
-    }
-}
-
 // ==================== HELP & FAQ SCREEN ====================
 
 @Composable
@@ -1472,7 +1745,7 @@ fun HelpScreen(
                 id = "account",
                 icon = Icons.Outlined.DeleteOutline,
                 title = "How to delete your account",
-                answer = "Contact support and request account deletion from the email linked to your account. Include your username and a short confirmation that you want all account data removed."
+                answer = "Open Privacy settings and choose Delete account, or visit $ACCOUNT_DELETION_URL. Send the request from the email linked to your account and include your username plus a clear confirmation."
             )
         )
     }
@@ -1487,7 +1760,6 @@ fun HelpScreen(
             }
         }
     }
-    
     SettingsScreenContainer(backdrop = backdrop, contentColor = contentColor, accentColor = accentColor) {
         SettingsHeader(
             title = "Help & FAQ",
@@ -1497,50 +1769,54 @@ fun HelpScreen(
         
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
             item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .settingsSurface(
-                            contentColor = contentColor,
-                            cornerRadius = 20.dp,
-                            containerColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.10f else 0.12f),
-                            outlineColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.18f else 0.12f)
-                        )
-                        .padding(16.dp)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        BasicText(
-                            "Help that actually unblocks people",
-                            style = TextStyle(contentColor, 16.sp, FontWeight.Bold)
-                        )
-                        BasicText(
-                            "Search common questions, copy diagnostics, or jump straight to support without leaving the app feeling stuck.",
-                            style = TextStyle(contentColor.copy(alpha = 0.68f), 12.sp)
-                        )
-                    }
-                }
+                HelpIntroCard(
+                    contentColor = contentColor
+                )
             }
 
             item {
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp),
                     singleLine = true,
+                    shape = RoundedCornerShape(18.dp),
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Search,
+                            contentDescription = null,
+                            tint = contentColor.copy(alpha = 0.48f),
+                            modifier = Modifier.size(19.dp)
+                        )
+                    },
+                    trailingIcon = {
+                        if (query.isNotBlank()) {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Close,
+                                    contentDescription = "Clear search",
+                                    tint = contentColor.copy(alpha = 0.48f),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    },
                     placeholder = {
                         Text("Search help topics")
                     },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = accentColor,
-                        unfocusedBorderColor = contentColor.copy(alpha = 0.2f),
+                        focusedBorderColor = contentColor.copy(alpha = 0.34f),
+                        unfocusedBorderColor = contentColor.copy(alpha = 0.16f),
                         focusedTextColor = contentColor,
                         unfocusedTextColor = contentColor,
                         cursorColor = accentColor,
-                        focusedContainerColor = Color.White.copy(alpha = 0.06f),
-                        unfocusedContainerColor = Color.White.copy(alpha = 0.04f),
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
                         focusedPlaceholderColor = contentColor.copy(alpha = 0.45f),
                         unfocusedPlaceholderColor = contentColor.copy(alpha = 0.45f)
                     )
@@ -1548,27 +1824,30 @@ fun HelpScreen(
             }
 
             item {
-                SettingsSectionHeader("Quick Fixes", contentColor)
-            }
-
-            item {
-                SettingsActionItem(
-                    title = "Notification troubleshooting",
-                    subtitle = "Open Android notification settings for Vormex",
-                    icon = Icons.Outlined.NotificationsActive,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    onClick = { openAppNotificationSettings(context) }
+                HelpSectionTitle(
+                    title = "Quick fixes",
+                    detail = "3 shortcuts",
+                    contentColor = contentColor
                 )
             }
 
             item {
-                SettingsActionItem(
+                HelpActionCard(
+                    title = "Notification troubleshooting",
+                    subtitle = "Open Android notification settings for Vormex",
+                    icon = Icons.Outlined.NotificationsActive,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onClick = { openAppNotificationSettings(context) }
+                )
+                HelpRowDivider(contentColor)
+            }
+
+            item {
+                HelpActionCard(
                     title = "Copy app diagnostics",
                     subtitle = "Version, device, Android, and backend endpoint",
                     icon = Icons.Outlined.Science,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onClick = {
@@ -1579,14 +1858,14 @@ fun HelpScreen(
                         )
                     }
                 )
+                HelpRowDivider(contentColor)
             }
 
             item {
-                SettingsActionItem(
+                HelpActionCard(
                     title = "Contact support",
                     subtitle = "Open email with support details filled in",
                     icon = Icons.Outlined.Email,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onClick = {
@@ -1601,20 +1880,16 @@ fun HelpScreen(
             }
 
             item {
-                SettingsSectionHeader("FAQ", contentColor)
+                HelpSectionTitle(
+                    title = "FAQ",
+                    detail = "${filteredFaqs.size} topic${if (filteredFaqs.size == 1) "" else "s"}",
+                    contentColor = contentColor
+                )
             }
 
             if (filteredFaqs.isEmpty()) {
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .settingsSurface(
-                                contentColor = contentColor,
-                                cornerRadius = 16.dp
-                            )
-                            .padding(16.dp)
-                    ) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp)) {
                         BasicText(
                             "No help topics matched \"$query\". Try a shorter phrase like notifications, post, password, or account.",
                             style = TextStyle(contentColor.copy(alpha = 0.68f), 13.sp)
@@ -1633,35 +1908,43 @@ fun HelpScreen(
                             expandedFaqId = if (expandedFaqId == faq.id) null else faq.id
                         }
                     )
+                    if (faq != filteredFaqs.last()) {
+                        HelpRowDivider(contentColor)
+                    }
                 }
             }
 
             item {
-                SettingsSectionHeader("Need More Help?", contentColor)
-            }
-            
-            item {
-                SettingsNavigationItem(
-                    title = "Visit Help Center",
-                    subtitle = "Full documentation and guides",
-                    icon = Icons.Outlined.Language,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    onClick = {
-                        openUrl(context, "https://vormex.in/help")
-                    }
+                HelpSectionTitle(
+                    title = "Need more help?",
+                    detail = "Support",
+                    contentColor = contentColor
                 )
             }
             
             item {
-                SettingsNavigationItem(
+                HelpActionCard(
+                    title = "Visit Help Center",
+                    subtitle = "Full documentation and guides",
+                    icon = Icons.Outlined.Language,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    trailingIcon = Icons.AutoMirrored.Outlined.ArrowForward,
+                    onClick = {
+                        openUrl(context, "https://vormex.in/help")
+                    }
+                )
+                HelpRowDivider(contentColor)
+            }
+            
+            item {
+                HelpActionCard(
                     title = "Contact Support",
                     subtitle = "Get help from our team",
                     icon = Icons.Outlined.SupportAgent,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
+                    trailingIcon = Icons.AutoMirrored.Outlined.ArrowForward,
                     onClick = {
                         launchEmail(
                             context = context,
@@ -1688,8 +1971,7 @@ fun AboutScreen(
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
-    var showOpenSourceDialog by rememberSaveable { mutableStateOf(false) }
-    
+
     SettingsScreenContainer(backdrop = backdrop, contentColor = contentColor, accentColor = accentColor) {
         SettingsHeader(
             title = "About",
@@ -1701,158 +1983,61 @@ fun AboutScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
-            // App info card
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .settingsSurface(
-                        contentColor = contentColor,
-                        cornerRadius = 24.dp,
-                        containerColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.10f else 0.08f),
-                        outlineColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.18f else 0.10f)
-                    )
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // App icon
-                    Box(
-                        modifier = Modifier
-                            .size(80.dp)
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(accentColor)
-                            .padding(16.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        BasicText(
-                            "V",
-                            style = TextStyle(
-                                color = Color.White,
-                                fontSize = 40.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                    }
-                    
-                    BasicText(
-                        "Vormex",
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    )
-                    
-                    BasicText(
-                        "Version ${getAppVersion()}",
-                        style = TextStyle(
-                            color = contentColor.copy(alpha = 0.6f),
-                            fontSize = 14.sp
-                        )
-                    )
-                    
-                    BasicText(
-                        "Build for dreamers, creators, and networkers",
-                        style = TextStyle(
-                            color = contentColor.copy(alpha = 0.6f),
-                            fontSize = 12.sp,
-                            textAlign = TextAlign.Center
-                        ),
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
-                }
-            }
-            
-            SettingsSectionHeader("Legal", contentColor)
+            AboutBrandIntro(contentColor = contentColor)
 
-            SettingsActionItem(
-                title = "Copy Build Details",
-                subtitle = "Version, package, API endpoint, and device context",
-                icon = Icons.Outlined.Science,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onClick = {
-                    copyText(
-                        context = context,
-                        label = "Vormex build details",
-                        text = buildDiagnosticsText()
-                    )
-                }
+            HelpSectionTitle(
+                title = "Legal",
+                detail = "Policies",
+                contentColor = contentColor
             )
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .settingsSurface(
-                        contentColor = contentColor,
-                        cornerRadius = 16.dp
-                    )
-                    .padding(16.dp)
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    BuildInfoRow("Package", BuildConfig.APPLICATION_ID, contentColor)
-                    BuildInfoRow("Version", getAppVersion(), contentColor)
-                    BuildInfoRow("Backend", BuildConfig.API_BASE_URL.removePrefix("https://"), contentColor)
-                    BuildInfoRow("Android", "SDK ${Build.VERSION.SDK_INT}", contentColor)
-                }
-            }
-            
-            SettingsNavigationItem(
+            HelpActionCard(
                 title = "Terms of Service",
+                subtitle = "Rules for using Vormex",
                 icon = Icons.Outlined.Gavel,
-                backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
                 onClick = {
                     openUrl(context, "https://vormex.in/terms")
                 }
             )
-            
-            SettingsNavigationItem(
+            HelpRowDivider(contentColor)
+
+            HelpActionCard(
                 title = "Privacy Policy",
+                subtitle = "How your data is handled",
                 icon = Icons.Outlined.Policy,
-                backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
                 onClick = {
                     openUrl(context, "https://vormex.in/privacy")
                 }
             )
-            
-            SettingsNavigationItem(
-                title = "Open Source Licenses",
-                icon = Icons.Outlined.Description,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onClick = { showOpenSourceDialog = true }
+
+            HelpSectionTitle(
+                title = "Connect",
+                detail = "Links",
+                contentColor = contentColor
             )
-            
-            SettingsSectionHeader("Connect", contentColor)
-            
-            SettingsNavigationItem(
+
+            HelpActionCard(
                 title = "Follow us on Twitter",
                 subtitle = "@VormexApp",
                 icon = Icons.Outlined.AlternateEmail,
-                backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
                 onClick = {
                     openUrl(context, "https://twitter.com/VormexApp")
                 }
             )
-            
-            SettingsNavigationItem(
+            HelpRowDivider(contentColor)
+
+            HelpActionCard(
                 title = "Visit our website",
                 subtitle = "vormex.in",
                 icon = Icons.Outlined.Language,
-                backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
                 onClick = {
@@ -1875,45 +2060,9 @@ fun AboutScreen(
                     )
                 )
             }
-            
+
             Spacer(Modifier.height(80.dp))
         }
-    }
-
-    if (showOpenSourceDialog) {
-        AlertDialog(
-            onDismissRequest = { showOpenSourceDialog = false },
-            title = {
-                Text(
-                    "Open Source Stack",
-                    color = contentColor,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    listOf(
-                        "Jetpack Compose UI",
-                        "Material 3",
-                        "AndroidX DataStore",
-                        "Ktor Networking",
-                        "Coil Image Loading",
-                        "Firebase Messaging",
-                        "Media3 ExoPlayer"
-                    ).forEach { library ->
-                        Text(
-                            "• $library",
-                            color = contentColor.copy(alpha = 0.8f)
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showOpenSourceDialog = false }) {
-                    Text("Close", color = accentColor)
-                }
-            }
-        )
     }
 }
 
@@ -1966,272 +2115,327 @@ fun InviteFriendsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(24.dp)
+            verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
-            Spacer(Modifier.height(24.dp))
-            
-            // Illustration
-            Box(
-                modifier = Modifier
-                    .size(120.dp)
-                    .clip(RoundedCornerShape(30.dp))
-                    .background(accentColor.copy(alpha = 0.16f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.GroupAdd,
-                    contentDescription = null,
-                    tint = accentColor,
-                    modifier = Modifier.size(56.dp)
-                )
-            }
-            
-            BasicText(
-                "Invite friends and grow together!",
-                style = TextStyle(
-                    color = contentColor,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
-                )
-            )
-            
-            BasicText(
-                "Share Vormex with friends. Help them discover new connections and opportunities.",
-                style = TextStyle(
-                    color = contentColor.copy(alpha = 0.7f),
-                    fontSize = 14.sp,
-                    textAlign = TextAlign.Center
-                ),
-                modifier = Modifier.padding(horizontal = 32.dp)
-            )
-            
-            // Referral code card
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .settingsSurface(
-                        contentColor = contentColor,
-                        cornerRadius = 16.dp,
-                        containerColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.10f else 0.12f),
-                        outlineColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.18f else 0.12f)
-                    )
-                    .padding(20.dp)
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    BasicText(
-                        "Your referral code",
-                        style = TextStyle(
-                            color = contentColor.copy(alpha = 0.7f),
-                            fontSize = 12.sp
-                        )
-                    )
-                    
-                    Box(
-                        modifier = Modifier
-                            .border(
-                                width = 2.dp,
-                                color = accentColor,
-                                shape = RoundedCornerShape(8.dp)
-                            )
-                            .padding(horizontal = 24.dp, vertical = 12.dp)
-                    ) {
-                        BasicText(
-                            resolvedReferralCode,
-                            style = TextStyle(
-                                color = contentColor,
-                                fontSize = 24.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                    }
-                }
-            }
+            InviteIntroBlock(contentColor = contentColor)
 
-            SettingsActionItem(
+            HelpSectionTitle(
+                title = "Referral",
+                detail = if (isLoadingReferral) "Loading" else "Ready",
+                contentColor = contentColor
+            )
+
+            InviteReferralBlock(
+                referralCode = resolvedReferralCode,
+                inviteLink = resolvedInviteLink,
+                isLoading = isLoadingReferral,
+                contentColor = contentColor
+            )
+            HelpRowDivider(contentColor, start = 18.dp)
+
+            HelpActionCard(
                 title = "Copy invite link",
                 subtitle = if (isLoadingReferral) "Loading your share link..." else resolvedInviteLink,
                 icon = Icons.Outlined.Link,
-                backdrop = backdrop,
                 contentColor = contentColor,
                 accentColor = accentColor,
                 onClick = {
                     copyText(context, "Invite link", resolvedInviteLink)
                 }
             )
+            HelpRowDivider(contentColor)
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                InviteUtilityCard(
-                    modifier = Modifier.weight(1f),
-                    title = "Copy Code",
-                    subtitle = resolvedReferralCode,
-                    icon = Icons.Outlined.ContentCopy,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    onClick = {
-                        copyText(context, "Referral code", resolvedReferralCode)
-                    }
-                )
-                InviteUtilityCard(
-                    modifier = Modifier.weight(1f),
-                    title = "Copy Message",
-                    subtitle = "Ready to paste",
-                    icon = Icons.Outlined.Drafts,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    onClick = {
-                        copyText(context, "Invite message", inviteMessage)
-                    }
-                )
-            }
-            
-            // Share buttons
-            SettingsSectionHeader("Share via", contentColor)
-            
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                ShareButton(
-                    icon = Icons.Outlined.Sms,
-                    label = "Message",
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    onClick = {
-                        shareInvite(context, "sms", inviteMessage)
-                    }
-                )
-                
-                ShareButton(
-                    icon = Icons.Outlined.Email,
-                    label = "Email",
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    onClick = {
-                        shareInvite(context, "email", inviteMessage)
-                    }
-                )
-                
-                ShareButton(
-                    icon = Icons.Outlined.Share,
-                    label = "Share",
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    onClick = {
-                        shareInvite(context, "share", inviteMessage)
-                    }
-                )
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .settingsSurface(
-                        contentColor = contentColor,
-                        cornerRadius = 16.dp
-                    )
-                    .padding(16.dp)
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    BasicText(
-                        "What friends receive",
-                        style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold)
-                    )
-                    BasicText(
-                        "A direct signup link, your referral code, and a short note about networking, creators, and opportunities on Vormex.",
-                        style = TextStyle(contentColor.copy(alpha = 0.68f), 13.sp)
-                    )
+            HelpActionCard(
+                title = "Copy referral code",
+                subtitle = resolvedReferralCode,
+                icon = Icons.Outlined.ContentCopy,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                onClick = {
+                    copyText(context, "Referral code", resolvedReferralCode)
                 }
-            }
-            
+            )
+            HelpRowDivider(contentColor)
+
+            HelpActionCard(
+                title = "Copy invite message",
+                subtitle = "Ready to paste anywhere",
+                icon = Icons.Outlined.Drafts,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                onClick = {
+                    copyText(context, "Invite message", inviteMessage)
+                }
+            )
+
+            HelpSectionTitle(
+                title = "Share via",
+                detail = "3 options",
+                contentColor = contentColor
+            )
+
+            HelpActionCard(
+                title = "Message",
+                subtitle = "Send with SMS",
+                icon = Icons.Outlined.Sms,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                onClick = {
+                    shareInvite(context, "sms", inviteMessage)
+                }
+            )
+            HelpRowDivider(contentColor)
+
+            HelpActionCard(
+                title = "Email",
+                subtitle = "Send a ready email",
+                icon = Icons.Outlined.Email,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                onClick = {
+                    shareInvite(context, "email", inviteMessage)
+                }
+            )
+            HelpRowDivider(contentColor)
+
+            HelpActionCard(
+                title = "Share sheet",
+                subtitle = "Choose WhatsApp, Instagram, or any app",
+                icon = Icons.Outlined.Share,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                onClick = {
+                    shareInvite(context, "share", inviteMessage)
+                }
+            )
+
+            HelpSectionTitle(
+                title = "What friends receive",
+                detail = "Preview",
+                contentColor = contentColor
+            )
+            SettingsFlatNote(
+                text = "A direct signup link, your referral code, and a short note about networking, creators, and opportunities on Vormex.",
+                contentColor = contentColor
+            )
+
             Spacer(Modifier.height(80.dp))
         }
     }
 }
 
 @Composable
-private fun InviteUtilityCard(
-    modifier: Modifier = Modifier,
-    title: String,
-    subtitle: String,
-    icon: ImageVector,
-    backdrop: LayerBackdrop,
-    contentColor: Color,
-    accentColor: Color,
-    onClick: () -> Unit
+private fun AboutBrandIntro(
+    contentColor: Color
 ) {
-    Box(
-        modifier = modifier
-            .settingsSurface(contentColor = contentColor, cornerRadius = 16.dp)
-            .clickable(onClick = onClick)
-            .padding(16.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 2.dp, top = 8.dp, end = 2.dp, bottom = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            SettingsIconBadge(icon = icon, accentColor = accentColor, modifier = Modifier.size(38.dp))
+        Box(
+            modifier = Modifier.size(42.dp),
+            contentAlignment = Alignment.Center
+        ) {
             BasicText(
-                title,
-                style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold)
+                "V",
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+        }
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            BasicText(
+                "Vormex",
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
             )
             BasicText(
-                subtitle,
-                style = TextStyle(contentColor.copy(alpha = 0.62f), 12.sp)
+                "Built for dreamers, creators, and networkers",
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.62f),
+                    fontSize = 12.sp
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
 }
 
 @Composable
-private fun ShareButton(
-    icon: ImageVector,
-    label: String,
-    backdrop: LayerBackdrop,
-    contentColor: Color,
-    accentColor: Color,
-    onClick: () -> Unit
+private fun InviteIntroBlock(
+    contentColor: Color
 ) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
+    Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(12.dp)
+            .fillMaxWidth()
+            .padding(start = 2.dp, top = 8.dp, end = 2.dp, bottom = 14.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(56.dp)
-                .clip(CircleShape)
-                .background(accentColor.copy(alpha = 0.2f)),
-            contentAlignment = Alignment.Center
+        HelpPlainIcon(
+            icon = Icons.Outlined.GroupAdd,
+            contentColor = contentColor,
+            modifier = Modifier.size(26.dp)
+        )
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = accentColor,
-                modifier = Modifier.size(24.dp)
+            BasicText(
+                "Invite friends and grow together",
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+            BasicText(
+                "Share Vormex with people who should discover better connections and opportunities.",
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.62f),
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
             )
         }
-        
-        Spacer(Modifier.height(8.dp))
-        
-        BasicText(
-            label,
-            style = TextStyle(
-                color = contentColor,
-                fontSize = 12.sp
+    }
+}
+
+@Composable
+private fun InviteReferralBlock(
+    referralCode: String,
+    inviteLink: String,
+    isLoading: Boolean,
+    contentColor: Color
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            BasicText(
+                "Your code",
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.58f),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
             )
+            BasicText(
+                if (isLoading) "Syncing" else "Active",
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.52f),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .border(1.dp, contentColor.copy(alpha = 0.18f), RoundedCornerShape(10.dp))
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            BasicText(
+                referralCode,
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        BasicText(
+            inviteLink,
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.54f),
+                fontSize = 12.sp
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
+    }
+}
+
+@Composable
+private fun SettingsFlatNote(
+    text: String,
+    contentColor: Color
+) {
+    BasicText(
+        text,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        style = TextStyle(
+            color = contentColor.copy(alpha = 0.68f),
+            fontSize = 13.sp,
+            lineHeight = 19.sp
+        )
+    )
+}
+
+@Composable
+private fun ContactIntroBlock(
+    contentColor: Color
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 2.dp, top = 8.dp, end = 2.dp, bottom = 14.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        HelpPlainIcon(
+            icon = Icons.Outlined.SupportAgent,
+            contentColor = contentColor,
+            modifier = Modifier.size(26.dp)
+        )
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            BasicText(
+                "Support toolkit",
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+            BasicText(
+                "Send a bug report, suggest a feature, or copy diagnostics before you write in.",
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.62f),
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+            )
+        }
     }
 }
 
@@ -2282,57 +2486,25 @@ fun ContactScreen(
         
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
             item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .settingsSurface(
-                            contentColor = contentColor,
-                            cornerRadius = 20.dp,
-                            containerColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.10f else 0.12f),
-                            outlineColor = accentColor.copy(alpha = if (contentColor == Color.White) 0.18f else 0.12f)
-                        )
-                        .padding(16.dp)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        BasicText(
-                            "Support toolkit",
-                            style = TextStyle(contentColor, 16.sp, FontWeight.Bold)
-                        )
-                        BasicText(
-                            "Send a bug report, suggest a feature, or copy diagnostics before you write in.",
-                            style = TextStyle(contentColor.copy(alpha = 0.68f), 12.sp)
-                        )
-                    }
-                }
+                ContactIntroBlock(contentColor = contentColor)
             }
 
             item {
-                SettingsSectionHeader("Quick Actions", contentColor)
-            }
-
-            item {
-                SettingsActionItem(
-                    title = "Copy app diagnostics",
-                    subtitle = "Version, package, Android, device, and backend",
-                    icon = Icons.Outlined.Science,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    onClick = {
-                        copyText(context, "Vormex diagnostics", buildDiagnosticsText())
-                    }
+                HelpSectionTitle(
+                    title = "Quick actions",
+                    detail = "Before writing",
+                    contentColor = contentColor
                 )
             }
 
             item {
-                SettingsActionItem(
+                HelpActionCard(
                     title = "Open help center",
                     subtitle = "Read onboarding and troubleshooting guides",
                     icon = Icons.Outlined.Language,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onClick = {
@@ -2342,15 +2514,18 @@ fun ContactScreen(
             }
 
             item {
-                SettingsSectionHeader("Get in Touch", contentColor)
+                HelpSectionTitle(
+                    title = "Get in touch",
+                    detail = "Email",
+                    contentColor = contentColor
+                )
             }
             
             item {
-                SettingsNavigationItem(
+                HelpActionCard(
                     title = "Email Support",
                     subtitle = "support@vormex.in",
                     icon = Icons.Outlined.Email,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onClick = {
@@ -2362,14 +2537,14 @@ fun ContactScreen(
                         )
                     }
                 )
+                HelpRowDivider(contentColor)
             }
             
             item {
-                SettingsNavigationItem(
+                HelpActionCard(
                     title = "Report a Bug",
                     subtitle = "Help us improve",
                     icon = Icons.Outlined.BugReport,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onClick = {
@@ -2381,14 +2556,14 @@ fun ContactScreen(
                         )
                     }
                 )
+                HelpRowDivider(contentColor)
             }
             
             item {
-                SettingsNavigationItem(
+                HelpActionCard(
                     title = "Feature Request",
                     subtitle = "Suggest new features",
                     icon = Icons.Outlined.TipsAndUpdates,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onClick = {
@@ -2401,45 +2576,48 @@ fun ContactScreen(
                     }
                 )
             }
-            
+
             item {
-                SettingsSectionHeader("Social Media", contentColor)
+                HelpSectionTitle(
+                    title = "Social media",
+                    detail = "Follow",
+                    contentColor = contentColor
+                )
             }
-            
+
             item {
-                SettingsNavigationItem(
+                HelpActionCard(
                     title = "Twitter / X",
                     subtitle = "@VormexApp",
                     icon = Icons.Outlined.AlternateEmail,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onClick = {
                         openUrl(context, "https://twitter.com/VormexApp")
                     }
                 )
+                HelpRowDivider(contentColor)
             }
-            
+
             item {
-                SettingsNavigationItem(
+                HelpActionCard(
                     title = "Instagram",
                     subtitle = "@vormex.app",
                     icon = Icons.Outlined.CameraAlt,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onClick = {
                         openUrl(context, "https://instagram.com/vormex.app")
                     }
                 )
+                HelpRowDivider(contentColor)
             }
-            
+
             item {
-                SettingsNavigationItem(
+                HelpActionCard(
                     title = "LinkedIn",
                     subtitle = "Vormex",
                     icon = Icons.Outlined.BusinessCenter,
-                    backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onClick = {
@@ -2447,10 +2625,179 @@ fun ContactScreen(
                     }
                 )
             }
-            
+
             item { Spacer(Modifier.height(80.dp)) }
         }
     }
+}
+
+@Composable
+private fun HelpIntroCard(
+    contentColor: Color
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 2.dp, top = 8.dp, end = 2.dp, bottom = 14.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        HelpPlainIcon(
+            icon = Icons.AutoMirrored.Outlined.HelpOutline,
+            contentColor = contentColor,
+            modifier = Modifier.size(26.dp)
+        )
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            BasicText(
+                "Find answers faster",
+                style = TextStyle(
+                    color = contentColor,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+            BasicText(
+                "Search common questions, run quick fixes, or send diagnostics when support needs context.",
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.62f),
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun HelpSectionTitle(
+    title: String,
+    detail: String,
+    contentColor: Color
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 2.dp, top = 14.dp, end = 2.dp, bottom = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        BasicText(
+            title,
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+        BasicText(
+            detail,
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.52f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun HelpActionCard(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    contentColor: Color,
+    accentColor: Color,
+    trailingIcon: ImageVector = Icons.AutoMirrored.Outlined.ArrowForward,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 13.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            HelpPlainIcon(
+                icon = icon,
+                contentColor = contentColor,
+                modifier = Modifier.size(26.dp)
+            )
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                BasicText(
+                    title,
+                    style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                BasicText(
+                    subtitle,
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.58f),
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Icon(
+                imageVector = trailingIcon,
+                contentDescription = null,
+                tint = contentColor.copy(alpha = 0.38f),
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun HelpPlainIcon(
+    icon: ImageVector,
+    contentColor: Color,
+    modifier: Modifier = Modifier,
+    accentColor: Color = contentColor
+) {
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = accentColor.copy(alpha = 0.82f),
+            modifier = Modifier.size(24.dp)
+        )
+    }
+}
+
+@Composable
+private fun HelpRowDivider(
+    contentColor: Color,
+    start: Dp = 58.dp,
+    end: Dp = 18.dp
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = start, end = end)
+            .height(1.dp)
+            .background(contentColor.copy(alpha = 0.10f))
+    )
 }
 
 @Composable
@@ -2465,11 +2812,10 @@ private fun HelpFaqCard(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .settingsSurface(contentColor = contentColor, cornerRadius = 16.dp)
             .clickable(onClick = onClick)
-            .padding(16.dp)
+            .padding(horizontal = 18.dp, vertical = 13.dp)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -2477,58 +2823,48 @@ private fun HelpFaqCard(
             ) {
                 Row(
                     modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    SettingsIconBadge(icon = faq.icon, accentColor = accentColor)
-                    Spacer(Modifier.width(12.dp))
+                    HelpPlainIcon(
+                        icon = faq.icon,
+                        contentColor = contentColor,
+                        modifier = Modifier.size(26.dp)
+                    )
                     BasicText(
                         faq.title,
-                        style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold)
+                        style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 Icon(
                     imageVector = if (expanded) Icons.Outlined.Remove else Icons.Outlined.Add,
                     contentDescription = null,
-                    tint = accentColor,
+                    tint = contentColor.copy(alpha = 0.48f),
                     modifier = Modifier.size(18.dp)
                 )
             }
 
             if (expanded) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 40.dp)
+                        .height(1.dp)
+                        .background(contentColor.copy(alpha = 0.08f))
+                )
                 BasicText(
                     faq.answer,
-                    style = TextStyle(contentColor.copy(alpha = 0.72f), 13.sp)
+                    modifier = Modifier.padding(start = 40.dp),
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.70f),
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp
+                    )
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun BuildInfoRow(
-    label: String,
-    value: String,
-    contentColor: Color
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        BasicText(
-            label,
-            style = TextStyle(contentColor.copy(alpha = 0.55f), 12.sp, FontWeight.Medium)
-        )
-        BasicText(
-            value,
-            modifier = Modifier.padding(start = 12.dp),
-            style = TextStyle(
-                contentColor,
-                12.sp,
-                FontWeight.SemiBold,
-                textAlign = TextAlign.End
-            )
-        )
     }
 }
 
@@ -2557,6 +2893,51 @@ private fun SavedMetric(
 
 // ==================== SAVED POSTS SCREEN ====================
 
+private enum class SavedContentTab(
+    val title: String,
+    val emptyTitle: String,
+    val emptyBody: String
+) {
+    Profiles(
+        title = "Profile",
+        emptyTitle = "No saved profiles",
+        emptyBody = "Profiles you bookmark will show up here."
+    ),
+    Reels(
+        title = "Reels",
+        emptyTitle = "No saved reels",
+        emptyBody = "Reels you bookmark will show up here."
+    ),
+    Posts(
+        title = "Posts",
+        emptyTitle = "No saved posts",
+        emptyBody = "Posts you bookmark will show up here."
+    )
+}
+
+private fun SavedContentTab.savedIndex(): Int =
+    when (this) {
+        SavedContentTab.Profiles -> 0
+        SavedContentTab.Reels -> 1
+        SavedContentTab.Posts -> 2
+    }
+
+private fun savedContentTabAt(index: Int): SavedContentTab =
+    when (((index % 3) + 3) % 3) {
+        1 -> SavedContentTab.Reels
+        2 -> SavedContentTab.Posts
+        else -> SavedContentTab.Profiles
+    }
+
+private fun SavedContentTab.circularOffsetFrom(selectedTab: SavedContentTab): Int {
+    val rawOffset = savedIndex() - selectedTab.savedIndex()
+    return when {
+        rawOffset > 1 -> rawOffset - 3
+        rawOffset < -1 -> rawOffset + 3
+        else -> rawOffset
+    }
+}
+
 @Composable
 fun SavedPostsScreen(
     backdrop: LayerBackdrop,
@@ -2564,7 +2945,8 @@ fun SavedPostsScreen(
     accentColor: Color,
     onNavigateBack: () -> Unit,
     onNavigateToPost: (String) -> Unit = {},
-    onNavigateToReel: (String) -> Unit = {}
+    onNavigateToReel: (String) -> Unit = {},
+    onNavigateToProfile: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -2574,98 +2956,915 @@ fun SavedPostsScreen(
     val uiState by viewModel.uiState.collectAsState()
     var savedReels by remember { mutableStateOf<List<com.kyant.backdrop.catalog.network.models.Reel>>(emptyList()) }
     var isLoadingSavedReels by remember { mutableStateOf(false) }
-    
-    LaunchedEffect(Unit) {
-        viewModel.loadSavedPosts(refresh = true)
+    var isLoadingMoreSavedReels by remember { mutableStateOf(false) }
+    var savedReelsNextCursor by remember { mutableStateOf<String?>(null) }
+    var hasMoreSavedReels by remember { mutableStateOf(false) }
+    var savedProfiles by remember { mutableStateOf<List<com.kyant.backdrop.catalog.network.models.SavedProfileItem>>(emptyList()) }
+    var isLoadingSavedProfiles by remember { mutableStateOf(false) }
+    var isLoadingMoreSavedProfiles by remember { mutableStateOf(false) }
+    var savedProfilesNextCursor by remember { mutableStateOf<String?>(null) }
+    var hasMoreSavedProfiles by remember { mutableStateOf(false) }
+    val savedListState = rememberLazyListState()
+    var selectedTabName by rememberSaveable { mutableStateOf(SavedContentTab.Profiles.name) }
+    var hasAutoSelectedSavedTab by rememberSaveable { mutableStateOf(false) }
+    val selectedTab = when (selectedTabName) {
+        SavedContentTab.Reels.name -> SavedContentTab.Reels
+        SavedContentTab.Posts.name -> SavedContentTab.Posts
+        else -> SavedContentTab.Profiles
+    }
 
-        val userId = ApiClient.getCurrentUserId(context)
-        if (!userId.isNullOrBlank()) {
-            isLoadingSavedReels = true
-            ApiClient.getUserSavedReels(context, userId)
+    fun loadSavedReels(refresh: Boolean = false) {
+        if (refresh) {
+            if (isLoadingSavedReels) return
+        } else {
+            if (
+                isLoadingSavedReels ||
+                isLoadingMoreSavedReels ||
+                !hasMoreSavedReels ||
+                savedReelsNextCursor == null
+            ) return
+        }
+
+        scope.launch {
+            if (refresh) {
+                isLoadingSavedReels = true
+                savedReels = emptyList()
+                savedReelsNextCursor = null
+                hasMoreSavedReels = false
+            } else {
+                isLoadingMoreSavedReels = true
+            }
+
+            ApiClient.getMySavedReels(
+                context = context,
+                cursor = if (refresh) null else savedReelsNextCursor,
+                limit = 20
+            )
                 .onSuccess { response ->
-                    savedReels = response.reels
+                    val existing = if (refresh) emptyList() else savedReels
+                    savedReels = (existing + response.reels).distinctBy { it.id }
+                    savedReelsNextCursor = response.nextCursor
+                    hasMoreSavedReels = response.hasMore
                     isLoadingSavedReels = false
+                    isLoadingMoreSavedReels = false
                 }
                 .onFailure {
                     isLoadingSavedReels = false
+                    isLoadingMoreSavedReels = false
                 }
         }
     }
-    
-    SettingsScreenContainer(backdrop = backdrop, contentColor = contentColor, accentColor = accentColor) {
-        SettingsHeader(
-            title = "Saved Posts",
-            contentColor = contentColor,
-            onBack = onNavigateBack
-        )
-        
-        if (uiState.isLoading && uiState.savedPosts.isEmpty() && isLoadingSavedReels) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(color = accentColor)
-            }
-        } else if (uiState.savedPosts.isEmpty() && savedReels.isEmpty()) {
-            com.kyant.backdrop.catalog.linkedin.posts.SavedPostsEmptyState(
-                contentColor = contentColor
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                if (savedReels.isNotEmpty()) {
-                    item {
-                        BasicText(
-                            "Saved Reels",
-                            style = TextStyle(contentColor, 16.sp, FontWeight.SemiBold),
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-                    }
 
-                    items(savedReels.size) { index ->
-                        val reel = savedReels[index]
-                        SavedReelItem(
-                            reel = reel,
+    fun loadSavedProfiles(refresh: Boolean = false) {
+        if (refresh) {
+            if (isLoadingSavedProfiles) return
+        } else {
+            if (
+                isLoadingSavedProfiles ||
+                isLoadingMoreSavedProfiles ||
+                !hasMoreSavedProfiles ||
+                savedProfilesNextCursor == null
+            ) return
+        }
+
+        scope.launch {
+            if (refresh) {
+                isLoadingSavedProfiles = true
+                savedProfiles = emptyList()
+                savedProfilesNextCursor = null
+                hasMoreSavedProfiles = false
+            } else {
+                isLoadingMoreSavedProfiles = true
+            }
+
+            ApiClient.getSavedProfiles(
+                context = context,
+                cursor = if (refresh) null else savedProfilesNextCursor,
+                limit = 20
+            )
+                .onSuccess { response ->
+                    val existing = if (refresh) emptyList() else savedProfiles
+                    savedProfiles = (existing + response.profiles).distinctBy { it.id }
+                    savedProfilesNextCursor = response.nextCursor
+                    hasMoreSavedProfiles = response.hasMore
+                    isLoadingSavedProfiles = false
+                    isLoadingMoreSavedProfiles = false
+                }
+                .onFailure {
+                    isLoadingSavedProfiles = false
+                    isLoadingMoreSavedProfiles = false
+                }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.loadSavedPosts(refresh = true)
+        loadSavedReels(refresh = true)
+        loadSavedProfiles(refresh = true)
+    }
+
+    val isInitialSavedLoading =
+        (uiState.isLoadingSaved || isLoadingSavedReels || isLoadingSavedProfiles) &&
+            uiState.savedPosts.isEmpty() &&
+            savedReels.isEmpty() &&
+            savedProfiles.isEmpty()
+
+    LaunchedEffect(
+        isInitialSavedLoading,
+        savedProfiles.size,
+        savedReels.size,
+        uiState.savedPosts.size
+    ) {
+        if (!hasAutoSelectedSavedTab && !isInitialSavedLoading) {
+            selectedTabName = when {
+                savedProfiles.isNotEmpty() -> SavedContentTab.Profiles.name
+                savedReels.isNotEmpty() -> SavedContentTab.Reels.name
+                uiState.savedPosts.isNotEmpty() -> SavedContentTab.Posts.name
+                else -> SavedContentTab.Profiles.name
+            }
+            hasAutoSelectedSavedTab = true
+        }
+    }
+
+    LaunchedEffect(
+        savedListState,
+        selectedTab,
+        savedProfiles.size,
+        savedReels.size,
+        uiState.savedPosts.size,
+        hasMoreSavedProfiles,
+        hasMoreSavedReels,
+        uiState.hasSavedMore,
+        isLoadingMoreSavedProfiles,
+        isLoadingMoreSavedReels,
+        uiState.isLoadingMoreSaved
+    ) {
+        snapshotFlow {
+            val layout = savedListState.layoutInfo
+            val lastVisibleIndex = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
+            lastVisibleIndex to layout.totalItemsCount
+        }.collect { (lastVisibleIndex, totalItems) ->
+            if (totalItems > 0 && lastVisibleIndex >= totalItems - 5) {
+                when (selectedTab) {
+                    SavedContentTab.Profiles -> {
+                        if (hasMoreSavedProfiles && !isLoadingMoreSavedProfiles) {
+                            loadSavedProfiles(refresh = false)
+                        }
+                    }
+                    SavedContentTab.Reels -> {
+                        if (hasMoreSavedReels && !isLoadingMoreSavedReels) {
+                            loadSavedReels(refresh = false)
+                        }
+                    }
+                    SavedContentTab.Posts -> {
+                        if (uiState.hasSavedMore && !uiState.isLoadingMoreSaved) {
+                            viewModel.loadSavedPosts(refresh = false)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    SettingsScreenContainer(backdrop = backdrop, contentColor = contentColor, accentColor = accentColor) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                SettingsHeader(
+                    title = "Saved",
+                    contentColor = contentColor,
+                    onBack = onNavigateBack
+                )
+
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (isInitialSavedLoading) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = accentColor)
+                        }
+                    } else {
+                        SavedContentStage(
+                            selectedTab = selectedTab,
+                            listState = savedListState,
+                            savedProfiles = savedProfiles,
+                            savedReels = savedReels,
+                            savedPosts = uiState.savedPosts,
+                            hasMoreSavedProfiles = hasMoreSavedProfiles,
+                            hasMoreSavedReels = hasMoreSavedReels,
+                            hasMoreSavedPosts = uiState.hasSavedMore,
+                            isLoadingMoreSavedProfiles = isLoadingMoreSavedProfiles,
+                            isLoadingMoreSavedReels = isLoadingMoreSavedReels,
+                            isLoadingMoreSavedPosts = uiState.isLoadingMoreSaved,
                             backdrop = backdrop,
                             contentColor = contentColor,
-                            onClick = { onNavigateToReel(reel.id) },
-                            onUnsave = {
-                                    scope.launch {
-                                        ApiClient.toggleReelSave(context, reel.id)
-                                            .onSuccess {
-                                                savedReels = savedReels.filterNot { it.id == reel.id }
-                                            }
-                                    }
-                            }
+                            accentColor = accentColor,
+                            onProfileClick = { savedProfile -> onNavigateToProfile(savedProfile.user.id) },
+                            onProfileUnsave = { savedProfile ->
+                                scope.launch {
+                                    ApiClient.toggleProfileSave(context, savedProfile.user.id)
+                                        .onSuccess {
+                                            savedProfiles = savedProfiles.filterNot { it.id == savedProfile.id }
+                                        }
+                                }
+                            },
+                            onLoadMoreProfiles = { loadSavedProfiles(refresh = false) },
+                            onReelClick = { reel -> onNavigateToReel(reel.id) },
+                            onReelUnsave = { reel ->
+                                scope.launch {
+                                    ApiClient.toggleReelSave(context, reel.id)
+                                        .onSuccess {
+                                            savedReels = savedReels.filterNot { it.id == reel.id }
+                                        }
+                                }
+                            },
+                            onLoadMoreReels = { loadSavedReels(refresh = false) },
+                            onPostClick = { post -> onNavigateToPost(post.id) },
+                            onPostUnsave = { post -> viewModel.toggleSave(post.id) },
+                            onLoadMorePosts = { viewModel.loadSavedPosts(refresh = false) }
                         )
                     }
                 }
+            }
 
-                if (uiState.savedPosts.isNotEmpty()) {
-                    item {
-                        BasicText(
-                            "Saved Posts",
-                            style = TextStyle(contentColor, 16.sp, FontWeight.SemiBold),
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
+            SavedContentWheelSelector(
+                selectedTab = selectedTab,
+                contentColor = contentColor,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 0.dp),
+                onTabSelected = { tab -> selectedTabName = tab.name }
+            )
+        }
+    }
+}
+
+private fun String?.savedPreviewSnippet(fallback: String): String =
+    this?.trim()?.takeIf { it.isNotBlank() } ?: fallback
+
+@Composable
+private fun SavedContentStage(
+    selectedTab: SavedContentTab,
+    listState: LazyListState,
+    savedProfiles: List<com.kyant.backdrop.catalog.network.models.SavedProfileItem>,
+    savedReels: List<com.kyant.backdrop.catalog.network.models.Reel>,
+    savedPosts: List<com.kyant.backdrop.catalog.network.models.FullPost>,
+    hasMoreSavedProfiles: Boolean,
+    hasMoreSavedReels: Boolean,
+    hasMoreSavedPosts: Boolean,
+    isLoadingMoreSavedProfiles: Boolean,
+    isLoadingMoreSavedReels: Boolean,
+    isLoadingMoreSavedPosts: Boolean,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    onProfileClick: (com.kyant.backdrop.catalog.network.models.SavedProfileItem) -> Unit,
+    onProfileUnsave: (com.kyant.backdrop.catalog.network.models.SavedProfileItem) -> Unit,
+    onLoadMoreProfiles: () -> Unit,
+    onReelClick: (com.kyant.backdrop.catalog.network.models.Reel) -> Unit,
+    onReelUnsave: (com.kyant.backdrop.catalog.network.models.Reel) -> Unit,
+    onLoadMoreReels: () -> Unit,
+    onPostClick: (com.kyant.backdrop.catalog.network.models.FullPost) -> Unit,
+    onPostUnsave: (com.kyant.backdrop.catalog.network.models.FullPost) -> Unit,
+    onLoadMorePosts: () -> Unit
+) {
+    AnimatedContent(
+        targetState = selectedTab,
+        label = "savedContentStage",
+        transitionSpec = {
+            val forward = targetState.savedIndex() >= initialState.savedIndex()
+            val enterOffset = if (forward) { width: Int -> width / 6 } else { width: Int -> -width / 6 }
+            val exitOffset = if (forward) { width: Int -> -width / 8 } else { width: Int -> width / 8 }
+            (slideInHorizontally(initialOffsetX = enterOffset) + fadeIn()) togetherWith
+                (slideOutHorizontally(targetOffsetX = exitOffset) + fadeOut())
+        },
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(top = 72.dp)
+    ) { tab ->
+        when (tab) {
+            SavedContentTab.Profiles -> SavedProfilesList(
+                listState = listState,
+                profiles = savedProfiles,
+                hasMore = hasMoreSavedProfiles,
+                isLoadingMore = isLoadingMoreSavedProfiles,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                onProfileClick = onProfileClick,
+                onUnsave = onProfileUnsave,
+                onLoadMore = onLoadMoreProfiles
+            )
+            SavedContentTab.Reels -> SavedReelsList(
+                listState = listState,
+                reels = savedReels,
+                hasMore = hasMoreSavedReels,
+                isLoadingMore = isLoadingMoreSavedReels,
+                backdrop = backdrop,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                onReelClick = onReelClick,
+                onUnsave = onReelUnsave,
+                onLoadMore = onLoadMoreReels
+            )
+            SavedContentTab.Posts -> SavedPostsList(
+                listState = listState,
+                posts = savedPosts,
+                hasMore = hasMoreSavedPosts,
+                isLoadingMore = isLoadingMoreSavedPosts,
+                backdrop = backdrop,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                onPostClick = onPostClick,
+                onUnsave = onPostUnsave,
+                onLoadMore = onLoadMorePosts
+            )
+        }
+    }
+}
+
+@Composable
+private fun SavedContentWheelSelector(
+    selectedTab: SavedContentTab,
+    contentColor: Color,
+    modifier: Modifier = Modifier,
+    onTabSelected: (SavedContentTab) -> Unit
+) {
+    val hapticFeedback = LocalHapticFeedback.current
+    val appearance = currentVormexAppearance()
+    val selectorShape = RoundedCornerShape(18.dp)
+
+    fun selectTab(tab: SavedContentTab, withHaptic: Boolean) {
+        if (tab == selectedTab) return
+        if (withHaptic) {
+            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+        }
+        onTabSelected(tab)
+    }
+
+    fun selectRelative(step: Int) {
+        selectTab(savedContentTabAt(selectedTab.savedIndex() + step), withHaptic = true)
+    }
+
+    Box(
+        modifier = modifier
+            .shadow(10.dp, selectorShape, clip = false)
+            .width(62.dp)
+            .height(126.dp)
+            .clip(selectorShape)
+            .background(appearance.cardColor.copy(alpha = if (appearance.isGlassTheme) 0.82f else 0.98f))
+            .border(1.dp, appearance.cardBorderColor, selectorShape)
+            .pointerInput(selectedTab) {
+                var dragDistance = 0f
+                var snappedDuringDrag = false
+                detectVerticalDragGestures(
+                    onDragStart = {
+                        dragDistance = 0f
+                        snappedDuringDrag = false
+                    },
+                    onVerticalDrag = { _, dragAmount ->
+                        dragDistance += dragAmount
+                        if (!snappedDuringDrag && abs(dragDistance) > 24f) {
+                            snappedDuringDrag = true
+                            selectRelative(if (dragDistance < 0f) 1 else -1)
+                        }
+                    },
+                    onDragEnd = {
+                        dragDistance = 0f
+                        snappedDuringDrag = false
+                    },
+                    onDragCancel = {
+                        dragDistance = 0f
+                        snappedDuringDrag = false
                     }
-                }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        SavedContentWheelCard(
+            tab = SavedContentTab.Profiles,
+            offsetFromSelected = SavedContentTab.Profiles.circularOffsetFrom(selectedTab),
+            contentColor = contentColor,
+            onClick = { selectTab(SavedContentTab.Profiles, withHaptic = true) },
+            modifier = Modifier.align(Alignment.Center)
+        )
+        SavedContentWheelCard(
+            tab = SavedContentTab.Reels,
+            offsetFromSelected = SavedContentTab.Reels.circularOffsetFrom(selectedTab),
+            contentColor = contentColor,
+            onClick = { selectTab(SavedContentTab.Reels, withHaptic = true) },
+            modifier = Modifier.align(Alignment.Center)
+        )
+        SavedContentWheelCard(
+            tab = SavedContentTab.Posts,
+            offsetFromSelected = SavedContentTab.Posts.circularOffsetFrom(selectedTab),
+            contentColor = contentColor,
+            onClick = { selectTab(SavedContentTab.Posts, withHaptic = true) },
+            modifier = Modifier.align(Alignment.Center)
+        )
+    }
+}
 
-                items(uiState.savedPosts.size) { index ->
-                    val post = uiState.savedPosts[index]
-                    SavedPostItem(
-                        post = post,
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        onClick = { onNavigateToPost(post.id) },
-                        onUnsave = { viewModel.toggleSave(post.id) }
+@Composable
+private fun SavedContentWheelCard(
+    tab: SavedContentTab,
+    offsetFromSelected: Int,
+    contentColor: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val distance = abs(offsetFromSelected)
+    val isActive = offsetFromSelected == 0
+    val targetScale = when (distance) {
+        0 -> 1f
+        1 -> 0.8f
+        else -> 0.6f
+    }
+    val targetAlpha = when (distance) {
+        0 -> 1f
+        1 -> 0.58f
+        else -> 0.3f
+    }
+    val targetOffsetY = when {
+        offsetFromSelected < 0 -> (-39).dp
+        offsetFromSelected > 0 -> 39.dp
+        else -> 0.dp
+    }
+    val cardScale by animateFloatAsState(
+        targetValue = targetScale,
+        animationSpec = spring(dampingRatio = 0.78f, stiffness = 420f),
+        label = "savedWheelScale"
+    )
+    val cardAlpha by animateFloatAsState(
+        targetValue = targetAlpha,
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = 360f),
+        label = "savedWheelAlpha"
+    )
+    val offsetY by animateDpAsState(
+        targetValue = targetOffsetY,
+        animationSpec = spring(dampingRatio = 0.78f, stiffness = 420f),
+        label = "savedWheelOffset"
+    )
+    val shape = RoundedCornerShape(14.dp)
+    val surfaceColor = if (isActive) contentColor.copy(alpha = 0.09f) else Color.Transparent
+    val borderColor = if (isActive) contentColor.copy(alpha = 0.24f) else Color.Transparent
+
+    Box(
+        modifier = modifier
+            .offset(y = offsetY)
+            .zIndex(if (isActive) 3f else 1f - distance.toFloat())
+            .graphicsLayer {
+                scaleX = cardScale
+                scaleY = cardScale
+                alpha = cardAlpha
+            }
+            .width(54.dp)
+            .height(32.dp)
+            .clip(shape)
+            .background(surfaceColor)
+            .border(1.dp, borderColor, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 5.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            tab.title,
+            style = TextStyle(
+                color = if (isActive) contentColor else contentColor.copy(alpha = 0.62f),
+                fontSize = if (isActive) 10.sp else 9.sp,
+                fontWeight = if (isActive) FontWeight.Bold else FontWeight.SemiBold,
+                textAlign = TextAlign.Center
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun SavedContentEmptyState(
+    tab: SavedContentTab,
+    contentColor: Color,
+    accentColor: Color
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .settingsSurface(contentColor = contentColor, cornerRadius = 18.dp)
+            .padding(horizontal = 20.dp, vertical = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Icon(
+            imageVector = when (tab) {
+                SavedContentTab.Profiles -> Icons.Outlined.PersonOutline
+                SavedContentTab.Reels -> Icons.Outlined.PlayCircleOutline
+                SavedContentTab.Posts -> Icons.AutoMirrored.Outlined.Article
+            },
+            contentDescription = null,
+            tint = accentColor,
+            modifier = Modifier.size(28.dp)
+        )
+        BasicText(
+            tab.emptyTitle,
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center
+            )
+        )
+        BasicText(
+            tab.emptyBody,
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.62f),
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                textAlign = TextAlign.Center
+            )
+        )
+    }
+}
+
+@Composable
+private fun SavedProfilesList(
+    listState: LazyListState,
+    profiles: List<com.kyant.backdrop.catalog.network.models.SavedProfileItem>,
+    hasMore: Boolean,
+    isLoadingMore: Boolean,
+    contentColor: Color,
+    accentColor: Color,
+    onProfileClick: (com.kyant.backdrop.catalog.network.models.SavedProfileItem) -> Unit,
+    onUnsave: (com.kyant.backdrop.catalog.network.models.SavedProfileItem) -> Unit,
+    onLoadMore: () -> Unit
+) {
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (profiles.isEmpty()) {
+            item {
+                SavedContentEmptyState(
+                    tab = SavedContentTab.Profiles,
+                    contentColor = contentColor,
+                    accentColor = accentColor
+                )
+            }
+        } else {
+            items(
+                items = profiles,
+                key = { profile -> profile.id }
+            ) { savedProfile ->
+                SavedProfileRow(
+                    item = savedProfile,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onClick = { onProfileClick(savedProfile) },
+                    onUnsave = { onUnsave(savedProfile) }
+                )
+            }
+        }
+
+        if (hasMore || isLoadingMore) {
+            item {
+                SavedLoadMoreRow(
+                    tab = SavedContentTab.Profiles,
+                    isLoadingMore = isLoadingMore,
+                    accentColor = accentColor,
+                    onLoadMore = onLoadMore
+                )
+            }
+        }
+        item { Spacer(Modifier.height(80.dp)) }
+    }
+}
+
+@Composable
+private fun SavedReelsList(
+    listState: LazyListState,
+    reels: List<com.kyant.backdrop.catalog.network.models.Reel>,
+    hasMore: Boolean,
+    isLoadingMore: Boolean,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    onReelClick: (com.kyant.backdrop.catalog.network.models.Reel) -> Unit,
+    onUnsave: (com.kyant.backdrop.catalog.network.models.Reel) -> Unit,
+    onLoadMore: () -> Unit
+) {
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (reels.isEmpty()) {
+            item {
+                SavedContentEmptyState(
+                    tab = SavedContentTab.Reels,
+                    contentColor = contentColor,
+                    accentColor = accentColor
+                )
+            }
+        } else {
+            items(
+                items = reels,
+                key = { reel -> reel.id }
+            ) { reel ->
+                SavedReelItem(
+                    reel = reel,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onClick = { onReelClick(reel) },
+                    onUnsave = { onUnsave(reel) }
+                )
+            }
+        }
+
+        if (hasMore || isLoadingMore) {
+            item {
+                SavedLoadMoreRow(
+                    tab = SavedContentTab.Reels,
+                    isLoadingMore = isLoadingMore,
+                    accentColor = accentColor,
+                    onLoadMore = onLoadMore
+                )
+            }
+        }
+        item { Spacer(Modifier.height(80.dp)) }
+    }
+}
+
+@Composable
+private fun SavedPostsList(
+    listState: LazyListState,
+    posts: List<com.kyant.backdrop.catalog.network.models.FullPost>,
+    hasMore: Boolean,
+    isLoadingMore: Boolean,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    onPostClick: (com.kyant.backdrop.catalog.network.models.FullPost) -> Unit,
+    onUnsave: (com.kyant.backdrop.catalog.network.models.FullPost) -> Unit,
+    onLoadMore: () -> Unit
+) {
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (posts.isEmpty()) {
+            item {
+                SavedContentEmptyState(
+                    tab = SavedContentTab.Posts,
+                    contentColor = contentColor,
+                    accentColor = accentColor
+                )
+            }
+        } else {
+            items(
+                items = posts,
+                key = { post -> post.id }
+            ) { post ->
+                SavedPostItem(
+                    post = post,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onClick = { onPostClick(post) },
+                    onUnsave = { onUnsave(post) }
+                )
+            }
+        }
+
+        if (hasMore || isLoadingMore) {
+            item {
+                SavedLoadMoreRow(
+                    tab = SavedContentTab.Posts,
+                    isLoadingMore = isLoadingMore,
+                    accentColor = accentColor,
+                    onLoadMore = onLoadMore
+                )
+            }
+        }
+        item { Spacer(Modifier.height(80.dp)) }
+    }
+}
+
+@Composable
+private fun SavedLoadMoreRow(
+    tab: SavedContentTab,
+    isLoadingMore: Boolean,
+    accentColor: Color,
+    onLoadMore: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(enabled = !isLoadingMore, onClick = onLoadMore)
+            .padding(vertical = 14.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isLoadingMore) {
+            CircularProgressIndicator(
+                color = accentColor,
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(22.dp)
+            )
+        } else {
+            BasicText(
+                "Load more ${tab.title.lowercase()}",
+                style = TextStyle(accentColor, 13.sp, FontWeight.SemiBold)
+            )
+        }
+    }
+}
+
+private fun com.kyant.backdrop.catalog.network.models.FullPost.savedPreviewImageUrl(): String? =
+    when {
+        !videoThumbnail.isNullOrBlank() -> videoThumbnail
+        mediaUrls.isNotEmpty() -> mediaUrls.firstOrNull()
+        !articleCoverImage.isNullOrBlank() -> articleCoverImage
+        !linkImage.isNullOrBlank() -> linkImage
+        !documentThumbnail.isNullOrBlank() -> documentThumbnail
+        !celebrationGifUrl.isNullOrBlank() -> celebrationGifUrl
+        else -> null
+    }
+
+private fun com.kyant.backdrop.catalog.network.models.FullPost.savedPreviewText(): String =
+    listOf(content, articleTitle, linkTitle, documentName)
+        .firstOrNull { !it.isNullOrBlank() }
+        .savedPreviewSnippet(
+            when {
+                type.equals("VIDEO", ignoreCase = true) || !videoUrl.isNullOrBlank() -> "Video post"
+                type.equals("IMAGE", ignoreCase = true) || mediaUrls.isNotEmpty() -> "Photo post"
+                type.equals("POLL", ignoreCase = true) -> "Poll post"
+                type.equals("ARTICLE", ignoreCase = true) -> "Article post"
+                else -> "Saved post"
+            }
+        )
+
+@Composable
+private fun SavedMediaThumbnail(
+    imageUrl: String?,
+    isVideo: Boolean,
+    fallbackIcon: ImageVector,
+    contentColor: Color,
+    accentColor: Color,
+    contentDescription: String?,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(contentColor.copy(alpha = 0.08f)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (!imageUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(imageUrl)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            if (isVideo) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.42f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.PlayCircleOutline,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
                     )
                 }
-                
-                item { Spacer(Modifier.height(80.dp)) }
+            }
+        } else {
+            Icon(
+                imageVector = fallbackIcon,
+                contentDescription = null,
+                tint = accentColor.copy(alpha = 0.78f),
+                modifier = Modifier.size(28.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SavedProfileRow(
+    item: com.kyant.backdrop.catalog.network.models.SavedProfileItem,
+    contentColor: Color,
+    accentColor: Color,
+    onClick: () -> Unit,
+    onUnsave: () -> Unit
+) {
+    val user = item.user
+    val title = user.name.ifBlank { user.username }
+    val subtitle = listOfNotNull(
+        user.headline?.takeIf { it.isNotBlank() },
+        user.college?.takeIf { it.isNotBlank() }
+    ).joinToString(" • ")
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .settingsSurface(contentColor = contentColor, cornerRadius = 16.dp)
+            .clickable(onClick = onClick)
+            .padding(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(54.dp)
+                    .clip(CircleShape)
+                    .background(accentColor.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (!user.profileImage.isNullOrBlank()) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(user.profileImage)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.PersonOutline,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+
+            Spacer(Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    BasicText(
+                        title,
+                        style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    VerificationBadge(
+                        verified = user.hasVerificationBadge(),
+                        badgeStyle = user.verificationBadgeStyle(),
+                        size = VerificationBadgeSize.Small
+                    )
+                }
+
+                if (subtitle.isNotBlank()) {
+                    BasicText(
+                        subtitle,
+                        style = TextStyle(contentColor.copy(alpha = 0.68f), 12.sp),
+                        modifier = Modifier.padding(top = 4.dp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                BasicText(
+                    "@${user.username}",
+                    style = TextStyle(contentColor.copy(alpha = 0.48f), 11.sp),
+                    modifier = Modifier.padding(top = 5.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(Modifier.width(8.dp))
+
+            Box(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable(onClick = onUnsave)
+                    .padding(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Bookmark,
+                    contentDescription = "Unsave profile",
+                    tint = contentColor.copy(alpha = 0.72f),
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
     }
@@ -2676,6 +3875,7 @@ private fun SavedReelItem(
     reel: com.kyant.backdrop.catalog.network.models.Reel,
     backdrop: LayerBackdrop,
     contentColor: Color,
+    accentColor: Color,
     onClick: () -> Unit,
     onUnsave: () -> Unit
 ) {
@@ -2690,6 +3890,18 @@ private fun SavedReelItem(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.Top
         ) {
+            SavedMediaThumbnail(
+                imageUrl = reel.thumbnailUrl ?: reel.previewGifUrl,
+                isVideo = true,
+                fallbackIcon = Icons.Outlined.PlayCircleOutline,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                contentDescription = "Reel thumbnail",
+                modifier = Modifier.size(width = 72.dp, height = 96.dp)
+            )
+
+            Spacer(Modifier.width(12.dp))
+
             Column(modifier = Modifier.weight(1f)) {
                 BasicText(
                     reel.author.name ?: "Unknown",
@@ -2697,9 +3909,11 @@ private fun SavedReelItem(
                 )
 
                 BasicText(
-                    (reel.caption ?: "").take(100) + if ((reel.caption?.length ?: 0) > 100) "..." else "",
+                    (reel.caption ?: reel.title).savedPreviewSnippet("Saved reel"),
                     style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp),
-                    modifier = Modifier.padding(top = 4.dp)
+                    modifier = Modifier.padding(top = 4.dp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
 
                 Row(
@@ -2749,6 +3963,19 @@ private fun SavedPostItem(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.Top
         ) {
+            val isVideoPost = post.type.equals("VIDEO", ignoreCase = true) || !post.videoUrl.isNullOrBlank()
+            SavedMediaThumbnail(
+                imageUrl = post.savedPreviewImageUrl(),
+                isVideo = isVideoPost,
+                fallbackIcon = if (isVideoPost) Icons.Outlined.PlayCircleOutline else Icons.Outlined.Image,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                contentDescription = "Post thumbnail",
+                modifier = Modifier.size(width = 88.dp, height = 74.dp)
+            )
+
+            Spacer(Modifier.width(12.dp))
+
             Column(modifier = Modifier.weight(1f)) {
                 BasicText(
                     post.author.name ?: "Unknown",
@@ -2756,9 +3983,11 @@ private fun SavedPostItem(
                 )
                 
                 BasicText(
-                    (post.content ?: "").take(100) + if ((post.content?.length ?: 0) > 100) "..." else "",
+                    post.savedPreviewText(),
                     style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp),
-                    modifier = Modifier.padding(top = 4.dp)
+                    modifier = Modifier.padding(top = 4.dp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
                 
                 Row(
@@ -2793,6 +4022,9 @@ private fun SavedPostItem(
 fun LogoutConfirmationDialog(
     contentColor: Color,
     accentColor: Color,
+    title: String = "Log Out",
+    message: String = "Are you sure you want to log out? You'll need to sign in again to access your account.",
+    confirmText: String = "Log Out",
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -2803,14 +4035,14 @@ fun LogoutConfirmationDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                "Log Out",
+                title,
                 color = dialogTextColor,
                 fontWeight = FontWeight.Bold
             )
         },
         text = {
             Text(
-                "Are you sure you want to log out? You'll need to sign in again to access your account.",
+                message,
                 color = dialogTextColor.copy(alpha = 0.74f)
             )
         },
@@ -2819,7 +4051,7 @@ fun LogoutConfirmationDialog(
                 onClick = onConfirm,
                 colors = ButtonDefaults.textButtonColors(contentColor = Color.Red)
             ) {
-                Text("Log Out")
+                Text(confirmText)
             }
         },
         dismissButton = {
@@ -3080,30 +4312,50 @@ fun SettingsOptionItem(
     accentColor: Color,
     options: List<Pair<String, String>>,
     selectedOption: String,
+    flat: Boolean = false,
     onOptionSelected: (String) -> Unit
 ) {
     val isDarkSurface = contentColor == Color.White
-    Box(
-        modifier = Modifier
+    val containerModifier = if (flat) {
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 2.dp, vertical = 2.dp)
+    } else {
+        Modifier
             .fillMaxWidth()
             .settingsSurface(contentColor = contentColor, cornerRadius = 18.dp)
             .padding(16.dp)
+    }
+    Box(
+        modifier = containerModifier
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SettingsIconBadge(icon = icon, accentColor = accentColor)
-                Spacer(Modifier.width(16.dp))
+                if (flat) {
+                    NotificationPlainIcon(icon = icon, accentColor = accentColor)
+                    Spacer(Modifier.width(12.dp))
+                } else {
+                    SettingsIconBadge(icon = icon, accentColor = accentColor)
+                    Spacer(Modifier.width(16.dp))
+                }
                 Column(modifier = Modifier.weight(1f)) {
                     BasicText(
                         title,
-                        style = TextStyle(contentColor, 16.sp, FontWeight.Medium)
+                        style = TextStyle(
+                            color = contentColor,
+                            fontSize = if (flat) 14.sp else 16.sp,
+                            fontWeight = if (flat) FontWeight.SemiBold else FontWeight.Medium
+                        )
                     )
                     BasicText(
                         subtitle,
-                        style = TextStyle(contentColor.copy(alpha = 0.5f), 12.sp)
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = if (flat) 0.58f else 0.5f),
+                            fontSize = if (flat) 11.sp else 12.sp
+                        )
                     )
                 }
             }
@@ -3116,20 +4368,28 @@ fun SettingsOptionItem(
             ) {
                 options.forEach { (value, label) ->
                     val isSelected = value == selectedOption
+                    val pillBackground = if (flat) {
+                        if (isSelected) accentColor.copy(alpha = 0.16f)
+                        else contentColor.copy(alpha = 0.05f)
+                    } else {
+                        if (isSelected) accentColor.copy(alpha = 0.18f)
+                        else if (isDarkSurface) Color.White.copy(alpha = 0.10f)
+                        else Color.White.copy(alpha = 0.20f)
+                    }
+                    val pillBorder = if (isSelected) {
+                        accentColor.copy(alpha = 0.36f)
+                    } else if (isDarkSurface) {
+                        Color.White.copy(alpha = 0.14f)
+                    } else {
+                        Color.White.copy(alpha = 0.34f)
+                    }
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(999.dp))
-                            .background(
-                                if (isSelected) accentColor.copy(alpha = 0.18f)
-                                else if (isDarkSurface) Color.White.copy(alpha = 0.10f)
-                                else Color.White.copy(alpha = 0.20f)
-                            )
-                            .border(
-                                1.dp,
-                                if (isSelected) accentColor.copy(alpha = 0.36f)
-                                else if (isDarkSurface) Color.White.copy(alpha = 0.14f)
-                                else Color.White.copy(alpha = 0.34f),
-                                RoundedCornerShape(999.dp)
+                            .background(pillBackground)
+                            .then(
+                                if (flat) Modifier
+                                else Modifier.border(1.dp, pillBorder, RoundedCornerShape(999.dp))
                             )
                             .clickable { onOptionSelected(value) }
                             .padding(horizontal = 14.dp, vertical = 10.dp)
@@ -3162,6 +4422,9 @@ fun SettingsOptionItem(
 
 // ==================== HELPER FUNCTIONS ====================
 
+private fun isRuntimePermissionGranted(context: Context, permission: String): Boolean =
+    ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+
 private fun openAppNotificationSettings(context: Context) {
     val intent = Intent().apply {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -3173,6 +4436,15 @@ private fun openAppNotificationSettings(context: Context) {
         }
     }
     launchIntentSafely(context, intent)
+}
+
+private fun openAppPermissionSettings(context: Context) {
+    launchIntentSafely(
+        context,
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.parse("package:${context.packageName}")
+        }
+    )
 }
 
 private fun openUrl(context: Context, url: String) {

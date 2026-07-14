@@ -3,19 +3,33 @@ package com.kyant.backdrop.catalog.linkedin.reels
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Build
+import android.util.Log
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.*
@@ -30,22 +44,36 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.foundation.overscroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.UploadFile
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -53,10 +81,8 @@ import androidx.activity.compose.BackHandler
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -65,9 +91,31 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.airbnb.lottie.compose.LottieAnimation
+import com.airbnb.lottie.compose.LottieCompositionSpec
+import com.airbnb.lottie.compose.LottieConstants
+import com.airbnb.lottie.compose.animateLottieCompositionAsState
+import com.airbnb.lottie.compose.rememberLottieComposition
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.catalog.BuildConfig
+import com.kyant.backdrop.catalog.R
+import com.kyant.backdrop.catalog.ads.ManagedReelsAdPage
+import com.kyant.backdrop.catalog.ads.VormexAdsManager
+import com.kyant.backdrop.catalog.ads.VormexNativeAdCache
+import com.kyant.backdrop.catalog.ads.VormexNativeReelsAdPage
+import com.kyant.backdrop.catalog.linkedin.CommentIcon
+import com.kyant.backdrop.catalog.linkedin.SaveLottieEffect
+import com.kyant.backdrop.catalog.linkedin.VerificationBadge
+import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
+import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
+import com.kyant.backdrop.catalog.linkedin.posts.formatTimeAgo
+import com.kyant.backdrop.catalog.network.models.ManagedAdPlacement
 import com.kyant.backdrop.catalog.network.models.Reel
+import com.kyant.backdrop.catalog.network.models.ReelAuthor
 import com.kyant.backdrop.catalog.network.models.ReelComment
+import com.kyant.backdrop.catalog.network.models.MentionUser
+import com.kyant.backdrop.catalog.ui.blockTouchPassthrough
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -89,6 +137,8 @@ fun ReelsPreviewSection(
     isLoading: Boolean = false,
     onReelClick: (Int) -> Unit = {},
     onSeeAllClick: () -> Unit = {},
+    onCreateClick: () -> Unit = {},
+    reduceAnimations: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -122,21 +172,35 @@ fun ReelsPreviewSection(
                 }
                 Spacer(Modifier.width(8.dp))
                 BasicText(
-                    "Reels",
+                    "Trending Reels",
                     style = TextStyle(contentColor, 16.sp, FontWeight.SemiBold)
                 )
             }
             
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(16.dp))
-                    .clickable { onSeeAllClick() }
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                BasicText(
-                    "See all →",
-                    style = TextStyle(accentColor, 14.sp, FontWeight.Medium)
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(accentColor.copy(alpha = 0.14f))
+                        .clickable { onCreateClick() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    BasicText(
+                        "+ Create",
+                        style = TextStyle(accentColor, 13.sp, FontWeight.SemiBold)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable { onSeeAllClick() }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    BasicText(
+                        "See all →",
+                        style = TextStyle(accentColor, 14.sp, FontWeight.Medium)
+                    )
+                }
             }
         }
         
@@ -174,6 +238,7 @@ fun ReelsPreviewSection(
                     ReelThumbnailCard(
                         reel = reel,
                         backdrop = backdrop,
+                        reduceAnimations = reduceAnimations,
                         onClick = { onReelClick(index) }
                     )
                 }
@@ -198,10 +263,23 @@ fun ReelsPreviewSection(
 private fun ReelThumbnailCard(
     reel: Reel,
     backdrop: LayerBackdrop,
+    reduceAnimations: Boolean = false,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val posterUrl = remember(reel.thumbnailUrl, reel.previewGifUrl) {
+        reel.thumbnailUrl?.takeIf { it.isNotBlank() }
+            ?: reel.previewGifUrl?.takeIf { it.isNotBlank() }
+    }
+    val thumbnailRequest = remember(context, posterUrl, reduceAnimations) {
+        posterUrl?.let { url ->
+            ImageRequest.Builder(context)
+                .data(url)
+                .crossfade(if (reduceAnimations) 0 else 160)
+                .build()
+        }
+    }
     
     Box(
         modifier = modifier
@@ -210,16 +288,16 @@ private fun ReelThumbnailCard(
             .clip(RoundedCornerShape(12.dp))
             .clickable { onClick() }
     ) {
-        // Thumbnail
-        AsyncImage(
-            model = ImageRequest.Builder(context)
-                .data(reel.thumbnailUrl ?: reel.videoUrl)
-                .crossfade(true)
-                .build(),
-            contentDescription = reel.title ?: "Reel",
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-        )
+        ReelThumbnailFallback()
+
+        thumbnailRequest?.let { request ->
+            AsyncImage(
+                model = request,
+                contentDescription = reel.title ?: "Reel",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
         
         // Gradient overlay at bottom
         Box(
@@ -277,6 +355,33 @@ private fun ReelThumbnailCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun ReelThumbnailFallback() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF111827),
+                        Color(0xFF312E81),
+                        Color(0xFFE11D48)
+                    )
+                )
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(R.drawable.vormex_logo),
+            contentDescription = "Vormex",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxWidth(0.58f)
+                .aspectRatio(1f)
+        )
     }
 }
 
@@ -354,6 +459,7 @@ private fun ExploreMoreCard(
 @Composable
 fun ReelsFeedScreen(
     reels: List<Reel>,
+    managedAdPlacements: List<ManagedAdPlacement> = emptyList(),
     initialIndex: Int = 0,
     onDismiss: () -> Unit,
     onLike: (String) -> Unit = {},
@@ -362,10 +468,132 @@ fun ReelsFeedScreen(
     onShare: (String) -> Unit = {},
     onProfileClick: (String) -> Unit = {},
     onTrackView: (String, Long, Boolean) -> Unit = { _, _, _ -> },
-    onLoadMore: () -> Unit = {}
+    onReelChanged: (Int) -> Unit = {},
+    onFirstFrameRendered: (String) -> Unit = {},
+    playerForIndex: (Int) -> ExoPlayer? = { null },
+    onPlaybackError: (Int) -> Boolean = { false },
+    onRetryPlayback: (Int) -> Unit = {},
+    onPausePlayback: (Boolean) -> Unit = {},
+    onResumePlayback: (Int) -> Unit = {},
+    onReleasePlayback: () -> Unit = {},
+    onLoadMore: () -> Unit = {},
+    onManagedAdImpression: (ManagedAdPlacement) -> Unit = {},
+    onManagedAdClick: (ManagedAdPlacement) -> Unit = {},
+    isDraftPreview: Boolean = false,
+    isPublishingDraft: Boolean = false,
+    onPublishDraftPreview: (String) -> Unit = {},
+    onCreateClick: () -> Unit = {},
+    showNativeAds: Boolean = false
 ) {
+    val adDebugTag = "ReelsAds"
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val hostActivity = remember(context) { context.findActivity() }
+    val openProgress = remember { Animatable(0f) }
+    val canRequestNativeAds by VormexAdsManager.canRequestAds.collectAsState()
+    var nativeAdSlotsVersion by remember { mutableIntStateOf(0) }
+    var adInsertionAnchorReelIndex by remember(initialIndex) { mutableIntStateOf(initialIndex.coerceAtLeast(0)) }
+    val includeNativeAdFallback =
+        BuildConfig.ADS_ENABLED && canRequestNativeAds && showNativeAds && !isDraftPreview
+    val activeManagedAdPlacements = if (BuildConfig.ADS_ENABLED && !isDraftPreview) {
+        managedAdPlacements
+    } else {
+        emptyList()
+    }
+    val includeAdSlots = includeNativeAdFallback || activeManagedAdPlacements.isNotEmpty()
+    val nativeSequencesForFeed = remember(reels.size, includeNativeAdFallback, activeManagedAdPlacements) {
+        reelsNativeAdSequencesToPreload(
+            reelCount = reels.size,
+            includeNativeAds = includeNativeAdFallback,
+            managedAdPlacements = activeManagedAdPlacements
+        )
+    }
+    val readyNativeAdSequences = remember(nativeSequencesForFeed, nativeAdSlotsVersion) {
+        nativeSequencesForFeed
+            .filter { sequence -> VormexNativeAdCache.cachedAd("reels_native_$sequence") != null }
+            .toSet()
+    }
+    val skippedNativeAdSequences = remember(nativeSequencesForFeed, readyNativeAdSequences, adInsertionAnchorReelIndex) {
+        nativeSequencesForFeed.filter { sequence ->
+            val slotAfterReelCount = ReelsFirstNativeAdAfterItems + (sequence * ReelsNativeAdIntervalItems)
+            slotAfterReelCount < adInsertionAnchorReelIndex + 2 && sequence !in readyNativeAdSequences
+        }
+    }
+    val feedPages = remember(
+        reels,
+        includeNativeAdFallback,
+        activeManagedAdPlacements,
+        readyNativeAdSequences,
+        adInsertionAnchorReelIndex
+    ) {
+        buildReelsFeedPages(
+            reels = reels,
+            includeNativeAds = includeNativeAdFallback,
+            managedAdPlacements = activeManagedAdPlacements,
+            readyNativeAdSequences = readyNativeAdSequences,
+            earliestNativeAdAfterReelCount = adInsertionAnchorReelIndex + 2
+        )
+    }
+
+    LaunchedEffect(
+        BuildConfig.ADS_ENABLED,
+        canRequestNativeAds,
+        showNativeAds,
+        isDraftPreview,
+        reels.size,
+        activeManagedAdPlacements.size,
+        nativeSequencesForFeed,
+        adInsertionAnchorReelIndex
+    ) {
+        val nativeAdPages = feedPages.count { it is ReelsFeedPage.NativeAdItem }
+        val managedAdPages = feedPages.count { it is ReelsFeedPage.ManagedAdItem }
+        val nativeSequencesToPreload = nativeSequencesForFeed.filter { sequence ->
+            val slotAfterReelCount = ReelsFirstNativeAdAfterItems + (sequence * ReelsNativeAdIntervalItems)
+            slotAfterReelCount <= adInsertionAnchorReelIndex + 5
+        }
+        Log.d(
+            adDebugTag,
+            "state enabled=${BuildConfig.ADS_ENABLED}, canRequest=$canRequestNativeAds, showNative=$showNativeAds, draft=$isDraftPreview, reels=${reels.size}, nativePages=$nativeAdPages, managedPages=$managedAdPages, preloadNative=$nativeSequencesToPreload, unit=${BuildConfig.ADMOB_NATIVE_REELS_AD_UNIT_ID.take(24)}..."
+        )
+        nativeSequencesToPreload.forEach { sequence ->
+            val slotKey = "reels_native_$sequence"
+            ReelsTelemetry.nativeAd(context, action = "native_ad_requested", slotKey = slotKey)
+            VormexNativeAdCache.load(
+                context = context,
+                slotKey = slotKey,
+                adUnitId = BuildConfig.ADMOB_NATIVE_REELS_AD_UNIT_ID,
+                onLoaded = {
+                    Log.d(adDebugTag, "preloaded native reels ad sequence=$sequence")
+                    ReelsTelemetry.nativeAd(context, action = "native_ad_filled", slotKey = slotKey)
+                    nativeAdSlotsVersion++
+                },
+                onFailed = { reason ->
+                    Log.w(adDebugTag, "native reels ad sequence=$sequence failed: $reason")
+                    val action = if (reason.contains("no fill", ignoreCase = true)) {
+                        "native_ad_no_fill"
+                    } else {
+                        "native_ad_load_failed"
+                    }
+                    ReelsTelemetry.nativeAd(context, action = action, slotKey = slotKey, reason = reason)
+                }
+            )
+        }
+    }
+    LaunchedEffect(skippedNativeAdSequences) {
+        skippedNativeAdSequences.forEach { sequence ->
+            ReelsTelemetry.nativeAd(
+                context,
+                action = "ad_slot_skipped",
+                slotKey = "reels_native_$sequence",
+                reason = "not_ready_before_anchor"
+            )
+        }
+    }
+    val initialPage = remember(initialIndex, feedPages) {
+        feedPages.indexOfFirst { page ->
+            page is ReelsFeedPage.ReelItem && page.reelIndex == initialIndex.coerceIn(0, (reels.size - 1).coerceAtLeast(0))
+        }.takeIf { it >= 0 } ?: 0
+    }
 
     DisposableEffect(hostActivity) {
         hostActivity?.let { activity ->
@@ -382,19 +610,80 @@ fun ReelsFeedScreen(
         } ?: onDispose { }
     }
 
+    LaunchedEffect(Unit) {
+        openProgress.animateTo(
+            targetValue = 1f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        )
+    }
+
     val pagerState = rememberPagerState(
-        initialPage = initialIndex,
-        pageCount = { reels.size }
+        initialPage = initialPage,
+        pageCount = { feedPages.size }
     )
     
     // Track current visible reel for autoplay
     val currentPage by remember { derivedStateOf { pagerState.currentPage } }
+    val currentReelIndex = (feedPages.getOrNull(currentPage) as? ReelsFeedPage.ReelItem)?.reelIndex
+    val isCurrentPageNativeAd = feedPages.getOrNull(currentPage).let { page ->
+        page is ReelsFeedPage.NativeAdItem || page is ReelsFeedPage.ManagedAdItem
+    }
     
-    // Preload next reels
-    LaunchedEffect(currentPage) {
-        // Load more when near the end
-        if (currentPage >= reels.size - 8) {
+    LaunchedEffect(currentPage, reels.size, feedPages.size, includeAdSlots) {
+        val reelIndex = currentReelIndex
+        if (reelIndex != null) {
+            adInsertionAnchorReelIndex = reelIndex
+            onReelChanged(reelIndex)
+            onResumePlayback(reelIndex)
+            if (shouldPrefetchMoreReels(reelIndex, reels.size)) {
+                onLoadMore()
+            }
+        } else {
+            onPausePlayback(false)
+        }
+
+        if (ReelsNativeAdPagingPolicy.shouldLoadMoreForPage(currentPage, feedPages.size)) {
             onLoadMore()
+        }
+    }
+
+    LaunchedEffect(reels, includeAdSlots, currentPage) {
+        if (reels.isNotEmpty()) {
+            (feedPages.getOrNull(currentPage) as? ReelsFeedPage.ReelItem)
+                ?.reelIndex
+                ?.let { onResumePlayback(it.coerceIn(0, reels.lastIndex)) }
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, currentPage, reels.size, includeAdSlots) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> onPausePlayback(false)
+                Lifecycle.Event.ON_RESUME -> {
+                    val reelIndex = (feedPages.getOrNull(currentPage) as? ReelsFeedPage.ReelItem)?.reelIndex
+                    if (reelIndex != null) {
+                        onResumePlayback(reelIndex)
+                    } else {
+                        onPausePlayback(false)
+                    }
+                }
+                Lifecycle.Event.ON_STOP -> onPausePlayback(true)
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            onReleasePlayback()
         }
     }
     
@@ -403,49 +692,114 @@ fun ReelsFeedScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .blockTouchPassthrough()
+            .graphicsLayer {
+                alpha = openProgress.value
+                val scale = 0.96f + (openProgress.value * 0.04f)
+                scaleX = scale
+                scaleY = scale
+            }
             .background(Color.Black)
     ) {
         VerticalPager(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),
             beyondViewportPageCount = 1,
-            key = { index -> reels[index].id },
+            key = { index -> feedPages[index].pageKey },
             pageSize = PageSize.Fill,
             pageSpacing = 0.dp
         ) { page ->
-            val reel = reels[page]
-            val isActive = page == currentPage
+            when (val feedPage = feedPages[page]) {
+                is ReelsFeedPage.ReelItem -> {
+                    val reel = feedPage.reel
+                    val reelIndex = feedPage.reelIndex
+                    val isActive = page == currentPage
+                    val player = if (isActive) playerForIndex(reelIndex) else null
 
-            ReelCard(
-                reel = reel,
-                isActive = isActive,
-                onLike = { onLike(reel.id) },
-                onSave = { onSave(reel.id) },
-                onComment = { onComment(reel.id) },
-                onShare = { onShare(reel.id) },
-                onProfileClick = { onProfileClick(reel.author.id) },
-                onTrackView = { watchTime, completed ->
-                    onTrackView(reel.id, watchTime, completed)
+                    ReelCard(
+                        pageIndex = reelIndex,
+                        reel = reel,
+                        player = player,
+                        isActive = isActive,
+                        onLike = { onLike(reel.id) },
+                        onSave = { onSave(reel.id) },
+                        onComment = { onComment(reel.id) },
+                        onShare = { onShare(reel.id) },
+                        onProfileClick = { onProfileClick(reel.author.id) },
+                        onPlaybackError = { onPlaybackError(reelIndex) },
+                        onRetryPlayback = { onRetryPlayback(reelIndex) },
+                        onTrackView = { watchTime, completed ->
+                            onTrackView(reel.id, watchTime, completed)
+                        },
+                        onFirstFrameRendered = { onFirstFrameRendered(reel.id) }
+                    )
                 }
-            )
+                is ReelsFeedPage.NativeAdItem -> {
+                    LaunchedEffect(feedPage.slotKey) {
+                        ReelsTelemetry.nativeAd(context, action = "native_ad_shown", slotKey = feedPage.slotKey)
+                    }
+                    VormexNativeReelsAdPage(
+                        slotKey = feedPage.slotKey,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                is ReelsFeedPage.ManagedAdItem -> {
+                    ManagedReelsAdPage(
+                        ad = feedPage.ad,
+                        modifier = Modifier.fillMaxSize(),
+                        onImpression = onManagedAdImpression,
+                        onClick = onManagedAdClick
+                    )
+                }
+            }
         }
 
-        // Close button
-        Box(
-            modifier = Modifier
-                .statusBarsPadding()
-                .padding(16.dp)
-                .size(40.dp)
-                .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.5f))
-                .clickable { onDismiss() }
-                .align(Alignment.TopStart),
-            contentAlignment = Alignment.Center
-        ) {
-            BasicText(
-                "✕",
-                style = TextStyle(Color.White, 18.sp, FontWeight.Bold)
-            )
+        if (!isCurrentPageNativeAd) {
+            val currentReelForActions = currentReelIndex?.let { reels.getOrNull(it) }
+            if (isDraftPreview && currentReelForActions != null) {
+                val canPublish = !isPublishingDraft
+                Row(
+                    modifier = Modifier
+                        .statusBarsPadding()
+                        .padding(16.dp)
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(if (canPublish) Color(0xFF0095F6) else Color.White.copy(alpha = 0.18f))
+                        .clickable(enabled = canPublish) {
+                            onPublishDraftPreview(currentReelForActions.id)
+                        }
+                        .padding(horizontal = 14.dp)
+                        .align(Alignment.TopEnd),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.UploadFile,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(19.dp)
+                    )
+                    BasicText(
+                        if (isPublishingDraft) "Publishing" else "Publish",
+                        style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold)
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .statusBarsPadding()
+                        .padding(16.dp)
+                        .size(44.dp)
+                        .clickable { onCreateClick() }
+                        .align(Alignment.TopEnd),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        "+",
+                        style = TextStyle(Color.White, 26.sp, FontWeight.Bold)
+                    )
+                }
+            }
         }
     }
 }
@@ -456,170 +810,311 @@ fun ReelsFeedScreen(
 @OptIn(UnstableApi::class)
 @Composable
 private fun ReelCard(
+    pageIndex: Int,
     reel: Reel,
+    player: ExoPlayer?,
     isActive: Boolean,
     onLike: () -> Unit,
     onSave: () -> Unit,
     onComment: () -> Unit,
     onShare: () -> Unit,
     onProfileClick: () -> Unit,
-    onTrackView: (Long, Boolean) -> Unit
+    onPlaybackError: () -> Boolean,
+    onRetryPlayback: () -> Unit,
+    onTrackView: (Long, Boolean) -> Unit,
+    onFirstFrameRendered: () -> Unit
 ) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val scope = rememberCoroutineScope()
+    val networkAvailable by rememberNetworkAvailable()
     
-    var isPlaying by remember { mutableStateOf(false) }
-    var isLoading by remember { mutableStateOf(true) }
-    var showHeart by remember { mutableStateOf(false) }
-    var isLiked by remember { mutableStateOf(reel.isLiked) }
-    var likesCount by remember { mutableIntStateOf(reel.likesCount) }
-    var isSaved by remember { mutableStateOf(reel.isSaved) }
+    var isPlaying by remember(reel.id) { mutableStateOf(false) }
+    var isLoading by remember(reel.id) { mutableStateOf(true) }
+    var hasRenderedFirstFrame by remember(reel.id) { mutableStateOf(false) }
+    var playbackErrorMessage by remember(reel.id) { mutableStateOf<String?>(null) }
+    var waitingForNetwork by remember(reel.id) { mutableStateOf(false) }
+    var showLikeAnimation by remember(reel.id) { mutableStateOf(false) }
+    var likeAnimationTrigger by remember(reel.id) { mutableIntStateOf(0) }
+    var isLiked by remember(reel.id) { mutableStateOf(reel.isLiked) }
+    var likesCount by remember(reel.id) { mutableIntStateOf(reel.likesCount) }
+    var isSaved by remember(reel.id) { mutableStateOf(reel.isSaved) }
+    var saveEffectTrigger by remember(reel.id) { mutableIntStateOf(0) }
+    val coroutineScope = rememberCoroutineScope()
+    val mediaPulseScale = remember(reel.id) { Animatable(1f) }
+    val likeBurstScale = remember(reel.id) { Animatable(0.82f) }
+    var horizontalDragDistance by remember(reel.id) { mutableFloatStateOf(0f) }
     
     // Watch time tracking
-    var watchStartTime by remember { mutableLongStateOf(0L) }
-    var viewTracked by remember { mutableStateOf(false) }
-    
-    // Create ExoPlayer
-    val exoPlayer = remember {
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                2500,
-                45000,
-                800,
-                1800
-            )
-            .build()
+    var watchStartTime by remember(reel.id) { mutableLongStateOf(0L) }
+    var viewTracked by remember(reel.id) { mutableStateOf(false) }
+    val posterUrl = remember(reel.id, reel.thumbnailUrl, reel.previewGifUrl) {
+        reel.thumbnailUrl?.takeIf { it.isNotBlank() }
+            ?: reel.previewGifUrl?.takeIf { it.isNotBlank() }
+    }
 
-        ExoPlayer.Builder(context)
-            .setLoadControl(loadControl)
-            .build()
-            .apply {
-            val mediaItem = if (!reel.hlsUrl.isNullOrEmpty()) {
-                MediaItem.fromUri(reel.hlsUrl)
-            } else {
-                MediaItem.fromUri(reel.videoUrl)
-            }
-            setMediaItem(mediaItem)
-            repeatMode = Player.REPEAT_MODE_ONE
-            playWhenReady = false
-            prepare()
-            
-            addListener(object : Player.Listener {
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    isLoading = playbackState == Player.STATE_BUFFERING
-                    
-                    if (playbackState == Player.STATE_ENDED) {
-                        // Track completed view
-                        val watchTime = System.currentTimeMillis() - watchStartTime
-                        onTrackView(watchTime, true)
-                    }
-                }
-                
-                override fun onIsPlayingChanged(playing: Boolean) {
-                    isPlaying = playing
-                }
-            })
-        }
+    LaunchedEffect(reel.id, reel.isLiked, reel.likesCount, reel.isSaved) {
+        isLiked = reel.isLiked
+        likesCount = reel.likesCount
+        isSaved = reel.isSaved
+    }
+
+    LaunchedEffect(likeAnimationTrigger) {
+        if (likeAnimationTrigger == 0) return@LaunchedEffect
+        likeBurstScale.stop()
+        likeBurstScale.snapTo(0.82f)
+        likeBurstScale.animateTo(
+            targetValue = 1.32f,
+            animationSpec = tween(durationMillis = 180)
+        )
+        likeBurstScale.animateTo(
+            targetValue = 1f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessLow
+            )
+        )
+        delay(900)
+        showLikeAnimation = false
+    }
+
+    LaunchedEffect(player, reel.id) {
+        isPlaying = player?.isPlaying == true
+        isLoading = player == null || player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_BUFFERING
+        hasRenderedFirstFrame = player?.videoSize?.height?.let { it > 0 } == true
+        playbackErrorMessage = null
+        waitingForNetwork = false
     }
     
-    // Handle active state changes
-    LaunchedEffect(isActive) {
-        if (isActive) {
+    LaunchedEffect(isActive, player, reel.id) {
+        if (isActive && player != null) {
             watchStartTime = System.currentTimeMillis()
             viewTracked = false
-            exoPlayer.playWhenReady = true
+            isLoading = !hasRenderedFirstFrame
             
             // Track view after 3 seconds
             delay(3000)
-            if (!viewTracked && isActive) {
+            if (!viewTracked && isActive && player.isPlaying) {
                 viewTracked = true
                 val watchTime = System.currentTimeMillis() - watchStartTime
                 onTrackView(watchTime, false)
             }
-        } else {
-            exoPlayer.pause()
         }
     }
-    
-    // Lifecycle management
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_PAUSE -> exoPlayer.pause()
-                Lifecycle.Event.ON_RESUME -> {
-                    if (isActive) exoPlayer.play()
+
+    DisposableEffect(player, reel.id) {
+        val exoPlayer = player
+        if (exoPlayer == null) {
+            onDispose { }
+        } else {
+            val listener = object : Player.Listener {
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    isLoading =
+                        playbackState == Player.STATE_IDLE ||
+                            playbackState == Player.STATE_BUFFERING
+
+                    if (playbackState == Player.STATE_READY) {
+                        playbackErrorMessage = null
+                    }
                 }
-                else -> {}
+
+                override fun onIsPlayingChanged(playing: Boolean) {
+                    isPlaying = playing
+                }
+
+                override fun onRenderedFirstFrame() {
+                    if (!hasRenderedFirstFrame) {
+                        onFirstFrameRendered()
+                    }
+                    hasRenderedFirstFrame = true
+                    isLoading = false
+                    playbackErrorMessage = null
+                }
+
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    hasRenderedFirstFrame = false
+                    if (error.hasHttpResponseCode(404) || error.hasHttpResponseCode(410)) {
+                        waitingForNetwork = false
+                        playbackErrorMessage = "Reel unavailable"
+                        isLoading = false
+                    } else if (onPlaybackError()) {
+                        isLoading = true
+                        playbackErrorMessage = null
+                        waitingForNetwork = false
+                    } else {
+                        waitingForNetwork = !networkAvailable
+                        playbackErrorMessage = if (!networkAvailable) {
+                            "Waiting for network..."
+                        } else {
+                            error.message ?: "Failed to load reel"
+                        }
+                        isLoading = false
+                    }
+                }
+            }
+
+            exoPlayer.addListener(listener)
+            onDispose {
+                exoPlayer.removeListener(listener)
             }
         }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            exoPlayer.release()
+    }
+
+    LaunchedEffect(networkAvailable, waitingForNetwork, isActive, pageIndex) {
+        if (networkAvailable && waitingForNetwork && isActive) {
+            waitingForNetwork = false
+            playbackErrorMessage = null
+            onRetryPlayback()
         }
     }
-    
-    // Double-tap handler
-    var lastTapTime by remember { mutableLongStateOf(0L) }
-    
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(Unit) {
+            .pointerInput(pageIndex, isPlaying, player) {
                 detectTapGestures(
                     onTap = {
-                        // Single tap: toggle play/pause
+                        val exoPlayer = player ?: return@detectTapGestures
                         if (isPlaying) exoPlayer.pause() else exoPlayer.play()
                     },
                     onDoubleTap = {
-                        // Double tap: like
+                        coroutineScope.launch {
+                            mediaPulseScale.stop()
+                            mediaPulseScale.snapTo(1f)
+                            mediaPulseScale.animateTo(
+                                targetValue = 1.14f,
+                                animationSpec = tween(durationMillis = 160)
+                            )
+                            mediaPulseScale.animateTo(
+                                targetValue = 1f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                )
+                            )
+                        }
+                        likeAnimationTrigger++
+                        showLikeAnimation = true
                         if (!isLiked) {
                             isLiked = true
                             likesCount++
-                            showHeart = true
                             onLike()
-                            
-                            scope.launch {
-                                delay(800)
-                                showHeart = false
-                            }
                         }
                     }
                 )
             }
+            .pointerInput(reel.author.id) {
+                detectHorizontalDragGestures(
+                    onDragStart = { horizontalDragDistance = 0f },
+                    onHorizontalDrag = { _, dragAmount ->
+                        horizontalDragDistance += dragAmount
+                    },
+                    onDragEnd = {
+                        if (horizontalDragDistance < -72f) {
+                            onProfileClick()
+                        }
+                        horizontalDragDistance = 0f
+                    },
+                    onDragCancel = { horizontalDragDistance = 0f }
+                )
+            }
     ) {
-        // Video Player
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = exoPlayer
-                    useController = false
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                    layoutParams = FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = mediaPulseScale.value
+                    scaleY = mediaPulseScale.value
                 }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
-        
-        // Intentionally no buffering or reel-count overlays to keep full-screen immersive playback.
-        
+        ) {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        useController = false
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        setKeepContentOnPlayerReset(true)
+                        setEnableComposeSurfaceSyncWorkaround(true)
+                        setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                        setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                        layoutParams = FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                },
+                update = { view ->
+                    if (view.player !== player) {
+                        view.player = player
+                    }
+                },
+                onRelease = { view ->
+                    if (view.player != null) {
+                        view.player = null
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+
+            AnimatedVisibility(
+                visible = !hasRenderedFirstFrame,
+                enter = fadeIn(tween(90)),
+                exit = fadeOut(tween(120)),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                if (posterUrl != null) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(posterUrl)
+                            .crossfade(false)
+                            .build(),
+                        contentDescription = reel.title ?: "Reel poster",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    ReelThumbnailFallback()
+                }
+            }
+        }
+
+        if (isLoading && hasRenderedFirstFrame) {
+            BufferingChip(
+                text = "Buffering...",
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(16.dp)
+            )
+        }
+
+        if (playbackErrorMessage != null) {
+            PlaybackStatusOverlay(
+                message = playbackErrorMessage ?: "Failed to load reel",
+                showRetry = networkAvailable,
+                onRetry = {
+                    playbackErrorMessage = null
+                    isLoading = true
+                    onRetryPlayback()
+                },
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+
         // Double-tap heart animation
         AnimatedVisibility(
-            visible = showHeart,
+            visible = showLikeAnimation,
             enter = fadeIn(tween(100)),
             exit = fadeOut(tween(400)),
             modifier = Modifier.align(Alignment.Center)
         ) {
-            BasicText(
-                "❤",
-                style = TextStyle(Color.Red, 80.sp)
-            )
+            key(likeAnimationTrigger) {
+                ReelLikeBurstAnimation(
+                    modifier = Modifier
+                        .size(260.dp)
+                        .graphicsLayer {
+                            scaleX = likeBurstScale.value
+                            scaleY = likeBurstScale.value
+                        }
+                )
+            }
         }
         
         // Bottom gradient
@@ -639,13 +1134,17 @@ private fun ReelCard(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 16.dp, bottom = 100.dp, end = 80.dp)
+                .padding(start = 16.dp, bottom = 76.dp, end = 80.dp)
                 .navigationBarsPadding()
         ) {
             // Author info
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.clickable { onProfileClick() }
+                modifier = Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onProfileClick
+                )
             ) {
                 // Avatar
                 Box(
@@ -680,10 +1179,23 @@ private fun ReelCard(
                 Spacer(Modifier.width(10.dp))
                 
                 Column {
-                    BasicText(
-                        reel.author.name ?: "User",
-                        style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        BasicText(
+                            reel.author.name ?: "User",
+                            style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = 160.dp)
+                        )
+                        VerificationBadge(
+                            verified = reel.author.hasVerificationBadge(),
+                            badgeStyle = reel.author.verificationBadgeStyle(),
+                            size = VerificationBadgeSize.Small
+                        )
+                    }
                     BasicText(
                         "@${reel.author.username ?: ""}",
                         style = TextStyle(Color.White.copy(alpha = 0.7f), 12.sp)
@@ -757,37 +1269,166 @@ private fun ReelCard(
         ) {
             // Like button
             ActionButton(
-                icon = if (isLiked) "❤" else "♡",
+                icon = if (isLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
                 label = formatCount(likesCount),
                 isActive = isLiked,
-                activeColor = Color.Red,
+                activeColor = Color(0xFFFF3040),
                 onClick = {
-                    isLiked = !isLiked
-                    likesCount += if (isLiked) 1 else -1
+                    val nextLiked = !isLiked
+                    isLiked = nextLiked
+                    likesCount = (likesCount + if (nextLiked) 1 else -1).coerceAtLeast(0)
+                    if (nextLiked) {
+                        likeAnimationTrigger++
+                        showLikeAnimation = true
+                    }
                     onLike()
                 }
             )
             
             // Comment button
             ActionButton(
-                icon = "💬",
                 label = formatCount(reel.commentsCount),
+                customIcon = { tint ->
+                    CommentIcon(
+                        color = tint,
+                        size = 31.dp
+                    )
+                },
                 onClick = onComment
             )
             
             // Save button
             ActionButton(
-                icon = if (isSaved) "🔖" else "📑",
+                icon = if (isSaved) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
                 label = formatCount(reel.savesCount),
                 isActive = isSaved,
-                activeColor = Color.Yellow,
+                activeColor = Color(0xFFA855F7),
+                saveEffectTrigger = saveEffectTrigger,
                 onClick = {
+                    if (!isSaved) saveEffectTrigger++
                     isSaved = !isSaved
                     onSave()
                 }
             )
+
+            // Share button
+            ActionButton(
+                icon = Icons.AutoMirrored.Outlined.Send,
+                label = formatCount(reel.sharesCount),
+                onClick = onShare
+            )
         }
     }
+}
+
+@Composable
+private fun BufferingChip(
+    text: String,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.Black.copy(alpha = 0.56f))
+            .padding(horizontal = 18.dp, vertical = 10.dp)
+    ) {
+        BasicText(
+            text = text,
+            style = TextStyle(Color.White, 13.sp, FontWeight.Medium)
+        )
+    }
+}
+
+@Composable
+private fun PlaybackStatusOverlay(
+    message: String,
+    showRetry: Boolean,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color.Black.copy(alpha = 0.68f))
+            .padding(horizontal = 18.dp, vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        BasicText(
+            text = message,
+            style = TextStyle(Color.White, 13.sp, FontWeight.Medium)
+        )
+
+        if (showRetry) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.White.copy(alpha = 0.16f))
+                    .clickable { onRetry() }
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                BasicText(
+                    text = "Retry",
+                    style = TextStyle(Color.White, 13.sp, FontWeight.SemiBold)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberNetworkAvailable(): State<Boolean> {
+    val context = LocalContext.current
+    return produceState(initialValue = context.isNetworkAvailable()) {
+        val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
+        if (connectivityManager == null) {
+            value = true
+            return@produceState
+        }
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                value = true
+            }
+
+            override fun onLost(network: Network) {
+                value = context.isNetworkAvailable()
+            }
+
+            override fun onUnavailable() {
+                value = false
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            connectivityManager.registerDefaultNetworkCallback(callback)
+        } else {
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            connectivityManager.registerNetworkCallback(request, callback)
+        }
+        awaitDispose {
+            connectivityManager.unregisterNetworkCallback(callback)
+        }
+    }
+}
+
+private fun Context.isNetworkAvailable(): Boolean {
+    val connectivityManager = getSystemService(ConnectivityManager::class.java) ?: return true
+    val activeNetwork = connectivityManager.activeNetwork ?: return false
+    val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+}
+
+private fun Throwable.hasHttpResponseCode(code: Int): Boolean {
+    var current: Throwable? = this
+    while (current != null) {
+        val httpError = current as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
+        if (httpError?.responseCode == code) return true
+        current = current.cause
+    }
+    return false
 }
 
 /**
@@ -795,23 +1436,42 @@ private fun ReelCard(
  */
 @Composable
 private fun ActionButton(
-    icon: String,
+    icon: ImageVector? = null,
     label: String,
     isActive: Boolean = false,
     activeColor: Color = Color.White,
+    saveEffectTrigger: Int = 0,
+    customIcon: (@Composable (Color) -> Unit)? = null,
     onClick: () -> Unit
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.clickable { onClick() }
+        modifier = Modifier.clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null
+        ) { onClick() }
     ) {
-        BasicText(
-            icon,
-            style = TextStyle(
-                color = if (isActive) activeColor else Color.White,
-                fontSize = 28.sp
+        Box(
+            modifier = Modifier.size(44.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            val iconTint = if (isActive) activeColor else Color.White
+            if (customIcon != null) {
+                customIcon(iconTint)
+            } else if (icon != null) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = label,
+                    tint = iconTint,
+                    modifier = Modifier.size(30.dp)
+                )
+            }
+            SaveLottieEffect(
+                trigger = saveEffectTrigger,
+                tintColor = activeColor,
+                modifier = Modifier.requiredSize(86.dp)
             )
-        )
+        }
         Spacer(Modifier.height(2.dp))
         BasicText(
             label,
@@ -830,70 +1490,146 @@ fun ReelCommentsSheet(
     comments: List<ReelComment>,
     repliesByParent: Map<String, List<ReelComment>>,
     expandedParents: Set<String>,
+    loadingReplyParents: Set<String>,
+    hasMoreRepliesByParent: Map<String, Boolean>,
     replyTarget: ReelComment?,
     isLoading: Boolean,
     isLoadingMore: Boolean,
     hasMore: Boolean,
     isSubmitting: Boolean,
     error: String?,
+    highlightedCommentId: String?,
+    mentionSearchResults: List<MentionUser>,
+    isSearchingMentions: Boolean,
     onDismiss: () -> Unit,
     onLoadMore: () -> Unit,
     onToggleReplies: (String) -> Unit,
+    onLoadMoreReplies: (String) -> Unit,
     onReplyTo: (ReelComment?) -> Unit,
+    onMentionQueryChanged: (String) -> Unit,
+    onMentionSearchClear: () -> Unit,
     onSubmitComment: (String) -> Unit
 ) {
-    var draft by remember { mutableStateOf("") }
-    val sheetTextColor = Color.Black
-    val subTextColor = Color.Black.copy(alpha = 0.68f)
-    val inputBg = Color.White.copy(alpha = 0.22f)
-    val avatarBg = Color.Black.copy(alpha = 0.10f)
-    val replyCardBg = Color.White.copy(alpha = 0.20f)
-    val overlayScrim = Color.Transparent
+    var draft by remember { mutableStateOf(TextFieldValue("")) }
+    val activeMention = remember(draft) { findActiveReelMention(draft.text, draft.selection.start) }
+    LaunchedEffect(activeMention?.query) {
+        val query = activeMention?.query.orEmpty()
+        if (query.length >= 2) {
+            onMentionQueryChanged(query)
+        } else {
+            onMentionSearchClear()
+        }
+    }
+    val sheetBackground = if (isDarkTheme) Color(0xFF101215) else Color(0xFFFFFFFF)
+    val sheetTextColor = if (isDarkTheme) Color(0xFFF3F4F6) else Color(0xFF111111)
+    val subTextColor = if (isDarkTheme) Color(0xFF9AA1AC) else Color(0xFF667085)
+    val inputBg = if (isDarkTheme) Color(0xFF1B1F25) else Color(0xFFF2F4F7)
+    val avatarBg = if (isDarkTheme) Color(0xFF232933) else Color(0xFFE4E7EC)
+    val threadLineColor = if (isDarkTheme) Color(0xFF313844) else Color(0xFFD0D5DD)
+    val overlayScrim = Color.Black.copy(alpha = 0.34f)
+    var isExpanded by remember { mutableStateOf(false) }
+    var totalDragY by remember { mutableFloatStateOf(0f) }
+    val commentsListState = rememberLazyListState()
 
-    Box(
+    LaunchedEffect(highlightedCommentId, comments, repliesByParent, expandedParents) {
+        val targetId = highlightedCommentId ?: return@LaunchedEffect
+        val index = comments.indexOfFirst { comment ->
+            comment.id == targetId || repliesByParent[comment.id].orEmpty().any { it.id == targetId }
+        }
+        if (index >= 0) {
+            commentsListState.animateScrollToItem(index)
+        }
+    }
+
+    LaunchedEffect(commentsListState, comments.size, hasMore, isLoadingMore, isLoading) {
+        snapshotFlow {
+            val layout = commentsListState.layoutInfo
+            val lastVisibleIndex = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
+            lastVisibleIndex to layout.totalItemsCount
+        }.collect { (lastVisibleIndex, totalItems) ->
+            if (!isLoading && !isLoadingMore && hasMore && totalItems > 0 && lastVisibleIndex >= totalItems - 4) {
+                onLoadMore()
+            }
+        }
+    }
+
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(overlayScrim)
             .clickable { onDismiss() }
     ) {
+        val collapsedHeight = maxHeight * 0.64f
+        val expandedHeight = maxHeight * 0.9f
+        val sheetHeight by animateDpAsState(
+            targetValue = if (isExpanded) expandedHeight else collapsedHeight,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            ),
+            label = "commentsSheetHeight"
+        )
+        val sheetDragModifier = Modifier.pointerInput(isExpanded) {
+            detectVerticalDragGestures(
+                onDragStart = { totalDragY = 0f },
+                onVerticalDrag = { _, dragAmount ->
+                    totalDragY += dragAmount
+                },
+                onDragCancel = { totalDragY = 0f },
+                onDragEnd = {
+                    when {
+                        totalDragY <= -56f -> isExpanded = true
+                        totalDragY >= 80f && isExpanded -> isExpanded = false
+                        totalDragY >= 80f -> onDismiss()
+                    }
+                    totalDragY = 0f
+                }
+            )
+        }
+
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .fillMaxHeight(0.62f)
-                .clip(RoundedCornerShape(0.dp))
-                .background(Color.White.copy(alpha = 0.12f))
-                .border(1.dp, Color.White.copy(alpha = 0.30f), RoundedCornerShape(0.dp))
+                .height(sheetHeight)
+                .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                .background(sheetBackground)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null
                 ) {}
                 .padding(top = 12.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .size(width = 40.dp, height = 4.dp)
-                    .clip(RoundedCornerShape(99.dp))
-                    .background(Color.Black.copy(alpha = 0.20f))
-            )
-
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .then(sheetDragModifier),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                BasicText(
-                    "Comments",
-                    style = TextStyle(sheetTextColor, 16.sp, FontWeight.SemiBold)
+                Box(
+                    modifier = Modifier
+                        .size(width = 40.dp, height = 4.dp)
+                        .clip(RoundedCornerShape(99.dp))
+                        .background(subTextColor.copy(alpha = 0.35f))
                 )
-                BasicText(
-                    "Close",
-                    style = TextStyle(subTextColor, 13.sp),
-                    modifier = Modifier.clickable { onDismiss() }
-                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    BasicText(
+                        "Comments",
+                        style = TextStyle(sheetTextColor, 16.sp, FontWeight.SemiBold)
+                    )
+                    BasicText(
+                        "Close",
+                        style = TextStyle(subTextColor, 13.sp),
+                        modifier = Modifier.clickable { onDismiss() }
+                    )
+                }
             }
 
             if (error != null) {
@@ -911,15 +1647,16 @@ fun ReelCommentsSheet(
                         .weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
-                    BasicText("Loading comments...", style = TextStyle(subTextColor, 13.sp))
+                    ReelCommentsLoadingAnimation()
                 }
             } else {
                 LazyColumn(
+                    state = commentsListState,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (comments.isEmpty()) {
                         item {
@@ -930,20 +1667,37 @@ fun ReelCommentsSheet(
                         }
                     }
 
-                    items(comments, key = { it.id }) { comment ->
-                        ReelCommentThreadItem(
-                            comment = comment,
-                            replies = repliesByParent[comment.id].orEmpty(),
-                            repliesExpanded = expandedParents.contains(comment.id),
-                            isDarkTheme = isDarkTheme,
-                            textColor = sheetTextColor,
-                            subTextColor = subTextColor,
-                            accentColor = accentColor,
-                            avatarBg = avatarBg,
-                            replyCardBg = replyCardBg,
-                            onShowReplies = { onToggleReplies(comment.id) },
-                            onReply = { onReplyTo(comment) }
-                        )
+                    itemsIndexed(comments, key = { _, comment -> comment.id }) { index, comment ->
+                        var commentVisible by remember(comment.id) { mutableStateOf(false) }
+
+                        LaunchedEffect(comment.id) {
+                            commentVisible = false
+                            delay((index * 55L).coerceAtMost(440L))
+                            commentVisible = true
+                        }
+
+                        AnimatedVisibility(
+                            visible = commentVisible,
+                            enter = fadeIn(animationSpec = tween(180)) +
+                                slideInVertically(animationSpec = tween(220)) { it / 3 }
+                        ) {
+                            ReelCommentThreadItem(
+                                comment = comment,
+                                replies = repliesByParent[comment.id].orEmpty(),
+                                repliesExpanded = expandedParents.contains(comment.id),
+                                isLoadingReplies = loadingReplyParents.contains(comment.id),
+                                hasMoreReplies = hasMoreRepliesByParent[comment.id] == true,
+                                textColor = sheetTextColor,
+                                subTextColor = subTextColor,
+                                accentColor = accentColor,
+                                avatarBg = avatarBg,
+                                threadLineColor = threadLineColor,
+                                onShowReplies = { onToggleReplies(comment.id) },
+                                onLoadMoreReplies = { onLoadMoreReplies(comment.id) },
+                                onReply = { onReplyTo(comment) },
+                                highlightedCommentId = highlightedCommentId
+                            )
+                        }
                     }
 
                     if (hasMore) {
@@ -967,8 +1721,7 @@ fun ReelCommentsSheet(
                     .navigationBarsPadding()
                     .padding(12.dp)
                     .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White.copy(alpha = 0.16f))
-                        .border(1.dp, Color.White.copy(alpha = 0.28f), RoundedCornerShape(14.dp))
+                        .background(if (isDarkTheme) Color(0xFF14181D) else Color(0xFFFFFFFF))
                     .padding(12.dp)
             ) {
                 if (replyTarget != null) {
@@ -990,6 +1743,44 @@ fun ReelCommentsSheet(
                     Spacer(Modifier.height(8.dp))
                 }
 
+                AnimatedVisibility(
+                    visible = activeMention != null && (mentionSearchResults.isNotEmpty() || isSearchingMentions)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(inputBg)
+                            .padding(vertical = 6.dp)
+                    ) {
+                        if (isSearchingMentions && mentionSearchResults.isEmpty()) {
+                            BasicText(
+                                "Searching...",
+                                style = TextStyle(subTextColor, 12.sp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                        mentionSearchResults.take(5).forEach { user ->
+                            val username = user.username?.takeIf { it.isNotBlank() }
+                            if (username != null) {
+                                ReelMentionSuggestionRow(
+                                    user = user,
+                                    textColor = sheetTextColor,
+                                    subTextColor = subTextColor,
+                                    avatarBg = avatarBg,
+                                    onClick = {
+                                        activeMention?.let { mention ->
+                                            draft = draft.insertMention(mention, username)
+                                            onMentionSearchClear()
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.Bottom,
@@ -1005,7 +1796,7 @@ fun ReelCommentsSheet(
                             .background(inputBg)
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         decorationBox = { inner ->
-                            if (draft.isBlank()) {
+                            if (draft.text.isBlank()) {
                                 BasicText(
                                     if (replyTarget == null) "Write a comment..." else "Write a reply...",
                                     style = TextStyle(subTextColor.copy(alpha = 0.8f), 14.sp)
@@ -1015,16 +1806,17 @@ fun ReelCommentsSheet(
                         }
                     )
 
-                    val canSend = draft.trim().isNotEmpty() && !isSubmitting
+                    val canSend = draft.text.trim().isNotEmpty() && !isSubmitting
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(10.dp))
                             .background(if (canSend) accentColor else accentColor.copy(alpha = 0.35f))
                             .clickable(enabled = canSend) {
-                                val content = draft.trim()
+                                val content = draft.text.trim()
                                 if (content.isNotEmpty()) {
                                     onSubmitComment(content)
-                                    draft = ""
+                                    draft = TextFieldValue("")
+                                    onMentionSearchClear()
                                 }
                             }
                             .padding(horizontal = 14.dp, vertical = 10.dp)
@@ -1041,60 +1833,210 @@ fun ReelCommentsSheet(
 }
 
 @Composable
+private fun ReelCommentsLoadingAnimation(
+    modifier: Modifier = Modifier
+) {
+    val composition by rememberLottieComposition(
+        LottieCompositionSpec.RawRes(R.raw.card_vertical_scroll_animation)
+    )
+    val progress by animateLottieCompositionAsState(
+        composition = composition,
+        iterations = LottieConstants.IterateForever,
+        isPlaying = true
+    )
+
+    LottieAnimation(
+        composition = composition,
+        progress = { progress },
+        modifier = modifier.size(260.dp),
+        alignment = Alignment.Center,
+        contentScale = ContentScale.Fit
+    )
+}
+
+private data class ReelActiveMention(
+    val start: Int,
+    val end: Int,
+    val query: String
+)
+
+private fun findActiveReelMention(text: String, cursor: Int): ReelActiveMention? {
+    val safeCursor = cursor.coerceIn(0, text.length)
+    val beforeCursor = text.substring(0, safeCursor)
+    val atIndex = beforeCursor.lastIndexOf('@')
+    if (atIndex < 0) return null
+
+    if (atIndex > 0) {
+        val previous = text[atIndex - 1]
+        if (previous.isLetterOrDigit() || previous == '_' || previous == '.') return null
+    }
+
+    val query = beforeCursor.substring(atIndex + 1)
+    if (query.any { it.isWhitespace() || it in ",;:!?()[]{}" }) return null
+    if (query.length > 30) return null
+
+    return ReelActiveMention(atIndex, safeCursor, query)
+}
+
+private fun TextFieldValue.insertMention(activeMention: ReelActiveMention, username: String): TextFieldValue {
+    val replacement = "@$username "
+    val nextText = text.replaceRange(activeMention.start, activeMention.end, replacement)
+    val nextCursor = activeMention.start + replacement.length
+    return TextFieldValue(
+        text = nextText,
+        selection = TextRange(nextCursor)
+    )
+}
+
+@Composable
+private fun ReelMentionSuggestionRow(
+    user: MentionUser,
+    textColor: Color,
+    subTextColor: Color,
+    avatarBg: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(CircleShape)
+                .background(avatarBg),
+            contentAlignment = Alignment.Center
+        ) {
+            val profileImage = user.profileImage ?: user.avatar
+            if (!profileImage.isNullOrBlank()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(profileImage)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = user.name ?: user.username ?: "Mention avatar",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                BasicText(
+                    (user.name ?: user.username ?: "?").take(1).uppercase(),
+                    style = TextStyle(textColor, 11.sp, FontWeight.Bold)
+                )
+            }
+        }
+
+        Column(modifier = Modifier.weight(1f)) {
+            BasicText(
+                user.name ?: user.username ?: "User",
+                style = TextStyle(textColor, 13.sp, FontWeight.SemiBold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            BasicText(
+                "@${user.username.orEmpty()}",
+                style = TextStyle(subTextColor, 11.sp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
 private fun ReelCommentThreadItem(
     comment: ReelComment,
     replies: List<ReelComment>,
     repliesExpanded: Boolean,
-    isDarkTheme: Boolean,
+    isLoadingReplies: Boolean,
+    hasMoreReplies: Boolean,
     textColor: Color,
     subTextColor: Color,
     accentColor: Color,
     avatarBg: Color,
-    replyCardBg: Color,
+    threadLineColor: Color,
     onShowReplies: () -> Unit,
-    onReply: () -> Unit
+    onLoadMoreReplies: () -> Unit,
+    onReply: () -> Unit,
+    highlightedCommentId: String?
 ) {
-    Column {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        val isHighlighted = comment.id == highlightedCommentId
+        val commentHighlight by animateColorAsState(
+            targetValue = if (isHighlighted) accentColor.copy(alpha = 0.28f) else Color.Transparent,
+            label = "reelCommentHighlight"
+        )
         Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(commentHighlight)
+                .padding(if (isHighlighted) 8.dp else 0.dp),
             verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(30.dp)
-                    .clip(CircleShape)
-                    .background(avatarBg),
-                contentAlignment = Alignment.Center
-            ) {
-                BasicText(
-                    (comment.author.name?.firstOrNull()?.uppercase() ?: "U"),
-                    style = TextStyle(textColor, 13.sp, FontWeight.Bold)
-                )
-            }
+            ReelCommentAvatar(
+                author = comment.author,
+                avatarBg = avatarBg,
+                textColor = textColor,
+                size = 24.dp,
+                fontSize = 9.sp
+            )
 
-            Column(modifier = Modifier.weight(1f)) {
-                BasicText(
-                    "@${comment.author.username ?: comment.author.name ?: "user"}",
-                    style = TextStyle(textColor, 12.sp, FontWeight.SemiBold)
-                )
-                Spacer(Modifier.height(3.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    BasicText(
+                        comment.author.name ?: "@${comment.author.username ?: "user"}",
+                        style = TextStyle(textColor, 11.sp, FontWeight.SemiBold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    VerificationBadge(
+                        verified = comment.author.hasVerificationBadge(),
+                        badgeStyle = comment.author.verificationBadgeStyle(),
+                        size = VerificationBadgeSize.Micro
+                    )
+                }
+
                 BasicText(
                     comment.content,
-                    style = TextStyle(textColor.copy(alpha = 0.95f), 13.sp)
+                    style = TextStyle(textColor.copy(alpha = 0.94f), 11.sp)
                 )
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     BasicText(
                         "Reply",
-                        style = TextStyle(accentColor, 12.sp),
+                        style = TextStyle(accentColor, 10.sp, FontWeight.Medium),
                         modifier = Modifier.clickable { onReply() }
                     )
                     if (comment.repliesCount > 0) {
-                        val label = if (repliesExpanded) "Hide replies" else "View replies (${comment.repliesCount})"
+                        val label = when {
+                            isLoadingReplies && !repliesExpanded -> "Loading replies..."
+                            repliesExpanded -> "Hide replies"
+                            else -> "View replies (${comment.repliesCount})"
+                        }
                         BasicText(
                             label,
-                            style = TextStyle(subTextColor, 12.sp),
-                            modifier = Modifier.clickable { onShowReplies() }
+                            style = TextStyle(
+                                if (repliesExpanded) accentColor else subTextColor,
+                                10.sp,
+                                FontWeight.Medium
+                            ),
+                            modifier = Modifier.clickable(enabled = !isLoadingReplies) { onShowReplies() }
                         )
                     }
                 }
@@ -1102,46 +2044,127 @@ private fun ReelCommentThreadItem(
         }
 
         if (repliesExpanded && replies.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
             Column(
-                modifier = Modifier.padding(start = 40.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier.padding(start = 32.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 replies.forEach { reply ->
+                    val isReplyHighlighted = reply.id == highlightedCommentId
+                    val replyHighlight by animateColorAsState(
+                        targetValue = if (isReplyHighlighted) accentColor.copy(alpha = 0.30f) else Color.Transparent,
+                        label = "reelReplyHighlight"
+                    )
+                    val replyShape = RoundedCornerShape(10.dp)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(replyCardBg)
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                            .clip(replyShape)
+                            .background(replyHighlight)
+                            .border(
+                                width = if (isReplyHighlighted) 1.dp else 0.dp,
+                                color = if (isReplyHighlighted) accentColor.copy(alpha = 0.75f) else Color.Transparent,
+                                shape = replyShape
+                            )
+                            .padding(if (isReplyHighlighted) 6.dp else 0.dp),
                         verticalAlignment = Alignment.Top,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(24.dp)
-                                .clip(CircleShape)
-                                .background(avatarBg),
-                            contentAlignment = Alignment.Center
+                                .padding(top = 2.dp)
+                                .width(10.dp),
+                            contentAlignment = Alignment.TopCenter
                         ) {
-                            BasicText(
-                                (reply.author.name?.firstOrNull()?.uppercase() ?: "U"),
-                                style = TextStyle(textColor, 11.sp, FontWeight.Bold)
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .height(22.dp)
+                                    .background(threadLineColor)
                             )
                         }
-                        Column {
-                            BasicText(
-                                "@${reply.author.username ?: reply.author.name ?: "user"}",
-                                style = TextStyle(textColor, 11.sp, FontWeight.SemiBold)
+
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            ReelCommentAvatar(
+                                author = reply.author,
+                                avatarBg = avatarBg,
+                                textColor = textColor,
+                                size = 18.dp,
+                                fontSize = 8.sp
                             )
-                            BasicText(
-                                reply.content,
-                                style = TextStyle(textColor.copy(alpha = 0.92f), 12.sp)
-                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    BasicText(
+                                        reply.author.name ?: "@${reply.author.username ?: "user"}",
+                                        style = TextStyle(textColor, 9.sp, FontWeight.SemiBold),
+                                        maxLines = 1,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    VerificationBadge(
+                                        verified = reply.author.hasVerificationBadge(),
+                                        badgeStyle = reply.author.verificationBadgeStyle(),
+                                        size = VerificationBadgeSize.Micro
+                                    )
+                                }
+                                BasicText(
+                                    reply.content,
+                                    style = TextStyle(textColor.copy(alpha = 0.9f), 9.sp)
+                                )
+                            }
                         }
                     }
                 }
+                if (hasMoreReplies || isLoadingReplies) {
+                    BasicText(
+                        if (isLoadingReplies) "Loading replies..." else "Load more replies",
+                        style = TextStyle(accentColor, 10.sp, FontWeight.Medium),
+                        modifier = Modifier
+                            .padding(start = 16.dp, top = 2.dp)
+                            .clickable(enabled = !isLoadingReplies) { onLoadMoreReplies() }
+                    )
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun ReelCommentAvatar(
+    author: ReelAuthor,
+    avatarBg: Color,
+    textColor: Color,
+    size: Dp,
+    fontSize: androidx.compose.ui.unit.TextUnit
+) {
+    val imageUrl = author.profileImage?.takeIf { it.isNotBlank() }
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(avatarBg),
+        contentAlignment = Alignment.Center
+    ) {
+        if (imageUrl != null) {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(imageUrl)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = author.name ?: author.username ?: "User avatar",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            BasicText(
+                ((author.name?.firstOrNull() ?: author.username?.firstOrNull() ?: 'U').uppercase()),
+                style = TextStyle(textColor, fontSize, FontWeight.Bold)
+            )
         }
     }
 }

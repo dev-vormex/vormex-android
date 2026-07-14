@@ -70,6 +70,10 @@ data class FullPost(
     val content: String? = null,
     val contentType: String = "text/plain",
     val mentions: List<String> = emptyList(),
+    val collaboratorIds: List<String> = emptyList(),
+    val pendingCollaboratorIds: List<String> = emptyList(),
+    val collaborators: List<Author> = emptyList(),
+    val collaborationStatus: String? = null,
     
     // Media
     val mediaUrls: List<String> = emptyList(),
@@ -79,6 +83,7 @@ data class FullPost(
     val videoDuration: Int? = null,
     val videoSize: Long? = null,
     val videoFormat: String? = null,
+    val defaultVideoId: String? = null,
     
     // Document
     val documentUrl: String? = null,
@@ -147,6 +152,7 @@ data class CreatePostRequest(
     val visibility: String = "PUBLIC",
     val content: String? = null,
     val mentions: List<String> = emptyList(),
+    val collaboratorIds: List<String> = emptyList(),
     val linkUrl: String? = null,
     val pollOptions: List<String>? = null,
     val pollDuration: Int? = null,
@@ -210,7 +216,11 @@ data class LikeUser(
     val profileImage: String? = null,
     val headline: String? = null,
     val reactionType: String = "LIKE",
-    val createdAt: String? = null
+    val createdAt: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -235,7 +245,8 @@ data class ReportReasonsResponse(
 @Serializable
 data class ReportPostRequest(
     val reason: String,
-    val description: String? = null
+    val description: String? = null,
+    val blockUser: Boolean = false
 )
 
 @Serializable
@@ -254,7 +265,11 @@ data class MentionUser(
     val name: String? = null,
     val avatar: String? = null,
     val profileImage: String? = null,
-    val headline: String? = null
+    val headline: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable

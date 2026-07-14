@@ -2,13 +2,21 @@ package com.kyant.backdrop.catalog.network
 
 import android.util.Log
 import com.kyant.backdrop.catalog.BuildConfig
+import io.socket.client.Ack
 import io.socket.client.IO
+import io.socket.client.Manager
 import io.socket.client.Socket
+import io.socket.engineio.client.Transport
 import io.socket.engineio.client.transports.WebSocket
+import io.socket.emitter.Emitter
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.net.URI
+import kotlin.coroutines.resume
 
 /**
  * Manages Socket.IO connection for real-time chat with vormex-backend.
@@ -21,12 +29,12 @@ import java.net.URI
  * - chat:delete_message, chat:message_deleted
  * - chat:edit_message, chat:message_edited
  * - chat:message_reaction
- * 
+ * - chat:cleared
+ *
  * Configuration:
- * - Default: uses BuildConfig.SOCKET_BASE_URL, which now points debug/release to the hosted backend
  * - For local dev with `adb reverse tcp:5000 tcp:5000`: use "http://localhost:5000"
- * - For Android emulator: use "http://10.0.2.2:5000"
- * - Override with VORMEX_DEBUG_SOCKET_BASE_URL when you want a debug build to target a local backend
+ * - For Android emulator without adb reverse: use "http://10.0.2.2:5000"
+ * - For production: use your production WebSocket URL (e.g., "https://api.vormex.com")
  */
 object ChatSocketManager {
     private const val TAG = "ChatSocket"
@@ -38,7 +46,11 @@ object ChatSocketManager {
     private var socket: Socket? = null
     private var currentToken: String? = null
     private var isConnecting = false
+    private var isAuthenticated = false
     var currentUserId: String? = null
+    private var currentTransportName: String? = null
+    private const val SEND_ACK_TIMEOUT_MS = 8_000L
+    private const val CONNECT_GRACE_MS = 1_000L
     
     // Track joined rooms to re-join on reconnect
     private val joinedRooms = mutableSetOf<String>()
@@ -51,11 +63,8 @@ object ChatSocketManager {
     // Track current active conversation to avoid notifying for messages the user is viewing
     var activeConversationId: String? = null
 
-    // Use MutableSharedFlow with replay to ensure events aren't lost
-    // Replay=1 ensures late collectors get the last event
-    
     /** Emits (conversationId, messageJsonString) for new messages */
-    private val _newMessageFlow = MutableSharedFlow<Pair<String, String>>(replay = 0, extraBufferCapacity = 10)
+    private val _newMessageFlow = MutableSharedFlow<Pair<String, String>>(replay = 0, extraBufferCapacity = 64)
     val newMessageFlow = _newMessageFlow.asSharedFlow()
 
     private val _typingFlow = MutableSharedFlow<Triple<String, String, Boolean>>(replay = 0, extraBufferCapacity = 5)
@@ -79,6 +88,18 @@ object ChatSocketManager {
 
     private val _reactionFlow = MutableSharedFlow<ReactionEvent>(replay = 0, extraBufferCapacity = 5)
     val reactionFlow = _reactionFlow.asSharedFlow()
+
+    private val _messagesDeliveredFlow = MutableSharedFlow<MessagesDeliveredEvent>(replay = 0, extraBufferCapacity = 8)
+    val messagesDeliveredFlow = _messagesDeliveredFlow.asSharedFlow()
+
+    private val _messageDeliveredFlow = MutableSharedFlow<MessageDeliveredEvent>(replay = 0, extraBufferCapacity = 16)
+    val messageDeliveredFlow = _messageDeliveredFlow.asSharedFlow()
+
+    private val _presenceFlow = MutableSharedFlow<PresenceEvent>(replay = 0, extraBufferCapacity = 16)
+    val presenceFlow = _presenceFlow.asSharedFlow()
+
+    private val _allChatsClearedFlow = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 2)
+    val allChatsClearedFlow = _allChatsClearedFlow.asSharedFlow()
     
     /** Connection state flow for UI feedback */
     private val _connectionStateFlow = MutableSharedFlow<ConnectionState>(replay = 1, extraBufferCapacity = 1)
@@ -96,16 +117,36 @@ object ChatSocketManager {
         val action: String
     )
 
-    fun isConnected(): Boolean = socket?.connected() == true
+    data class MessagesDeliveredEvent(
+        val conversationId: String,
+        val deliveredTo: String,
+        val deliveredAt: String
+    )
+
+    data class MessageDeliveredEvent(
+        val messageId: String,
+        val conversationId: String,
+        val deliveredAt: String
+    )
+
+    data class PresenceEvent(
+        val userId: String,
+        val isOnline: Boolean,
+        val lastActiveAt: String?
+    )
+
+    fun isConnected(): Boolean = socket?.connected() == true && isAuthenticated
     
     fun getConnectionState(): ConnectionState = when {
-        socket?.connected() == true -> ConnectionState.CONNECTED
-        isConnecting -> ConnectionState.CONNECTING
+        socket?.connected() == true && isAuthenticated -> ConnectionState.CONNECTED
+        isConnecting || socket?.connected() == true -> ConnectionState.CONNECTING
         else -> ConnectionState.DISCONNECTED
     }
 
     fun connect(token: String) {
-        if (socket?.connected() == true && currentToken == token) {
+        if (token.isBlank()) return
+
+        if (socket?.connected() == true && currentToken == token && isAuthenticated) {
             Log.d(TAG, "Already connected with same token, skipping")
             return
         }
@@ -113,11 +154,19 @@ object ChatSocketManager {
             Log.d(TAG, "Already connecting with same token, skipping")
             return
         }
+        if (socket != null && currentToken == token && socket?.connected() != true) {
+            Log.d(TAG, "Re-opening existing socket with same token")
+            isConnecting = true
+            _connectionStateFlow.tryEmit(ConnectionState.CONNECTING)
+            socket?.connect()
+            return
+        }
         
         Log.d(TAG, "Connecting to socket at $SOCKET_URL")
         disconnect()
         currentToken = token
         isConnecting = true
+        isAuthenticated = false
         _connectionStateFlow.tryEmit(ConnectionState.CONNECTING)
         
         try {
@@ -128,32 +177,60 @@ object ChatSocketManager {
                 reconnectionDelay = 1000
                 reconnectionDelayMax = 5000
                 timeout = 20000
-                transports = arrayOf(WebSocket.NAME, "polling")
+                transports = arrayOf(WebSocket.NAME)
+                upgrade = false
+                rememberUpgrade = true
                 auth = mapOf("token" to token)
             }
             socket = IO.socket(URI.create(SOCKET_URL), opts).apply {
+                io().on(Manager.EVENT_TRANSPORT) { args ->
+                    val transport = args.firstOrNull() as? Transport
+                    currentTransportName = transport?.name
+                    Log.d(TAG, "🚇 Socket transport=${currentTransportName ?: "unknown"} socketId=${id().orEmpty()}")
+                }
                 on(Socket.EVENT_CONNECT) {
+                    Log.d(TAG, "✅ Socket connected! ID: ${id()} transport=${currentTransportName ?: "unknown"}")
+                    _connectionStateFlow.tryEmit(ConnectionState.CONNECTING)
+                }
+                on("socket:authenticated") { args ->
                     isConnecting = false
-                    Log.d(TAG, "✅ Socket connected! ID: ${id()}")
+                    isAuthenticated = true
+                    parseSocketObject(args.firstOrNull())
+                        ?.optString("userId")
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { authenticatedUserId ->
+                            currentUserId = authenticatedUserId
+                        }
+                    Log.d(TAG, "✅ Socket authenticated as user ${currentUserId.orEmpty()} transport=${currentTransportName ?: "unknown"}")
                     _connectionStateFlow.tryEmit(ConnectionState.CONNECTED)
-                    // Re-join all tracked rooms on connect
                     rejoinAllRooms()
                 }
+                on("socket:unauthenticated") { args ->
+                    isConnecting = false
+                    isAuthenticated = false
+                    val message = parseSocketObject(args.firstOrNull())
+                        ?.optString("message")
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "Socket authentication failed"
+                    Log.e(TAG, "🔴 $message")
+                    _connectionStateFlow.tryEmit(ConnectionState.ERROR)
+                }
                 on(Socket.EVENT_DISCONNECT) { args ->
+                    isAuthenticated = false
                     Log.d(TAG, "❌ Socket disconnected: ${args.getOrNull(0)}")
                     _connectionStateFlow.tryEmit(ConnectionState.DISCONNECTED)
                 }
                 on(Socket.EVENT_CONNECT_ERROR) { args ->
                     isConnecting = false
+                    isAuthenticated = false
                     val error = args.getOrNull(0)?.toString() ?: "Unknown error"
                     Log.e(TAG, "🔴 Socket connect error: $error")
                     _connectionStateFlow.tryEmit(ConnectionState.ERROR)
                 }
                 on("reconnect") { args ->
                     Log.d(TAG, "🔄 Socket reconnected: attempt ${args.getOrNull(0)}")
-                    _connectionStateFlow.tryEmit(ConnectionState.CONNECTED)
-                    // Re-join all tracked rooms on reconnect
-                    rejoinAllRooms()
+                    isAuthenticated = false
+                    _connectionStateFlow.tryEmit(ConnectionState.CONNECTING)
                 }
                 on("reconnect_attempt") { args ->
                     Log.d(TAG, "🔄 Socket reconnecting... attempt ${args.getOrNull(0)}")
@@ -179,6 +256,21 @@ object ChatSocketManager {
                 on("chat:messages_read") { args ->
                     handleMessagesRead(args)
                 }
+                on("chat:messages_delivered") { args ->
+                    handleMessagesDelivered(args)
+                }
+                on("chat:message_delivered") { args ->
+                    handleMessageDelivered(args)
+                }
+                on("user:online") { args ->
+                    handlePresence(args, "user:online", fallbackIsOnline = true)
+                }
+                on("user:offline") { args ->
+                    handlePresence(args, "user:offline", fallbackIsOnline = false)
+                }
+                on("user:status") { args ->
+                    handlePresence(args, "user:status", fallbackIsOnline = false)
+                }
                 on("chat:message_deleted") { args ->
                     handleMessageDeleted(args)
                 }
@@ -188,10 +280,14 @@ object ChatSocketManager {
                 on("chat:message_reaction") { args ->
                     handleReaction(args)
                 }
+                on("chat:cleared") {
+                    handleAllChatsCleared()
+                }
                 
-                // Debug: catch all events to see what's being received
-                onAnyIncoming { args ->
-                    Log.d(TAG, "🔵 ANY EVENT: ${args.contentToString()}")
+                if (BuildConfig.DEBUG) {
+                    onAnyIncoming { args ->
+                        Log.d(TAG, "🔵 ANY EVENT: ${args.contentToString()}")
+                    }
                 }
             }
             socket?.connect()
@@ -212,31 +308,36 @@ object ChatSocketManager {
         try {
             val rawArg = args[0]
             Log.d(TAG, "📩 Raw arg type: ${rawArg::class.java.simpleName}, value: $rawArg")
-            val obj = rawArg as? JSONObject
-            if (obj == null) {
-                Log.w(TAG, "📩 Could not cast to JSONObject, trying toString...")
-                // Try parsing as string
-                val jsonStr = rawArg.toString()
-                val parsed = JSONObject(jsonStr)
-                val conversationId = parsed.optString("conversationId")
-                val message = parsed.optJSONObject("message")
-                if (message != null && conversationId.isNotEmpty()) {
-                    emitIncomingMessage(conversationId, message, "string")
-                }
-                return
-            }
+            val obj = parseSocketObject(rawArg) ?: return
             val conversationId = obj.optString("conversationId")
             val message = obj.optJSONObject("message")
             if (message == null) {
                 Log.w(TAG, "📩 message object is null in: $obj")
                 return
             }
-            Log.d(TAG, "📩 New message in conversation $conversationId: ${message.optString("content").take(50)}")
+            val serverEmittedAtMs = obj.optLong("serverEmittedAtMs", 0L)
+            val latencyMs = if (serverEmittedAtMs > 0L) System.currentTimeMillis() - serverEmittedAtMs else null
+            Log.d(
+                TAG,
+                "📩 chat:new_message received conversation=$conversationId message=${message.optString("id")} " +
+                    "clientMessageId=${message.optString("clientMessageId")} transport=${currentTransportName ?: "unknown"} " +
+                    "latencyMs=${latencyMs ?: "unknown"} content=${message.optString("content").take(50)}"
+            )
             if (conversationId.isNotEmpty()) {
                 emitIncomingMessage(conversationId, message, "event")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error handling new message", e)
+        }
+    }
+
+    private fun parseSocketObject(rawArg: Any?): JSONObject? {
+        return when (rawArg) {
+            is JSONObject -> rawArg
+            null -> null
+            else -> runCatching { JSONObject(rawArg.toString()) }
+                .onFailure { Log.w(TAG, "Could not parse socket payload: $rawArg", it) }
+                .getOrNull()
         }
     }
 
@@ -249,7 +350,41 @@ object ChatSocketManager {
 
         val emitted = _newMessageFlow.tryEmit(conversationId to message.toString())
         Log.d(TAG, "📩 Flow emit result ($source): $emitted")
+        acknowledgeMessageDelivery(conversationId, messageId, message)
         showMessageNotificationIfNeeded(conversationId, message)
+    }
+
+    private fun acknowledgeMessageDelivery(conversationId: String, messageId: String, message: JSONObject) {
+        val userId = currentUserId?.takeIf { it.isNotBlank() } ?: return
+        val senderId = message.optJSONObject("sender")?.optString("id")?.takeIf { it.isNotBlank() }
+            ?: message.optString("senderId")
+        val receiverId = message.optString("receiverId")
+        val targetsCurrentUser = if (receiverId.isNotBlank()) {
+            receiverId == userId
+        } else {
+            senderId.isNotBlank() && senderId != userId
+        }
+        if (!targetsCurrentUser) return
+
+        if (socket?.connected() != true) {
+            Log.d(TAG, "📬 Skipping chat:delivered ack for $messageId - socket not connected")
+            return
+        }
+
+        val payload = JSONObject().put("conversationId", conversationId)
+        messageId.takeIf { it.isNotBlank() }?.let { payload.put("messageId", it) }
+        socket?.emit("chat:delivered", payload)
+        Log.d(TAG, "📬 Emitted chat:delivered conversation=$conversationId message=$messageId")
+    }
+
+    fun emitExternalIncomingMessage(
+        conversationId: String,
+        messageJson: String,
+        source: String = "external"
+    ) {
+        if (conversationId.isBlank() || messageJson.isBlank()) return
+        val message = parseSocketObject(messageJson) ?: return
+        emitIncomingMessage(conversationId, message, source)
     }
 
     private fun rememberIncomingMessageId(messageId: String): Boolean {
@@ -318,7 +453,7 @@ object ChatSocketManager {
         try {
             val rawArg = args[0]
             Log.d(TAG, "🔔 Raw arg type: ${rawArg::class.java.simpleName}")
-            val obj = rawArg as? JSONObject ?: JSONObject(rawArg.toString())
+            val obj = parseSocketObject(rawArg) ?: return
 
             Log.d(TAG, "🔔 Notification type: ${obj.optString("type")}")
             if (obj.optString("type") == "new_message") {
@@ -345,7 +480,15 @@ object ChatSocketManager {
     private fun handleTyping(args: Array<Any>) {
         if (args.isEmpty()) return
         try {
-            val obj = args[0] as? JSONObject ?: return
+            val obj = parseSocketObject(args[0]) ?: return
+            val serverEmittedAtMs = obj.optLong("serverEmittedAtMs", 0L)
+            val latencyMs = if (serverEmittedAtMs > 0L) System.currentTimeMillis() - serverEmittedAtMs else null
+            Log.d(
+                TAG,
+                "⌨️ chat:user_typing received conversation=${obj.optString("conversationId")} " +
+                    "user=${obj.optString("userId")} isTyping=${obj.optBoolean("isTyping")} " +
+                    "transport=${currentTransportName ?: "unknown"} latencyMs=${latencyMs ?: "unknown"}"
+            )
             _typingFlow.tryEmit(
                 Triple(
                     obj.optString("conversationId"),
@@ -361,7 +504,7 @@ object ChatSocketManager {
     private fun handleMessagesRead(args: Array<Any>) {
         if (args.isEmpty()) return
         try {
-            val obj = args[0] as? JSONObject ?: return
+            val obj = parseSocketObject(args[0]) ?: return
             _messagesReadFlow.tryEmit(
                 obj.optString("conversationId") to obj.optString("readBy")
             )
@@ -370,10 +513,74 @@ object ChatSocketManager {
         }
     }
     
+    private fun handleMessagesDelivered(args: Array<Any>) {
+        if (args.isEmpty()) return
+        try {
+            val obj = parseSocketObject(args[0]) ?: return
+            Log.d(
+                TAG,
+                "📬 chat:messages_delivered conversation=${obj.optString("conversationId")} " +
+                    "deliveredTo=${obj.optString("deliveredTo")} transport=${currentTransportName ?: "unknown"}"
+            )
+            _messagesDeliveredFlow.tryEmit(
+                MessagesDeliveredEvent(
+                    conversationId = obj.optString("conversationId"),
+                    deliveredTo = obj.optString("deliveredTo"),
+                    deliveredAt = obj.optString("deliveredAt")
+                )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling messages delivered", e)
+        }
+    }
+
+    private fun handleMessageDelivered(args: Array<Any>) {
+        if (args.isEmpty()) return
+        try {
+            val obj = parseSocketObject(args[0]) ?: return
+            Log.d(
+                TAG,
+                "📬 chat:message_delivered message=${obj.optString("messageId")} " +
+                    "conversation=${obj.optString("conversationId")}"
+            )
+            _messageDeliveredFlow.tryEmit(
+                MessageDeliveredEvent(
+                    messageId = obj.optString("messageId"),
+                    conversationId = obj.optString("conversationId"),
+                    deliveredAt = obj.optString("deliveredAt")
+                )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling message delivered", e)
+        }
+    }
+
+    private fun handlePresence(args: Array<Any>, source: String, fallbackIsOnline: Boolean) {
+        if (args.isEmpty()) return
+        try {
+            val obj = parseSocketObject(args[0]) ?: return
+            val userId = obj.optString("userId")
+            if (userId.isBlank()) return
+            val isOnline = obj.optBoolean("isOnline", fallbackIsOnline)
+            val lastActiveAt = obj.optString("lastActiveAt")
+                .takeIf { it.isNotBlank() && it != "null" }
+            Log.d(TAG, "🟢 $source user=$userId isOnline=$isOnline lastActiveAt=${lastActiveAt ?: "unknown"}")
+            _presenceFlow.tryEmit(
+                PresenceEvent(
+                    userId = userId,
+                    isOnline = isOnline,
+                    lastActiveAt = lastActiveAt
+                )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling presence event ($source)", e)
+        }
+    }
+
     private fun handleMessageDeleted(args: Array<Any>) {
         if (args.isEmpty()) return
         try {
-            val obj = args[0] as? JSONObject ?: return
+            val obj = parseSocketObject(args[0]) ?: return
             _messageDeletedFlow.tryEmit(
                 Triple(
                     obj.optString("messageId"),
@@ -389,7 +596,7 @@ object ChatSocketManager {
     private fun handleMessageEdited(args: Array<Any>) {
         if (args.isEmpty()) return
         try {
-            val obj = args[0] as? JSONObject ?: return
+            val obj = parseSocketObject(args[0]) ?: return
             _messageEditedFlow.tryEmit(
                 Triple(
                     obj.optString("messageId"),
@@ -405,7 +612,7 @@ object ChatSocketManager {
     private fun handleReaction(args: Array<Any>) {
         if (args.isEmpty()) return
         try {
-            val obj = args[0] as? JSONObject ?: return
+            val obj = parseSocketObject(args[0]) ?: return
             _reactionFlow.tryEmit(
                 ReactionEvent(
                     messageId = obj.optString("messageId"),
@@ -420,6 +627,20 @@ object ChatSocketManager {
         }
     }
 
+    private fun handleAllChatsCleared() {
+        Log.d(TAG, "Received chat:cleared")
+        joinedRooms.toList().forEach { conversationId ->
+            socket?.emit("chat:leave", JSONObject().put("conversationId", conversationId))
+        }
+        joinedRooms.clear()
+        activeConversationId = null
+        synchronized(recentMessageIdSet) {
+            recentlyProcessedMessageIds.clear()
+            recentMessageIdSet.clear()
+        }
+        _allChatsClearedFlow.tryEmit(Unit)
+    }
+
     fun disconnect() {
         Log.d(TAG, "Disconnecting socket")
         socket?.off()
@@ -427,25 +648,39 @@ object ChatSocketManager {
         socket = null
         currentToken = null
         isConnecting = false
+        isAuthenticated = false
+        currentTransportName = null
         _connectionStateFlow.tryEmit(ConnectionState.DISCONNECTED)
+    }
+
+    fun resetSession() {
+        joinedRooms.clear()
+        activeConversationId = null
+        currentUserId = null
+        synchronized(recentMessageIdSet) {
+            recentlyProcessedMessageIds.clear()
+            recentMessageIdSet.clear()
+        }
+        disconnect()
     }
     
     /** Reconnect with the stored token (call on app resume) */
     fun reconnectIfNeeded() {
         val token = currentToken
-        if (token != null && socket?.connected() != true && !isConnecting) {
-            Log.d(TAG, "Reconnecting socket...")
+        if (token != null && (socket?.connected() != true || !isAuthenticated) && !isConnecting) {
+            Log.d(TAG, "Reconnecting socket... transport=${currentTransportName ?: "unknown"}")
             connect(token)
         }
     }
 
     fun joinChat(conversationId: String) {
-        Log.d(TAG, "➡️ Joining chat room: $conversationId, socket connected: ${socket?.connected()}")
+        Log.d(TAG, "➡️ Joining chat room: $conversationId, socket ready: ${isConnected()}")
         joinedRooms.add(conversationId)
-        if (socket?.connected() == true) {
+        if (isConnected()) {
             socket?.emit("chat:join", JSONObject().put("conversationId", conversationId))
             Log.d(TAG, "➡️ Emitted chat:join for room: $conversationId")
         } else {
+            reconnectIfNeeded()
             Log.d(TAG, "➡️ Socket not connected, room $conversationId will be joined on connect")
         }
     }
@@ -468,26 +703,168 @@ object ChatSocketManager {
         }
     }
 
+    private fun buildSendMessagePayload(
+        conversationId: String,
+        content: String,
+        contentType: String = "text",
+        mediaUrl: String? = null,
+        mediaType: String? = null,
+        fileName: String? = null,
+        fileSize: Int? = null,
+        replyToId: String? = null,
+        clientMessageId: String? = null
+    ): JSONObject {
+        return JSONObject()
+            .put("conversationId", conversationId)
+            .put("content", content)
+            .put("contentType", contentType)
+            .apply {
+                mediaUrl?.takeIf { it.isNotBlank() }?.let { put("mediaUrl", it) }
+                mediaType?.takeIf { it.isNotBlank() }?.let { put("mediaType", it) }
+                fileName?.takeIf { it.isNotBlank() }?.let { put("fileName", it) }
+                fileSize?.let { put("fileSize", it) }
+                replyToId?.takeIf { it.isNotBlank() }?.let { put("replyToId", it) }
+                clientMessageId?.takeIf { it.isNotBlank() }?.let { put("clientMessageId", it) }
+            }
+    }
+
+    suspend fun sendMessageWithAck(
+        conversationId: String,
+        content: String,
+        contentType: String = "text",
+        mediaUrl: String? = null,
+        mediaType: String? = null,
+        fileName: String? = null,
+        fileSize: Int? = null,
+        replyToId: String? = null,
+        clientMessageId: String? = null
+    ): Result<String> {
+        val activeSocket = socket ?: return Result.failure(Exception("Realtime connection unavailable"))
+        if (!awaitSocketReady(activeSocket)) {
+            return Result.failure(Exception("Realtime connection unavailable"))
+        }
+
+        val payload = buildSendMessagePayload(
+            conversationId = conversationId,
+            content = content,
+            contentType = contentType,
+            mediaUrl = mediaUrl,
+            mediaType = mediaType,
+            fileName = fileName,
+            fileSize = fileSize,
+            replyToId = replyToId,
+            clientMessageId = clientMessageId
+        )
+
+        return try {
+            withTimeout(SEND_ACK_TIMEOUT_MS) {
+                suspendCancellableCoroutine<Result<String>> { continuation ->
+                    activeSocket.emit("chat:send_message", payload, Ack { args ->
+                        if (!continuation.isActive) return@Ack
+
+                        val ack = parseSocketObject(args.firstOrNull())
+                        val message = ack?.optJSONObject("message")
+                        val result = if (ack?.optBoolean("ok") == true && message != null) {
+                            Result.success(message.toString())
+                        } else {
+                            Result.failure(Exception(ack?.optString("error")?.takeIf { it.isNotBlank() } ?: "Failed to send message"))
+                        }
+
+                        continuation.resume(result)
+                    })
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            Result.failure(Exception("Realtime send acknowledgement timed out", e))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun awaitSocketReady(activeSocket: Socket): Boolean {
+        if (activeSocket.connected() && isAuthenticated) return true
+
+        return try {
+            withTimeout(CONNECT_GRACE_MS) {
+                suspendCancellableCoroutine<Boolean> { continuation ->
+                    lateinit var authenticatedListener: Emitter.Listener
+                    lateinit var unauthenticatedListener: Emitter.Listener
+                    lateinit var connectErrorListener: Emitter.Listener
+                    lateinit var disconnectListener: Emitter.Listener
+
+                    fun cleanup() {
+                        activeSocket.off("socket:authenticated", authenticatedListener)
+                        activeSocket.off("socket:unauthenticated", unauthenticatedListener)
+                        activeSocket.off(Socket.EVENT_CONNECT_ERROR, connectErrorListener)
+                        activeSocket.off(Socket.EVENT_DISCONNECT, disconnectListener)
+                    }
+
+                    fun complete(value: Boolean) {
+                        if (!continuation.isActive) return
+                        cleanup()
+                        continuation.resume(value)
+                    }
+
+                    authenticatedListener = Emitter.Listener { complete(true) }
+                    unauthenticatedListener = Emitter.Listener { complete(false) }
+                    connectErrorListener = Emitter.Listener { complete(false) }
+                    disconnectListener = Emitter.Listener { complete(false) }
+
+                    activeSocket.once("socket:authenticated", authenticatedListener)
+                    activeSocket.once("socket:unauthenticated", unauthenticatedListener)
+                    activeSocket.once(Socket.EVENT_CONNECT_ERROR, connectErrorListener)
+                    activeSocket.once(Socket.EVENT_DISCONNECT, disconnectListener)
+                    continuation.invokeOnCancellation { cleanup() }
+
+                    if (activeSocket.connected() && isAuthenticated) {
+                        complete(true)
+                    } else if (!activeSocket.connected()) {
+                        activeSocket.connect()
+                    }
+                }
+            }
+        } catch (_: TimeoutCancellationException) {
+            false
+        } catch (e: Exception) {
+            Log.w(TAG, "Socket readiness check failed", e)
+            false
+        }
+    }
+
     fun sendMessage(
         conversationId: String,
         content: String,
         contentType: String = "text",
-        replyToId: String? = null
+        replyToId: String? = null,
+        clientMessageId: String? = null
     ) {
-        val obj = JSONObject()
-            .put("conversationId", conversationId)
-            .put("content", content)
-            .put("contentType", contentType)
-        replyToId?.let { obj.put("replyToId", it) }
-        Log.d(TAG, "📤 Sending message via socket to $conversationId")
+        val obj = buildSendMessagePayload(
+            conversationId = conversationId,
+            content = content,
+            contentType = contentType,
+            replyToId = replyToId,
+            clientMessageId = clientMessageId
+        )
+        Log.d(TAG, "📤 Sending message via socket to $conversationId transport=${currentTransportName ?: "unknown"}")
         socket?.emit("chat:send_message", obj)
     }
 
     fun sendTyping(conversationId: String, isTyping: Boolean) {
+        if (!isConnected()) {
+            reconnectIfNeeded()
+        }
+        Log.d(TAG, "⌨️ chat:typing conversation=$conversationId isTyping=$isTyping transport=${currentTransportName ?: "unknown"}")
         socket?.emit("chat:typing", JSONObject().put("conversationId", conversationId).put("isTyping", isTyping))
     }
 
     fun markRead(conversationId: String) {
         socket?.emit("chat:mark_read", JSONObject().put("conversationId", conversationId))
+    }
+
+    fun checkUserStatus(userId: String) {
+        if (userId.isBlank()) return
+        val activeSocket = socket ?: return
+        Log.d(TAG, "🟢 Emitting user:check_status for user=$userId connected=${activeSocket.connected()}")
+        activeSocket.emit("user:check_status", JSONObject().put("userId", userId))
     }
 }

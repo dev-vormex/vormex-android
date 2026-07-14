@@ -1,12 +1,20 @@
 package com.kyant.backdrop.catalog.network
 
 import android.app.Activity
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.util.Log
 import androidx.credentials.CredentialManager
+import androidx.credentials.CredentialOption
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.GetCredentialResponse
 import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.NoCredentialException
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.kyant.backdrop.catalog.BuildConfig
+import com.kyant.backdrop.catalog.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -14,10 +22,8 @@ import kotlinx.coroutines.withContext
  * Helper class for Google Sign-In using Credential Manager
  */
 object GoogleAuthHelper {
-    // Web Client ID from Google Cloud Console (NOT the Android Client ID)
-    // The Credential Manager requires the Web Client ID for server-side verification
-    private const val WEB_CLIENT_ID = "562328294412-3qt2hj14q8c43nhjimqevhdopecvp04b.apps.googleusercontent.com"
-    
+    private const val TAG = "GoogleAuthHelper"
+
     /**
      * Result of Google Sign-In attempt
      */
@@ -34,42 +40,66 @@ object GoogleAuthHelper {
      */
     suspend fun signIn(activity: Activity): GoogleSignInResult = withContext(Dispatchers.Main) {
         try {
+            if (!hasValidatedInternet(activity)) {
+                return@withContext GoogleSignInResult.Error(
+                    "No internet connection. Turn on Wi-Fi or mobile data and try Google Sign-In again."
+                )
+            }
+
             val credentialManager = CredentialManager.create(activity)
-            
-            // Configure Google ID option
-            val googleIdOption = GetGoogleIdOption.Builder()
-                .setFilterByAuthorizedAccounts(false) // Allow any Google account
-                .setServerClientId(WEB_CLIENT_ID)
-                .setAutoSelectEnabled(false) // Let user choose account
-                .build()
-            
-            // Create credential request
-            val request = GetCredentialRequest.Builder()
-                .addCredentialOption(googleIdOption)
-                .build()
-            
-            // Get credential - requires Activity context
-            val result: GetCredentialResponse = credentialManager.getCredential(
-                context = activity,
-                request = request
+            val serverClientId = BuildConfig.GOOGLE_SERVER_CLIENT_ID.trim()
+            val androidClientId = BuildConfig.GOOGLE_ANDROID_CLIENT_ID.trim()
+            val buildConfigWebClientId = BuildConfig.GOOGLE_WEB_CLIENT_ID.trim()
+            val googleServicesWebClientId = activity.getString(R.string.default_web_client_id).trim()
+            val googleClientId = serverClientId.ifBlank {
+                buildConfigWebClientId
+            }.ifBlank {
+                googleServicesWebClientId
+            }
+            if (googleClientId.isBlank()) {
+                return@withContext GoogleSignInResult.Error("Google Sign-In is not configured. Missing server client ID.")
+            }
+            Log.d(
+                TAG,
+                "Starting Google sign-in for ${activity.packageName}. " +
+                    "Server client ${redactedClientId(googleClientId)}, " +
+                    "Android OAuth client ${redactedClientId(androidClientId)}, " +
+                    "google-services default ${redactedClientId(googleServicesWebClientId)}."
             )
+            
+            val googleIdOption = GetGoogleIdOption.Builder()
+                .setServerClientId(googleClientId)
+                .setFilterByAuthorizedAccounts(false)
+                .setAutoSelectEnabled(false)
+                .build()
+            val result = getCredential(activity, credentialManager, googleIdOption)
+                ?: return@withContext GoogleSignInResult.Error(
+                    "Google could not return an account for this app. Check the Google OAuth setup for com.vormex.android."
+                )
             
             // Extract Google ID token
             val credential = result.credential
+            Log.d(TAG, "Credential Manager returned credential type: ${credential.type}")
             
-            when (credential.type) {
-                GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL -> {
+            when {
+                isGoogleIdTokenCredentialType(credential.type) -> {
                     val googleCredential = GoogleIdTokenCredential.createFrom(credential.data)
                     val idToken = googleCredential.idToken
                     val email = googleCredential.id
                     val displayName = googleCredential.displayName
+                    Log.d(TAG, "Google ID token credential parsed successfully.")
                     GoogleSignInResult.Success(idToken, email, displayName)
                 }
                 else -> {
+                    Log.w(TAG, "Unexpected credential type: ${credential.type}")
                     GoogleSignInResult.Error("Unexpected credential type: ${credential.type}")
                 }
             }
+        } catch (e: NoCredentialException) {
+            Log.w(TAG, "No Google credential available.", e)
+            GoogleSignInResult.Error("No usable Google account found. Please add or re-authenticate a Google account on this device.")
         } catch (e: GetCredentialException) {
+            Log.w(TAG, "Credential Manager sign-in failed: ${e.type}", e)
             // Handle specific error types
             when {
                 e.type == "android.credentials.GetCredentialException.TYPE_USER_CANCELED" ||
@@ -77,14 +107,58 @@ object GoogleAuthHelper {
                     GoogleSignInResult.Cancelled
                 }
                 e.message?.contains("No credentials available", ignoreCase = true) == true -> {
-                    GoogleSignInResult.Error("No Google accounts found. Please add a Google account to your device.")
+                    GoogleSignInResult.Error("No usable Google account found. Please add or re-authenticate a Google account on this device.")
                 }
                 else -> {
                     GoogleSignInResult.Error(e.message ?: "Google Sign-In failed")
                 }
             }
         } catch (e: Exception) {
+            Log.e(TAG, "Unexpected Google sign-in error.", e)
             GoogleSignInResult.Error(e.message ?: "Unknown error during Google Sign-In")
+        }
+    }
+
+    internal fun isGoogleIdTokenCredentialType(type: String): Boolean =
+        type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL ||
+            type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_SIWG_CREDENTIAL
+
+    private fun redactedClientId(clientId: String): String {
+        if (clientId.isBlank()) return "not configured"
+        val suffix = clientId.substringAfterLast('-', missingDelimiterValue = clientId)
+            .substringBefore(".apps.googleusercontent.com")
+        return if (suffix.length <= 8) {
+            "ending $suffix"
+        } else {
+            "ending ${suffix.takeLast(8)}"
+        }
+    }
+
+    private fun hasValidatedInternet(context: Context): Boolean {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+        val activeNetwork = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    private suspend fun getCredential(
+        activity: Activity,
+        credentialManager: CredentialManager,
+        credentialOption: CredentialOption
+    ): GetCredentialResponse? {
+        val request = GetCredentialRequest.Builder()
+            .addCredentialOption(credentialOption)
+            .build()
+        return try {
+            credentialManager.getCredential(
+                context = activity,
+                request = request
+            )
+        } catch (e: NoCredentialException) {
+            Log.w(TAG, "No Google credential for ${credentialOption::class.java.simpleName}.", e)
+            null
         }
     }
 }

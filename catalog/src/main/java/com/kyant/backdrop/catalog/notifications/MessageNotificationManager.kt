@@ -20,6 +20,11 @@ import androidx.core.graphics.drawable.IconCompat
 import com.kyant.backdrop.catalog.MainActivity
 import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.data.ChatMutePreferences
+import com.kyant.backdrop.catalog.data.SettingsPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
 import java.net.URL
 
 /**
@@ -37,9 +42,12 @@ object MessageNotificationManager {
     private const val TAG = "MsgNotifMgr"
     private const val GROUP_KEY_MESSAGES = "com.vormex.android.MESSAGES"
     private const val SUMMARY_NOTIFICATION_ID = 0
+    private const val GROUP_CONVERSATION_PREFIX = "group:"
 
     private val conversationNotificationIds = mutableMapOf<String, Int>()
     private val conversationMessages = mutableMapOf<String, MutableList<CachedMessage>>()
+    private val _pendingGroupConversationKeys = MutableStateFlow<Set<String>>(emptySet())
+    val pendingGroupConversationKeys: StateFlow<Set<String>> = _pendingGroupConversationKeys.asStateFlow()
 
     private data class CachedMessage(
         val senderName: String,
@@ -47,6 +55,12 @@ object MessageNotificationManager {
         val timestamp: Long,
         val senderBitmap: Bitmap? = null
     )
+
+    private fun refreshPendingGroupConversationKeys() {
+        _pendingGroupConversationKeys.value = conversationMessages.keys
+            .filter { it.startsWith(GROUP_CONVERSATION_PREFIX) }
+            .toSet()
+    }
 
     fun showMessageNotification(
         context: Context,
@@ -56,20 +70,85 @@ object MessageNotificationManager {
         conversationId: String,
         senderId: String
     ) {
-        if (conversationId.isNotBlank() && ChatMutePreferences.isMuted(context, conversationId)) {
-            Log.d(TAG, "Skipping notification — conversation muted: $conversationId")
+        showConversationMessageNotification(
+            context = context,
+            senderName = senderName,
+            messageContent = messageContent,
+            senderImageUrl = senderImageUrl,
+            largeIconUrl = senderImageUrl,
+            conversationKey = conversationId,
+            conversationTitle = null,
+            intentAction = VormexMessagingService.ACTION_CHAT,
+            conversationId = conversationId,
+            groupId = null,
+            senderId = senderId
+        )
+    }
+
+    fun showGroupMessageNotification(
+        context: Context,
+        groupName: String,
+        groupImageUrl: String?,
+        senderName: String,
+        messageContent: String,
+        senderImageUrl: String?,
+        groupId: String,
+        senderId: String
+    ) {
+        showConversationMessageNotification(
+            context = context,
+            senderName = senderName,
+            messageContent = messageContent,
+            senderImageUrl = senderImageUrl,
+            largeIconUrl = groupImageUrl,
+            conversationKey = groupNotificationKey(groupId),
+            conversationTitle = groupName,
+            intentAction = VormexMessagingService.ACTION_GROUP_CHAT,
+            conversationId = null,
+            groupId = groupId,
+            senderId = senderId
+        )
+    }
+
+    fun groupNotificationKey(groupId: String): String = "$GROUP_CONVERSATION_PREFIX$groupId"
+
+    private fun showConversationMessageNotification(
+        context: Context,
+        senderName: String,
+        messageContent: String,
+        senderImageUrl: String?,
+        largeIconUrl: String?,
+        conversationKey: String,
+        conversationTitle: String?,
+        intentAction: String,
+        conversationId: String?,
+        groupId: String?,
+        senderId: String
+    ) {
+        if (!areMessageNotificationsEnabled(context)) {
+            Log.d(TAG, "Skipping notification because message notifications are disabled")
+            return
+        }
+
+        if (conversationKey.isNotBlank() && ChatMutePreferences.isMuted(context, conversationKey)) {
+            Log.d(TAG, "Skipping notification — conversation muted: $conversationKey")
             return
         }
 
         VormexMessagingService.createNotificationChannels(context)
 
-        val notificationId = getNotificationIdForConversation(conversationId)
+        val notificationId = getNotificationIdForConversation(conversationKey)
 
         val senderBitmap = if (!senderImageUrl.isNullOrBlank()) {
             downloadAndCircleCrop(senderImageUrl)
         } else null
 
-        val largeIcon = senderBitmap ?: NotificationBranding.getAppLogoBitmap(context)
+        val largeIconBitmap = when {
+            largeIconUrl.isNullOrBlank() -> null
+            largeIconUrl == senderImageUrl -> senderBitmap
+            else -> downloadAndCircleCrop(largeIconUrl)
+        }
+        val largeIcon = largeIconBitmap ?: senderBitmap ?: NotificationBranding.getAppLogoBitmap(context)
 
         val cached = CachedMessage(
             senderName = senderName,
@@ -77,13 +156,18 @@ object MessageNotificationManager {
             timestamp = System.currentTimeMillis(),
             senderBitmap = senderBitmap
         )
-        val messages = conversationMessages.getOrPut(conversationId) { mutableListOf() }
+        val messages = conversationMessages.getOrPut(conversationKey) { mutableListOf() }
         messages.add(cached)
         if (messages.size > 8) messages.removeAt(0)
+        refreshPendingGroupConversationKeys()
 
         val messagingStyle = NotificationCompat.MessagingStyle(
             Person.Builder().setName("Me").build()
         )
+        if (!conversationTitle.isNullOrBlank()) {
+            messagingStyle.setConversationTitle(conversationTitle)
+            messagingStyle.setGroupConversation(true)
+        }
 
         messages.forEach { msg ->
             val person = Person.Builder()
@@ -94,9 +178,11 @@ object MessageNotificationManager {
         }
 
         val intent = Intent(context, MainActivity::class.java).apply {
+            action = "com.kyant.backdrop.catalog.OPEN_MESSAGE.$intentAction.$conversationKey"
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            putExtra(VormexMessagingService.EXTRA_ACTION, VormexMessagingService.ACTION_CHAT)
-            putExtra(VormexMessagingService.EXTRA_CONVERSATION_ID, conversationId)
+            putExtra(VormexMessagingService.EXTRA_ACTION, intentAction)
+            conversationId?.let { putExtra(VormexMessagingService.EXTRA_CONVERSATION_ID, it) }
+            groupId?.let { putExtra(VormexMessagingService.EXTRA_GROUP_ID, it) }
             putExtra(VormexMessagingService.EXTRA_USER_ID, senderId)
         }
 
@@ -137,6 +223,7 @@ object MessageNotificationManager {
      */
     fun clearConversationNotification(context: Context, conversationId: String) {
         conversationMessages.remove(conversationId)
+        refreshPendingGroupConversationKeys()
         val id = conversationNotificationIds.remove(conversationId) ?: return
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(id)
@@ -148,6 +235,7 @@ object MessageNotificationManager {
     fun clearAll(context: Context) {
         conversationMessages.clear()
         conversationNotificationIds.clear()
+        refreshPendingGroupConversationKeys()
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancelAll()
     }
@@ -156,6 +244,7 @@ object MessageNotificationManager {
         val totalMessages = conversationMessages.values.sumOf { it.size }
         val totalChats = conversationMessages.size
         val summaryIntent = Intent(context, MainActivity::class.java).apply {
+            action = "com.kyant.backdrop.catalog.OPEN_MESSAGES_SUMMARY"
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             putExtra(VormexMessagingService.EXTRA_ACTION, VormexMessagingService.ACTION_CHAT)
         }
@@ -189,6 +278,12 @@ object MessageNotificationManager {
         return conversationNotificationIds.getOrPut(conversationId) {
             1000 + (conversationId.hashCode() and 0x7FFFFFFF) % 100000
         }
+    }
+
+    private fun areMessageNotificationsEnabled(context: Context): Boolean {
+        return runCatching {
+            runBlocking { SettingsPreferences.isMessageNotificationDeliveryEnabled(context) }
+        }.getOrDefault(true)
     }
 
     private fun downloadAndCircleCrop(imageUrl: String): Bitmap? {

@@ -21,6 +21,10 @@ import kotlinx.serialization.json.Json
  */
 object GroupsApiService {
     private val BASE_URL = BuildConfig.API_BASE_URL
+    private val allowedPrivacy = setOf("PUBLIC", "PRIVATE", "SECRET")
+    private val allowedRoles = setOf("OWNER", "MEMBER", "MODERATOR", "ADMIN")
+    private val allowedInviteLinkVisibility = setOf("ADMINS", "MEMBERS")
+    private val allowedInviteActions = setOf("ACCEPT", "DECLINE")
     
     private val json = Json {
         ignoreUnknownKeys = true
@@ -39,16 +43,20 @@ object GroupsApiService {
         install(ContentNegotiation) {
             json(json)
         }
-        install(Logging) {
-            logger = Logger.ANDROID
-            level = LogLevel.BODY
+        if (BuildConfig.DEBUG) {
+            install(Logging) {
+                logger = Logger.ANDROID
+                level = LogLevel.HEADERS
+            }
         }
         install(HttpTimeout) {
             requestTimeoutMillis = 120000
             connectTimeoutMillis = 30000
             socketTimeoutMillis = 60000
         }
+        installVormexAppCheckInterceptor()
         defaultRequest {
+            applyVormexClientHeaders()
             contentType(ContentType.Application.Json)
         }
     }
@@ -69,15 +77,21 @@ object GroupsApiService {
     ): Result<Group> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeName = InputSecurity.text(name, "name", 80)
+            val safeDescription = InputSecurity.optionalText(description, "description", 1_000)
+            val safePrivacy = InputSecurity.enumValue(privacy, allowedPrivacy, "privacy")
+            val safeCategory = InputSecurity.optionalText(category, "category", 80)
+            val safeTags = InputSecurity.sanitizeList(tags, "tags", 20, 40)
+            val safeRules = InputSecurity.sanitizeList(rules, "rules", 20, 240)
             val response = client.post("$BASE_URL/groups") {
                 header("Authorization", "Bearer $token")
                 setBody(CreateGroupRequest(
-                    name = name,
-                    description = description,
-                    privacy = privacy,
-                    category = category,
-                    tags = tags,
-                    rules = rules
+                    name = safeName,
+                    description = safeDescription,
+                    privacy = safePrivacy,
+                    category = safeCategory,
+                    tags = safeTags,
+                    rules = safeRules
                 ))
             }
             if (response.status.isSuccess()) {
@@ -97,7 +111,8 @@ object GroupsApiService {
     suspend fun getGroup(context: Context, identifier: String): Result<Group> {
         return try {
             val token = ApiClient.getToken(context)
-            val response = client.get("$BASE_URL/groups/$identifier") {
+            val safeIdentifier = InputSecurity.identifier(identifier, "identifier")
+            val response = client.get("$BASE_URL/groups/$safeIdentifier") {
                 token?.let { header("Authorization", "Bearer $it") }
             }
             if (response.status.isSuccess()) {
@@ -121,10 +136,52 @@ object GroupsApiService {
     ): Result<GroupsResponse> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safePage = InputSecurity.boundedInt(page, "page", 1, 5_000)
+            val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 100)
             val response = client.get("$BASE_URL/groups/my") {
                 header("Authorization", "Bearer $token")
-                parameter("page", page)
-                parameter("limit", limit)
+                parameter("page", safePage)
+                parameter("limit", safeLimit)
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getMessageShortcuts(context: Context): Result<List<GroupMessageShortcut>> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/groups/message-shortcuts") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body<GroupMessageShortcutsResponse>().shortcuts)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun setMessageShortcut(
+        context: Context,
+        groupId: String,
+        enabled: Boolean
+    ): Result<GroupMessageShortcutResponse> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val response = client.patch("$BASE_URL/groups/$safeGroupId/message-shortcut") {
+                header("Authorization", "Bearer $token")
+                setBody(GroupMessageShortcutRequest(enabled))
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())
@@ -149,12 +206,16 @@ object GroupsApiService {
     ): Result<GroupsResponse> {
         return try {
             val token = ApiClient.getToken(context)
+            val safeSearch = InputSecurity.optionalText(search, "search", 120)
+            val safeCategory = InputSecurity.optionalText(category, "category", 80)
+            val safePage = InputSecurity.boundedInt(page, "page", 1, 5_000)
+            val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 100)
             val response = client.get("$BASE_URL/groups/discover") {
                 token?.let { header("Authorization", "Bearer $it") }
-                search?.let { parameter("search", it) }
-                category?.let { parameter("category", it) }
-                parameter("page", page)
-                parameter("limit", limit)
+                safeSearch?.let { parameter("search", it) }
+                safeCategory?.let { parameter("category", it) }
+                parameter("page", safePage)
+                parameter("limit", safeLimit)
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())
@@ -179,12 +240,16 @@ object GroupsApiService {
     ): Result<GroupsResponse> {
         return try {
             val token = ApiClient.getToken(context)
+            val safeSearch = InputSecurity.optionalText(search, "search", 120)
+            val safeCategory = InputSecurity.optionalText(category, "category", 80)
+            val safePage = InputSecurity.boundedInt(page, "page", 1, 5_000)
+            val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 100)
             val response = client.get("$BASE_URL/groups") {
                 token?.let { header("Authorization", "Bearer $it") }
-                search?.let { parameter("search", it) }
-                category?.let { parameter("category", it) }
-                parameter("page", page)
-                parameter("limit", limit)
+                safeSearch?.let { parameter("search", it) }
+                safeCategory?.let { parameter("category", it) }
+                parameter("page", safePage)
+                parameter("limit", safeLimit)
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())
@@ -212,15 +277,22 @@ object GroupsApiService {
     ): Result<Group> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.put("$BASE_URL/groups/$groupId") {
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val safeName = name?.let { InputSecurity.text(it, "name", 80) }
+            val safeDescription = InputSecurity.optionalText(description, "description", 1_000)
+            val safePrivacy = privacy?.let { InputSecurity.enumValue(it, allowedPrivacy, "privacy") }
+            val safeCategory = InputSecurity.optionalText(category, "category", 80)
+            val safeTags = tags?.let { InputSecurity.sanitizeList(it, "tags", 20, 40) }
+            val safeRules = rules?.let { InputSecurity.sanitizeList(it, "rules", 20, 240) }
+            val response = client.put("$BASE_URL/groups/$safeGroupId") {
                 header("Authorization", "Bearer $token")
                 setBody(UpdateGroupRequest(
-                    name = name,
-                    description = description,
-                    privacy = privacy,
-                    category = category,
-                    tags = tags,
-                    rules = rules
+                    name = safeName,
+                    description = safeDescription,
+                    privacy = safePrivacy,
+                    category = safeCategory,
+                    tags = safeTags,
+                    rules = safeRules
                 ))
             }
             if (response.status.isSuccess()) {
@@ -240,7 +312,8 @@ object GroupsApiService {
     suspend fun deleteGroup(context: Context, groupId: String): Result<Unit> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.delete("$BASE_URL/groups/$groupId") {
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val response = client.delete("$BASE_URL/groups/$safeGroupId") {
                 header("Authorization", "Bearer $token")
             }
             if (response.status.isSuccess()) {
@@ -260,7 +333,8 @@ object GroupsApiService {
     suspend fun joinGroup(context: Context, groupId: String): Result<JoinGroupResponse> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.post("$BASE_URL/groups/$groupId/join") {
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val response = client.post("$BASE_URL/groups/$safeGroupId/join") {
                 header("Authorization", "Bearer $token")
             }
             if (response.status.isSuccess()) {
@@ -280,7 +354,8 @@ object GroupsApiService {
     suspend fun leaveGroup(context: Context, groupId: String): Result<Unit> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.post("$BASE_URL/groups/$groupId/leave") {
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val response = client.post("$BASE_URL/groups/$safeGroupId/leave") {
                 header("Authorization", "Bearer $token")
             }
             if (response.status.isSuccess()) {
@@ -307,12 +382,17 @@ object GroupsApiService {
     ): Result<GroupMembersResponse> {
         return try {
             val token = ApiClient.getToken(context)
-            val response = client.get("$BASE_URL/groups/$groupId/members") {
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val safeRole = role?.let { InputSecurity.enumValue(it, allowedRoles, "role") }
+            val safeSearch = InputSecurity.optionalText(search, "search", 120)
+            val safePage = InputSecurity.boundedInt(page, "page", 1, 5_000)
+            val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 100)
+            val response = client.get("$BASE_URL/groups/$safeGroupId/members") {
                 token?.let { header("Authorization", "Bearer $it") }
-                role?.let { parameter("role", it) }
-                search?.let { parameter("search", it) }
-                parameter("page", page)
-                parameter("limit", limit)
+                safeRole?.let { parameter("role", it) }
+                safeSearch?.let { parameter("search", it) }
+                parameter("page", safePage)
+                parameter("limit", safeLimit)
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())
@@ -333,15 +413,18 @@ object GroupsApiService {
         groupId: String,
         userId: String,
         role: String
-    ): Result<GroupMember> {
+    ): Result<Unit> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.put("$BASE_URL/groups/$groupId/members/$userId") {
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val safeUserId = InputSecurity.identifier(userId, "userId")
+            val safeRole = InputSecurity.enumValue(role, allowedRoles, "role")
+            val response = client.put("$BASE_URL/groups/$safeGroupId/members/$safeUserId") {
                 header("Authorization", "Bearer $token")
-                setBody(UpdateMemberRoleRequest(role))
+                setBody(UpdateMemberRoleRequest(safeRole))
             }
             if (response.status.isSuccess()) {
-                Result.success(response.body())
+                Result.success(Unit)
             } else {
                 val error: ApiError = response.body()
                 Result.failure(Exception(error.getErrorMessage()))
@@ -361,7 +444,9 @@ object GroupsApiService {
     ): Result<Unit> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.delete("$BASE_URL/groups/$groupId/members/$userId") {
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val safeUserId = InputSecurity.identifier(userId, "userId")
+            val response = client.delete("$BASE_URL/groups/$safeGroupId/members/$safeUserId") {
                 header("Authorization", "Bearer $token")
             }
             if (response.status.isSuccess()) {
@@ -386,10 +471,13 @@ object GroupsApiService {
     ): Result<List<GroupMessage>> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.get("$BASE_URL/groups/$groupId/messages") {
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 100)
+            val safeBefore = InputSecurity.optionalIdentifier(before, "before")
+            val response = client.get("$BASE_URL/groups/$safeGroupId/messages") {
                 header("Authorization", "Bearer $token")
-                parameter("limit", limit)
-                before?.let { parameter("before", it) }
+                parameter("limit", safeLimit)
+                safeBefore?.let { parameter("before", it) }
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())
@@ -418,16 +506,24 @@ object GroupsApiService {
     ): Result<GroupMessage> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.post("$BASE_URL/groups/$groupId/messages") {
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val safeContent = InputSecurity.text(content, "content", 1_000, allowBlank = mediaUrl != null)
+            val safeContentType = InputSecurity.identifier(contentType, "contentType")
+            val safeMediaUrl = mediaUrl?.let { InputSecurity.url(it, "mediaUrl") }
+            val safeMediaType = mediaType?.let { InputSecurity.identifier(it, "mediaType") }
+            val safeFileName = fileName?.let { InputSecurity.fileName(it, "attachment") }
+            val safeFileSize = fileSize?.let { InputSecurity.boundedInt(it, "fileSize", 1, 150 * 1024 * 1024) }
+            val safeReplyToId = InputSecurity.optionalIdentifier(replyToId, "replyToId")
+            val response = client.post("$BASE_URL/groups/$safeGroupId/messages") {
                 header("Authorization", "Bearer $token")
                 setBody(SendGroupMessageRequest(
-                    content = content,
-                    contentType = contentType,
-                    mediaUrl = mediaUrl,
-                    mediaType = mediaType,
-                    fileName = fileName,
-                    fileSize = fileSize,
-                    replyToId = replyToId
+                    content = safeContent,
+                    contentType = safeContentType,
+                    mediaUrl = safeMediaUrl,
+                    mediaType = safeMediaType,
+                    fileName = safeFileName,
+                    fileSize = safeFileSize,
+                    replyToId = safeReplyToId
                 ))
             }
             if (response.status.isSuccess()) {
@@ -453,10 +549,13 @@ object GroupsApiService {
     ): Result<GroupPostsResponse> {
         return try {
             val token = ApiClient.getToken(context)
-            val response = client.get("$BASE_URL/groups/$groupId/posts") {
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val safePage = InputSecurity.boundedInt(page, "page", 1, 5_000)
+            val safeLimit = InputSecurity.boundedInt(limit, "limit", 1, 100)
+            val response = client.get("$BASE_URL/groups/$safeGroupId/posts") {
                 token?.let { header("Authorization", "Bearer $it") }
-                parameter("page", page)
-                parameter("limit", limit)
+                parameter("page", safePage)
+                parameter("limit", safeLimit)
                 parameter("pinnedFirst", pinnedFirst)
             }
             if (response.status.isSuccess()) {
@@ -482,9 +581,13 @@ object GroupsApiService {
     ): Result<GroupPost> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
-            val response = client.post("$BASE_URL/groups/$groupId/posts") {
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val safeContent = InputSecurity.text(content, "content", 2_000)
+            val safeMediaUrls = mediaUrls.map { InputSecurity.url(it, "mediaUrl") }.take(10)
+            val safeMediaType = mediaType?.let { InputSecurity.identifier(it, "mediaType") }
+            val response = client.post("$BASE_URL/groups/$safeGroupId/posts") {
                 header("Authorization", "Bearer $token")
-                setBody(CreateGroupPostRequest(content, mediaUrls, mediaType))
+                setBody(CreateGroupPostRequest(safeContent, safeMediaUrls, safeMediaType))
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())
@@ -533,6 +636,196 @@ object GroupsApiService {
             Result.failure(e)
         }
     }
+
+    suspend fun previewGroupInviteLink(context: Context, inviteCode: String): Result<GroupInviteLinkResponse> {
+        return try {
+            val token = ApiClient.getToken(context)
+            val safeCode = InputSecurity.identifier(inviteCode, "inviteCode")
+            val response = client.get("$BASE_URL/groups/invites/link/$safeCode") {
+                token?.let { header("Authorization", "Bearer $it") }
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun joinGroupByInviteLink(context: Context, inviteCode: String): Result<GroupInviteActionResponse> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeCode = InputSecurity.identifier(inviteCode, "inviteCode")
+            val response = client.post("$BASE_URL/groups/invites/link/$safeCode/join") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getGroupInviteLink(context: Context, groupId: String): Result<GroupInviteLinkResponse> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val response = client.get("$BASE_URL/groups/$safeGroupId/invite-link") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateGroupInviteLinkVisibility(
+        context: Context,
+        groupId: String,
+        visibility: String
+    ): Result<GroupInviteLinkResponse> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val safeVisibility = InputSecurity.enumValue(visibility, allowedInviteLinkVisibility, "visibility")
+            val response = client.patch("$BASE_URL/groups/$safeGroupId/invite-link/settings") {
+                header("Authorization", "Bearer $token")
+                setBody(GroupInviteLinkSettingsRequest(safeVisibility))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun resetGroupInviteLink(context: Context, groupId: String): Result<GroupInviteLinkResponse> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val response = client.post("$BASE_URL/groups/$safeGroupId/invite-link/reset") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun createGroupInvite(
+        context: Context,
+        groupId: String,
+        userId: String,
+        message: String? = null
+    ): Result<GroupInviteResponse> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val safeUserId = InputSecurity.identifier(userId, "userId")
+            val safeMessage = InputSecurity.optionalText(message, "message", 500)
+            val response = client.post("$BASE_URL/groups/$safeGroupId/invites") {
+                header("Authorization", "Bearer $token")
+                setBody(CreateGroupInviteRequest(safeUserId, safeMessage))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun respondToGroupInvite(
+        context: Context,
+        inviteId: String,
+        action: String
+    ): Result<GroupInviteActionResponse> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeInviteId = InputSecurity.identifier(inviteId, "inviteId")
+            val safeAction = InputSecurity.enumValue(action, allowedInviteActions, "action").lowercase()
+            val response = client.post("$BASE_URL/groups/invites/$safeInviteId/respond") {
+                header("Authorization", "Bearer $token")
+                setBody(RespondToGroupInviteRequest(safeAction))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getGroupJoinRequests(context: Context, groupId: String): Result<GroupJoinRequestsResponse> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val response = client.get("$BASE_URL/groups/$safeGroupId/join-requests") {
+                header("Authorization", "Bearer $token")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun respondToGroupJoinRequest(
+        context: Context,
+        groupId: String,
+        requestId: String,
+        action: String
+    ): Result<GroupInviteActionResponse> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val safeGroupId = InputSecurity.identifier(groupId, "groupId")
+            val safeRequestId = InputSecurity.identifier(requestId, "requestId")
+            val safeAction = InputSecurity.enumValue(action, allowedInviteActions, "action").lowercase()
+            val response = client.post("$BASE_URL/groups/$safeGroupId/join-requests/$safeRequestId/respond") {
+                header("Authorization", "Bearer $token")
+                setBody(RespondToGroupInviteRequest(safeAction))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
     
     /**
      * Upload group icon
@@ -541,8 +834,9 @@ object GroupsApiService {
         context: Context,
         groupId: String,
         imageBytes: ByteArray,
-        filename: String = "icon.jpg"
-    ): Result<Group> {
+        filename: String = "icon.jpg",
+        mimeType: String = "image/jpeg"
+    ): Result<GroupIconUploadResponse> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val response = client.post("$BASE_URL/groups/$groupId/upload/icon") {
@@ -552,7 +846,7 @@ object GroupsApiService {
                         "icon",
                         imageBytes,
                         Headers.build {
-                            append(HttpHeaders.ContentType, "image/jpeg")
+                            append(HttpHeaders.ContentType, mimeType)
                             append(HttpHeaders.ContentDisposition, "filename=$filename")
                         }
                     )
@@ -576,8 +870,9 @@ object GroupsApiService {
         context: Context,
         groupId: String,
         imageBytes: ByteArray,
-        filename: String = "cover.jpg"
-    ): Result<Group> {
+        filename: String = "cover.jpg",
+        mimeType: String = "image/jpeg"
+    ): Result<GroupCoverUploadResponse> {
         return try {
             val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val response = client.post("$BASE_URL/groups/$groupId/upload/cover") {
@@ -587,7 +882,7 @@ object GroupsApiService {
                         "cover",
                         imageBytes,
                         Headers.build {
-                            append(HttpHeaders.ContentType, "image/jpeg")
+                            append(HttpHeaders.ContentType, mimeType)
                             append(HttpHeaders.ContentDisposition, "filename=$filename")
                         }
                     )
@@ -744,6 +1039,49 @@ object GroupsApiService {
                     emoji = emoji,
                     isPrivate = isPrivate
                 ))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body())
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Update a circle
+     */
+    suspend fun updateCircle(
+        context: Context,
+        circleId: String,
+        name: String,
+        description: String? = null,
+        category: String? = null,
+        tags: List<String> = emptyList(),
+        emoji: String? = null,
+        isPrivate: Boolean = false,
+        requiresApproval: Boolean = false,
+        maxMembers: Int
+    ): Result<Circle> {
+        return try {
+            val token = ApiClient.getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.put("$BASE_URL/circles/$circleId") {
+                header("Authorization", "Bearer $token")
+                setBody(
+                    UpdateCircleRequest(
+                        name = name,
+                        description = description,
+                        category = category,
+                        tags = tags,
+                        emoji = emoji,
+                        isPrivate = isPrivate,
+                        requiresApproval = requiresApproval,
+                        maxMembers = maxMembers
+                    )
+                )
             }
             if (response.status.isSuccess()) {
                 Result.success(response.body())

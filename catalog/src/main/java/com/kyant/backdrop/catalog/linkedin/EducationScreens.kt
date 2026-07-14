@@ -1,5 +1,8 @@
 package com.kyant.backdrop.catalog.linkedin
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,8 +21,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -43,12 +46,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.data.SettingsPreferences
@@ -93,9 +99,11 @@ fun AddEditEducationScreen(
     var grade by remember { mutableStateOf(education?.grade ?: "") }
     var activities by remember { mutableStateOf(education?.activities ?: "") }
     var description by remember { mutableStateOf(education?.description ?: "") }
+    var logo by remember { mutableStateOf(education?.logo) }
     
     // UI state
     var isLoading by remember { mutableStateOf(false) }
+    var isUploadingLogo by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showStartDatePicker by remember { mutableStateOf(false) }
@@ -112,6 +120,23 @@ fun AddEditEducationScreen(
         (startDate.isNotBlank() && endDate.isNotBlank() && startDate <= endDate)
     val isValid = isSchoolValid && isDegreeValid && isFieldValid && 
         isStartDateValid && isEndDateValid && isDescriptionValid && isActivitiesValid
+
+    val logoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            scope.launch {
+                isUploadingLogo = true
+                errorMessage = null
+                context.contentResolver.openInputStream(it)?.use { stream ->
+                    ApiClient.uploadLogoImage(context, stream.readBytes())
+                        .onSuccess { logo = it }
+                        .onFailure { errorMessage = it.message ?: "Failed to upload college logo" }
+                }
+                isUploadingLogo = false
+            }
+        }
+    }
     
     // Date pickers
     if (showStartDatePicker) {
@@ -209,8 +234,9 @@ fun AddEditEducationScreen(
     
     // Theme preference: "glass", "light", "dark"
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
-    val isGlassTheme = themeMode == "glass"
-    val isDarkTheme = themeMode == "dark"
+    val appearance = currentVormexAppearance(themeMode)
+    val isGlassTheme = appearance.isGlassTheme
+    val isDarkTheme = appearance.isDarkTheme
 
     Box(
         Modifier
@@ -320,7 +346,8 @@ fun AddEditEducationScreen(
                                         isCurrent = isCurrent,
                                         grade = grade.ifBlank { null },
                                         activities = activities.ifBlank { null },
-                                        description = description.ifBlank { null }
+                                        description = description.ifBlank { null },
+                                        logo = logo
                                     )
                                     
                                     val result = if (isEditMode && educationId != null) {
@@ -381,23 +408,47 @@ fun AddEditEducationScreen(
                 Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // Education icon
-                Box(
-                    Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    BasicText(
+                        "College logo (optional)",
+                        style = TextStyle(contentColor, 13.sp, FontWeight.Medium)
+                    )
+                    Spacer(Modifier.height(8.dp))
                     Box(
                         Modifier
-                            .size(72.dp)
+                            .size(80.dp)
                             .clip(RoundedCornerShape(16.dp))
-                            .background(Color(0xFFFFD700).copy(alpha = 0.15f)),
+                            .background(contentColor.copy(alpha = 0.07f))
+                            .border(1.dp, contentColor.copy(alpha = 0.16f), RoundedCornerShape(16.dp))
+                            .clickable(enabled = !isUploadingLogo) { logoPicker.launch("image/*") },
                         contentAlignment = Alignment.Center
                     ) {
-                        Image(
-                            painter = painterResource(R.drawable.ic_education),
-                            contentDescription = null,
-                            modifier = Modifier.size(36.dp),
-                            colorFilter = ColorFilter.tint(Color(0xFFFFD700))
+                        when {
+                            isUploadingLogo -> CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                color = accentColor,
+                                strokeWidth = 2.dp
+                            )
+                            !logo.isNullOrBlank() -> AsyncImage(
+                                model = ImageRequest.Builder(context).data(logo).crossfade(true).build(),
+                                contentDescription = "College logo",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            else -> Image(
+                                painter = painterResource(R.drawable.ic_education),
+                                contentDescription = "Add college logo",
+                                modifier = Modifier.size(36.dp),
+                                colorFilter = ColorFilter.tint(accentColor)
+                            )
+                        }
+                    }
+                    if (!logo.isNullOrBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        BasicText(
+                            "Remove logo",
+                            style = TextStyle(Color(0xFFDC2626), 11.sp, FontWeight.Medium),
+                            modifier = Modifier.clickable { logo = null }
                         )
                     }
                 }

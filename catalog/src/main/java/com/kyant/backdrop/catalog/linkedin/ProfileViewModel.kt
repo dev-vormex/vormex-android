@@ -13,8 +13,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class ProfilePeopleSheetKind(
     val title: String,
@@ -40,7 +42,11 @@ data class ProfilePeopleListItem(
     val profileImage: String? = null,
     val headline: String? = null,
     val college: String? = null,
-    val isOnline: Boolean = false
+    val isOnline: Boolean = false,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 data class ProfilePeopleSheetState(
@@ -52,6 +58,22 @@ data class ProfilePeopleSheetState(
     val isVisible: Boolean = false,
     val isLoading: Boolean = false,
     val error: String? = null
+)
+
+data class ProfileEditDraft(
+    val name: String = "",
+    val headline: String = "",
+    val bio: String = "",
+    val location: String = "",
+    val college: String = "",
+    val branch: String = "",
+    val degree: String = "",
+    val currentYear: String = "",
+    val graduationYear: String = "",
+    val portfolioUrl: String = "",
+    val linkedinUrl: String = "",
+    val githubProfileUrl: String = "",
+    val isOpenToOpportunities: Boolean = false
 )
 
 data class ProfileUiState(
@@ -95,19 +117,53 @@ data class ProfileUiState(
     // Action in progress
     val connectionActionInProgress: Boolean = false,
     val followActionInProgress: Boolean = false,
+    val profileSaveActionInProgress: Boolean = false,
     
     // Edit mode
     val isEditingBio: Boolean = false,
     val editedBio: String = "",
+    val isSavingBio: Boolean = false,
+    val bioEditError: String? = null,
+    val isEditingInterests: Boolean = false,
+    val editedInterests: List<String> = emptyList(),
+    val isSavingInterests: Boolean = false,
+    val interestsEditError: String? = null,
+    val isEditingProfile: Boolean = false,
+    val profileEditDraft: ProfileEditDraft? = null,
+    val isSavingProfile: Boolean = false,
+    val profileEditError: String? = null,
     
     // Avatar/Banner upload
     val isUploadingAvatar: Boolean = false,
     val isUploadingBanner: Boolean = false,
     val uploadError: String? = null,
 
+    // GitHub integration
+    val isGitHubConnecting: Boolean = false,
+    val isGitHubSyncing: Boolean = false,
+    val isGitHubDisconnecting: Boolean = false,
+    val githubActionError: String? = null,
+
     /** Loader gift id to show while profile is fetching (from prefs, memory, or merged profile). */
     val visitLoaderGiftIdHint: String? = null
 )
+
+private fun ProfileUser.toProfileEditDraft(): ProfileEditDraft =
+    ProfileEditDraft(
+        name = name,
+        headline = headline.orEmpty(),
+        bio = bio.orEmpty(),
+        location = location.orEmpty(),
+        college = college.orEmpty(),
+        branch = branch.orEmpty(),
+        degree = degree.orEmpty(),
+        currentYear = currentYear?.toString().orEmpty(),
+        graduationYear = graduationYear?.toString().orEmpty(),
+        portfolioUrl = portfolioUrl.orEmpty(),
+        linkedinUrl = linkedinUrl.orEmpty(),
+        githubProfileUrl = githubProfileUrl.orEmpty(),
+        isOpenToOpportunities = isOpenToOpportunities
+    )
 
 class ProfileViewModel(private val context: Context) : ViewModel() {
     
@@ -119,6 +175,12 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
     private var lastLoadedAtMillis: Long = 0L
     private var isProfileRequestInFlight: Boolean = false
     private val cacheTtlMillis: Long = VormexPerformancePolicy.ProfileCacheTtlMillis
+    private val persistentCacheMaxAgeMillis: Long = VormexPerformancePolicy.PersistentProfileCacheMaxAgeMillis
+    private val profileCacheStore = ProfileCacheStore(context)
+    private var lastCacheOwnerId: String? = null
+    private var lastCacheTargetKey: String? = null
+    private var feedRequestVersion: Int = 0
+    private val feedItemsByFilter = mutableMapOf<String, List<FeedItem>>()
     
     fun loadProfile(userId: String? = null, forceRefresh: Boolean = false) {
         val effectiveUserId = userId ?: "me"
@@ -152,6 +214,36 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
             isProfileRequestInFlight = true
             val currentUserId = ApiClient.getCurrentUserId(context)
             val isOwner = effectiveUserId == "me" || effectiveUserId == currentUserId
+            val cacheOwnerId = currentUserId ?: "anonymous"
+            val cacheTargetKey = profileCacheTargetKey(effectiveUserId, currentUserId)
+            lastCacheOwnerId = cacheOwnerId
+            lastCacheTargetKey = cacheTargetKey
+            val cachedSnapshot = if (!forceRefresh) {
+                withContext(Dispatchers.IO) {
+                    profileCacheStore.get(cacheOwnerId, cacheTargetKey, persistentCacheMaxAgeMillis)
+                }
+            } else {
+                null
+            }
+            val cachedProfile = cachedSnapshot?.profile
+            val hasCachedContentToShow = hasStaleContentToShow || cachedProfile != null
+            if (!hasStaleContentToShow && cachedProfile != null) {
+                feedItemsByFilter["all"] = cachedProfile.recentActivity.items
+                _uiState.value = _uiState.value.copy(
+                    profile = cachedProfile,
+                    isLoading = false,
+                    error = null,
+                    activityHeatmap = cachedProfile.activityHeatmap,
+                    feedItems = cachedProfile.recentActivity.items,
+                    feedHasMore = cachedProfile.recentActivity.hasMore,
+                    isOwner = isOwner,
+                    currentUserId = currentUserId,
+                    visitLoaderGiftIdHint = cachedProfile.user.visitLoaderGiftId
+                )
+                lastLoadedUserId = effectiveUserId
+                lastLoadedAtMillis = cachedSnapshot.cachedAtMillis
+                loadActivityYears(cachedProfile.user.id)
+            }
             val equippedLoader = SettingsPreferences.equippedProfileLoaderGiftId(context).first()
             val localProfileFrameEnabled = SettingsPreferences.profileFrameEnabled(context).first()
             val reduceAnimations = SettingsPreferences.reduceAnimations(context).first()
@@ -160,13 +252,24 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                 else -> ProfileLoaderGiftMemory.get(effectiveUserId)
             }
             _uiState.value = _uiState.value.copy(
-                isLoading = !hasStaleContentToShow,
+                isLoading = !hasCachedContentToShow,
                 error = null,
                 peopleSheet = ProfilePeopleSheetState(),
                 isOwner = isOwner,
                 currentUserId = currentUserId,
-                visitLoaderGiftIdHint = visitHint
+                visitLoaderGiftIdHint = cachedProfile?.user?.visitLoaderGiftId ?: visitHint
             )
+
+            if (
+                cachedSnapshot != null &&
+                isOwner &&
+                !forceRefresh &&
+                (System.currentTimeMillis() - cachedSnapshot.cachedAtMillis) < cacheTtlMillis
+            ) {
+                loadCompleteFeed(_uiState.value.feedFilter, keepCurrentItems = true)
+                isProfileRequestInFlight = false
+                return@launch
+            }
             
             // Load profile
             ApiClient.getProfile(context, effectiveUserId)
@@ -222,6 +325,17 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                         }
                     }
                     ProfileLoaderGiftMemory.put(mergedProfile.user.id, mergedProfile.user.visitLoaderGiftId)
+                    if (isOwner) {
+                        SettingsPreferences.setProfileTheme(
+                            context,
+                            normalizeProfileThemeKey(mergedProfile.user.profileTheme)
+                        )
+                    }
+                    persistProfileSnapshot(
+                        cacheOwnerId = cacheOwnerId,
+                        requestedTargetKey = cacheTargetKey,
+                        profile = mergedProfile
+                    )
                     val shouldHoldForVisitLoader =
                         !isOwner &&
                             !reduceAnimations &&
@@ -242,7 +356,17 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                         feedHasMore = mergedProfile.recentActivity.hasMore,
                         visitLoaderGiftIdHint = mergedProfile.user.visitLoaderGiftId
                     )
+                    feedItemsByFilter["all"] = mergedProfile.recentActivity.items
+                    loadCompleteFeed(_uiState.value.feedFilter, keepCurrentItems = true)
                     
+                    if (!isOwner) {
+                        HomeFeedInteractionMemory.recordProfileVisit(
+                            context = context,
+                            profileUserId = profile.user.id,
+                            currentUserId = currentUserId
+                        )
+                    }
+
                     // Load relationship status for non-owners
                     if (!isOwner && currentUserId != null) {
                         loadRelationshipStatus(profile.user.id)
@@ -256,11 +380,46 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                 .onFailure { e ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = e.message ?: "Failed to load profile"
+                        error = if (_uiState.value.profile == null) {
+                            e.message ?: "Failed to load profile"
+                        } else {
+                            null
+                        }
                     )
                     isProfileRequestInFlight = false
                 }
         }
+    }
+
+    private fun profileCacheTargetKey(effectiveUserId: String, currentUserId: String?): String {
+        return if (effectiveUserId == "me") currentUserId ?: "me" else effectiveUserId
+    }
+
+    private fun persistProfileSnapshot(
+        cacheOwnerId: String,
+        requestedTargetKey: String,
+        profile: FullProfileResponse
+    ) {
+        val keys = buildSet {
+            add(requestedTargetKey)
+            add(profile.user.id)
+            add(profile.user.username)
+            add("@${profile.user.username}")
+        }.filter { it.isNotBlank() }
+
+        // Encodes the full profile JSON per key; keep it off the main thread.
+        viewModelScope.launch(Dispatchers.IO) {
+            keys.forEach { targetKey ->
+                profileCacheStore.put(cacheOwnerId, targetKey, profile)
+            }
+        }
+    }
+
+    private fun persistCurrentProfileSnapshot() {
+        val profile = _uiState.value.profile ?: return
+        val cacheOwnerId = lastCacheOwnerId ?: _uiState.value.currentUserId ?: "anonymous"
+        val targetKey = lastCacheTargetKey ?: profile.user.id
+        persistProfileSnapshot(cacheOwnerId, targetKey, profile)
     }
 
     fun prefetchOwnProfile() {
@@ -470,55 +629,74 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
     }
     
     fun setFeedFilter(filter: String) {
-        val userId = targetUserId ?: return
-        
+        val normalizedFilter = when (filter.lowercase()) {
+            "post" -> "posts"
+            "article" -> "articles"
+            "reel", "reels", "video" -> "videos"
+            else -> filter.lowercase()
+        }
+        if (normalizedFilter !in setOf("all", "posts", "articles", "forum", "videos")) return
+        loadCompleteFeed(normalizedFilter, keepCurrentItems = false)
+    }
+
+    /**
+     * Profile activity is intentionally loaded to completion. The profile grid and the
+     * scrollable activity viewer should never require a manual "Load more" action.
+     */
+    private fun loadCompleteFeed(filter: String, keepCurrentItems: Boolean) {
+        val userId = _uiState.value.profile?.user?.id ?: targetUserId ?: return
+        val requestVersion = ++feedRequestVersion
+        val initialItems = when {
+            keepCurrentItems && _uiState.value.feedFilter == filter -> _uiState.value.feedItems
+            else -> feedItemsByFilter[filter].orEmpty()
+        }
+
         _uiState.value = _uiState.value.copy(
             feedFilter = filter,
             feedPage = 1,
-            feedItems = emptyList(),
+            feedItems = initialItems,
+            feedHasMore = false,
             isLoadingFeed = true
         )
-        
+
         viewModelScope.launch {
-            ApiClient.getProfileFeed(context, userId, page = 1, filter = filter)
-                .onSuccess { response ->
-                    _uiState.value = _uiState.value.copy(
-                        feedItems = response.items,
-                        feedHasMore = response.hasMore,
-                        isLoadingFeed = false
-                    )
+            val loadedItems = mutableListOf<FeedItem>()
+            var page = 1
+            var hasMore: Boolean
+
+            do {
+                val result = ApiClient.getProfileFeed(
+                    context = context,
+                    userId = userId,
+                    page = page,
+                    limit = 100,
+                    filter = filter
+                )
+                if (requestVersion != feedRequestVersion) return@launch
+
+                val response = result.getOrElse {
+                    _uiState.value = _uiState.value.copy(isLoadingFeed = false, feedHasMore = false)
+                    return@launch
                 }
-                .onFailure {
-                    _uiState.value = _uiState.value.copy(isLoadingFeed = false)
-                }
-        }
-    }
-    
-    fun loadMoreFeed() {
-        val userId = targetUserId ?: return
-        if (_uiState.value.isLoadingFeed || !_uiState.value.feedHasMore) return
-        
-        val nextPage = _uiState.value.feedPage + 1
-        _uiState.value = _uiState.value.copy(isLoadingFeed = true)
-        
-        viewModelScope.launch {
-            ApiClient.getProfileFeed(
-                context, 
-                userId, 
-                page = nextPage, 
-                filter = _uiState.value.feedFilter
-            )
-                .onSuccess { response ->
-                    _uiState.value = _uiState.value.copy(
-                        feedItems = _uiState.value.feedItems + response.items,
-                        feedPage = nextPage,
-                        feedHasMore = response.hasMore,
-                        isLoadingFeed = false
-                    )
-                }
-                .onFailure {
-                    _uiState.value = _uiState.value.copy(isLoadingFeed = false)
-                }
+                loadedItems += response.items
+                hasMore = response.hasMore && response.items.isNotEmpty()
+
+                _uiState.value = _uiState.value.copy(
+                    feedItems = loadedItems.distinctBy { it.id },
+                    feedPage = page,
+                    feedHasMore = hasMore,
+                    isLoadingFeed = hasMore
+                )
+                feedItemsByFilter[filter] = _uiState.value.feedItems
+                page += 1
+            } while (hasMore)
+
+            if (requestVersion == feedRequestVersion) {
+                _uiState.value = _uiState.value.copy(
+                    feedHasMore = false,
+                    isLoadingFeed = false
+                )
+            }
         }
     }
 
@@ -791,33 +969,231 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
     fun startEditingBio() {
         _uiState.value = _uiState.value.copy(
             isEditingBio = true,
-            editedBio = _uiState.value.profile?.user?.bio ?: ""
+            editedBio = _uiState.value.profile?.user?.bio ?: "",
+            bioEditError = null
         )
     }
     
     fun cancelEditingBio() {
-        _uiState.value = _uiState.value.copy(isEditingBio = false)
+        _uiState.value = _uiState.value.copy(
+            isEditingBio = false,
+            isSavingBio = false,
+            bioEditError = null
+        )
     }
     
     fun updateEditedBio(bio: String) {
-        _uiState.value = _uiState.value.copy(editedBio = bio)
+        _uiState.value = _uiState.value.copy(
+            editedBio = bio,
+            bioEditError = null
+        )
     }
     
     fun saveEditedBio() {
-        val newBio = _uiState.value.editedBio
+        if (_uiState.value.isSavingBio) return
+
+        val newBio = _uiState.value.editedBio.trim()
         
         viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isSavingBio = true,
+                bioEditError = null
+            )
+
             ApiClient.updateProfile(context, ProfileUpdateRequest(bio = newBio))
                 .onSuccess {
+                    val currentProfile = _uiState.value.profile
                     _uiState.value = _uiState.value.copy(
                         isEditingBio = false,
-                        profile = _uiState.value.profile?.copy(
-                            user = _uiState.value.profile!!.user.copy(bio = newBio)
+                        isSavingBio = false,
+                        editedBio = newBio,
+                        bioEditError = null,
+                        profile = currentProfile?.copy(
+                            user = currentProfile.user.copy(bio = newBio)
                         )
                     )
+                    persistCurrentProfileSnapshot()
                 }
-                .onFailure {
-                    // Handle error
+                .onFailure { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isSavingBio = false,
+                        bioEditError = e.message ?: "Failed to save about section"
+                    )
+                }
+        }
+    }
+
+    fun startEditingInterests() {
+        _uiState.value = _uiState.value.copy(
+            isEditingInterests = true,
+            editedInterests = _uiState.value.profile?.user?.interests.orEmpty(),
+            interestsEditError = null
+        )
+    }
+
+    fun cancelEditingInterests() {
+        _uiState.value = _uiState.value.copy(
+            isEditingInterests = false,
+            isSavingInterests = false,
+            interestsEditError = null
+        )
+    }
+
+    fun updateEditedInterests(interests: List<String>) {
+        val normalized = interests
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+            .take(10)
+        _uiState.value = _uiState.value.copy(
+            editedInterests = normalized,
+            interestsEditError = null
+        )
+    }
+
+    fun saveEditedInterests() {
+        val state = _uiState.value
+        if (state.isSavingInterests) return
+        val interests = state.editedInterests
+            .map { it.trim() }
+            .filter { it.length in 2..30 }
+            .distinctBy { it.lowercase() }
+            .take(10)
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isSavingInterests = true,
+                interestsEditError = null
+            )
+            ApiClient.updateProfile(context, ProfileUpdateRequest(interests = interests))
+                .onSuccess {
+                    val currentProfile = _uiState.value.profile
+                    _uiState.value = _uiState.value.copy(
+                        isEditingInterests = false,
+                        isSavingInterests = false,
+                        editedInterests = interests,
+                        interestsEditError = null,
+                        profile = currentProfile?.copy(
+                            user = currentProfile.user.copy(interests = interests)
+                        )
+                    )
+                    persistCurrentProfileSnapshot()
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isSavingInterests = false,
+                        interestsEditError = error.message ?: "Failed to save interests"
+                    )
+                }
+        }
+    }
+
+    fun startEditingProfile() {
+        val user = _uiState.value.profile?.user ?: return
+        _uiState.value = _uiState.value.copy(
+            isEditingProfile = true,
+            isSavingProfile = false,
+            profileEditError = null,
+            profileEditDraft = user.toProfileEditDraft()
+        )
+    }
+
+    fun cancelEditingProfile() {
+        _uiState.value = _uiState.value.copy(
+            isEditingProfile = false,
+            isSavingProfile = false,
+            profileEditError = null,
+            profileEditDraft = null
+        )
+    }
+
+    fun updateProfileEditDraft(update: (ProfileEditDraft) -> ProfileEditDraft) {
+        val currentDraft = _uiState.value.profileEditDraft ?: return
+        _uiState.value = _uiState.value.copy(
+            profileEditDraft = update(currentDraft),
+            profileEditError = null
+        )
+    }
+
+    fun saveProfileEdits() {
+        val state = _uiState.value
+        if (state.isSavingProfile) return
+        val draft = state.profileEditDraft ?: return
+        val currentProfile = state.profile ?: return
+
+        val name = draft.name.trim()
+        if (name.isBlank()) {
+            _uiState.value = state.copy(profileEditError = "Name cannot be empty")
+            return
+        }
+
+        fun optionalText(value: String): String? = value.trim().takeIf { it.isNotBlank() }
+
+        val headline = optionalText(draft.headline)
+        val location = optionalText(draft.location)
+        fun optionalUrl(value: String): String? =
+            optionalText(value)?.let { trimmed ->
+                if ("://" in trimmed) trimmed else "https://$trimmed"
+            }
+
+        val portfolioUrl = optionalUrl(draft.portfolioUrl)
+        val linkedinUrl = optionalUrl(draft.linkedinUrl)
+        val githubProfileUrl = optionalUrl(draft.githubProfileUrl)
+
+        val explicitNullFields = buildSet {
+            if (headline == null) add("headline")
+            if (location == null) add("location")
+            if (portfolioUrl == null) add("portfolioUrl")
+            if (linkedinUrl == null) add("linkedinUrl")
+            if (githubProfileUrl == null) add("githubProfileUrl")
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isSavingProfile = true,
+                profileEditError = null
+            )
+
+            ApiClient.updateProfile(
+                context = context,
+                data = ProfileUpdateRequest(
+                    name = name,
+                    headline = headline,
+                    location = location,
+                    portfolioUrl = portfolioUrl,
+                    linkedinUrl = linkedinUrl,
+                    githubProfileUrl = githubProfileUrl,
+                    isOpenToOpportunities = draft.isOpenToOpportunities
+                ),
+                explicitNullFields = explicitNullFields
+            )
+                .onSuccess {
+                    val updatedProfile = currentProfile.copy(
+                        user = currentProfile.user.copy(
+                            name = name,
+                            headline = headline,
+                            location = location,
+                            portfolioUrl = portfolioUrl,
+                            linkedinUrl = linkedinUrl,
+                            githubProfileUrl = githubProfileUrl,
+                            isOpenToOpportunities = draft.isOpenToOpportunities
+                        )
+                    )
+                    _uiState.value = _uiState.value.copy(
+                        profile = updatedProfile,
+                        isEditingProfile = false,
+                        isSavingProfile = false,
+                        profileEditDraft = null,
+                        profileEditError = null,
+                        editedBio = currentProfile.user.bio.orEmpty()
+                    )
+                    persistCurrentProfileSnapshot()
+                }
+                .onFailure { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isSavingProfile = false,
+                        profileEditError = e.message ?: "Failed to save profile"
+                    )
                 }
         }
     }
@@ -831,6 +1207,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                             user = _uiState.value.profile!!.user.copy(isOpenToOpportunities = isOpen)
                         )
                     )
+                    persistCurrentProfileSnapshot()
                 }
         }
     }
@@ -854,6 +1231,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                             user = _uiState.value.profile!!.user.copy(avatar = avatarUrl)
                         )
                     )
+                    persistCurrentProfileSnapshot()
                 }
                 .onFailure { e ->
                     _uiState.value = _uiState.value.copy(
@@ -881,6 +1259,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
                             user = _uiState.value.profile!!.user.copy(bannerImageUrl = bannerUrl)
                         )
                     )
+                    persistCurrentProfileSnapshot()
                 }
                 .onFailure { e ->
                     _uiState.value = _uiState.value.copy(
@@ -980,6 +1359,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(
             profile = _uiState.value.profile?.copy(experiences = updatedExperiences)
         )
+        persistCurrentProfileSnapshot()
     }
     
     fun updateExperience(experience: Experience) {
@@ -994,6 +1374,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(
             profile = _uiState.value.profile?.copy(experiences = updatedExperiences)
         )
+        persistCurrentProfileSnapshot()
     }
     
     fun deleteExperience(experienceId: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
@@ -1026,6 +1407,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(
             profile = _uiState.value.profile?.copy(education = updatedEducation)
         )
+        persistCurrentProfileSnapshot()
     }
     
     fun updateEducation(education: Education) {
@@ -1040,6 +1422,7 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(
             profile = _uiState.value.profile?.copy(education = updatedEducation)
         )
+        persistCurrentProfileSnapshot()
     }
     
     fun deleteEducation(educationId: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
@@ -1170,6 +1553,102 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
             )
         )
     }
+
+    // ==================== GitHub Integration ====================
+
+    fun startGitHubOAuth(onOpenAuthUrl: (String) -> Unit) {
+        if (_uiState.value.isGitHubConnecting) return
+
+        _uiState.value = _uiState.value.copy(
+            isGitHubConnecting = true,
+            githubActionError = null
+        )
+
+        viewModelScope.launch {
+            ApiClient.startGitHubOAuth(context)
+                .onSuccess { response ->
+                    _uiState.value = _uiState.value.copy(isGitHubConnecting = false)
+                    onOpenAuthUrl(response.authUrl)
+                }
+                .onFailure { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isGitHubConnecting = false,
+                        githubActionError = e.message ?: "Failed to start GitHub connection"
+                    )
+                }
+        }
+    }
+
+    fun reportGitHubBrowserOpenFailure(message: String) {
+        _uiState.value = _uiState.value.copy(
+            isGitHubConnecting = false,
+            githubActionError = message
+        )
+    }
+
+    fun syncGitHubStats() {
+        if (_uiState.value.isGitHubSyncing) return
+
+        _uiState.value = _uiState.value.copy(
+            isGitHubSyncing = true,
+            githubActionError = null
+        )
+
+        viewModelScope.launch {
+            ApiClient.syncGitHubStats(context)
+                .onSuccess {
+                    _uiState.value = _uiState.value.copy(isGitHubSyncing = false)
+                    loadProfile(targetUserId ?: "me", forceRefresh = true)
+                }
+                .onFailure { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isGitHubSyncing = false,
+                        githubActionError = e.message ?: "Failed to sync GitHub stats"
+                    )
+                }
+        }
+    }
+
+    fun disconnectGitHub() {
+        if (_uiState.value.isGitHubDisconnecting) return
+
+        _uiState.value = _uiState.value.copy(
+            isGitHubDisconnecting = true,
+            githubActionError = null
+        )
+
+        viewModelScope.launch {
+            ApiClient.disconnectGitHub(context)
+                .onSuccess {
+                    val currentProfile = _uiState.value.profile
+                    _uiState.value = _uiState.value.copy(
+                        isGitHubDisconnecting = false,
+                        profile = currentProfile?.copy(github = GitHubProfile())
+                    )
+                    loadProfile(targetUserId ?: "me", forceRefresh = true)
+                }
+                .onFailure { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isGitHubDisconnecting = false,
+                        githubActionError = e.message ?: "Failed to disconnect GitHub"
+                    )
+                }
+        }
+    }
+
+    fun handleGitHubOAuthResult(status: String?, message: String?) {
+        when (status) {
+            "connected" -> {
+                _uiState.value = _uiState.value.copy(githubActionError = null)
+                loadProfile("me", forceRefresh = true)
+            }
+            "error" -> {
+                _uiState.value = _uiState.value.copy(
+                    githubActionError = githubOAuthErrorMessage(message)
+                )
+            }
+        }
+    }
     
     fun clearUploadError() {
         _uiState.value = _uiState.value.copy(uploadError = null)
@@ -1178,12 +1657,50 @@ class ProfileViewModel(private val context: Context) : ViewModel() {
     fun retry() {
         targetUserId?.let { loadProfile(it, forceRefresh = true) }
     }
+
+    fun toggleProfileSave() {
+        val profile = _uiState.value.profile ?: return
+        if (_uiState.value.isOwner || _uiState.value.profileSaveActionInProgress) return
+
+        _uiState.value = _uiState.value.copy(profileSaveActionInProgress = true)
+        viewModelScope.launch {
+            ApiClient.toggleProfileSave(context, profile.user.id)
+                .onSuccess { state ->
+                    val currentProfile = _uiState.value.profile
+                    _uiState.value = _uiState.value.copy(
+                        profileSaveActionInProgress = false,
+                        profile = currentProfile?.copy(
+                            viewerContext = currentProfile.viewerContext.copy(
+                                isProfileSaved = state.saved
+                            )
+                        )
+                    )
+                    persistCurrentProfileSnapshot()
+                }
+                .onFailure {
+                    _uiState.value = _uiState.value.copy(profileSaveActionInProgress = false)
+                }
+        }
+    }
     
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             return ProfileViewModel(context) as T
         }
+    }
+}
+
+private fun githubOAuthErrorMessage(message: String?): String {
+    return when (message) {
+        "missing_code" -> "GitHub did not return an authorization code."
+        "missing_state", "invalid_state" -> "GitHub sign-in expired. Please try again."
+        "invalid_code" -> "GitHub authorization code was invalid or expired."
+        "rate_limit" -> "GitHub rate limit exceeded. Please try again later."
+        "network_error" -> "Could not reach GitHub. Please try again."
+        "oauth_failed" -> "GitHub authorization failed."
+        "unexpected_error" -> "GitHub connection failed unexpectedly."
+        else -> "GitHub connection failed."
     }
 }
 
@@ -1195,7 +1712,11 @@ private fun ProfileConnectionItem.toPeopleSheetItem(): ProfilePeopleListItem {
         profileImage = user.profileImage,
         headline = user.headline,
         college = user.college,
-        isOnline = user.isOnline
+        isOnline = user.isOnline,
+        verified = user.verified,
+        isVerified = user.isVerified,
+        profileBadgeStyle = user.profileBadgeStyle,
+        isPremium = user.isPremium
     )
 }
 
@@ -1207,6 +1728,10 @@ private fun ProfileFollowerItem.toPeopleSheetItem(): ProfilePeopleListItem {
         profileImage = user.profileImage,
         headline = user.headline,
         college = user.college,
-        isOnline = user.isOnline
+        isOnline = user.isOnline,
+        verified = user.verified,
+        isVerified = user.isVerified,
+        profileBadgeStyle = user.profileBadgeStyle,
+        isPremium = user.isPremium
     )
 }

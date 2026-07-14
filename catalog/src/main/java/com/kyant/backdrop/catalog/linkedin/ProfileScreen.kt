@@ -1,10 +1,18 @@
 package com.kyant.backdrop.catalog.linkedin
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.Geocoder
+import android.location.Location
 import android.net.Uri
+import android.os.Build
+import android.os.Looper
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +34,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,27 +50,35 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
+import androidx.compose.material.icons.Icons
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -70,15 +87,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
@@ -89,6 +110,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.draw.shadow
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import android.graphics.BitmapFactory
 import android.graphics.Bitmap
@@ -101,6 +124,9 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.catalog.data.SettingsPreferences
 import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.components.LiquidSlider
+import com.kyant.backdrop.catalog.network.ApiClient
+import com.kyant.backdrop.catalog.network.PostsApiService
+import com.kyant.backdrop.catalog.deeplink.VormexDeepLinks
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -112,12 +138,19 @@ import com.airbnb.lottie.compose.LottieCompositionSpec
 import com.airbnb.lottie.compose.LottieConstants
 import com.airbnb.lottie.compose.animateLottieCompositionAsState
 import com.airbnb.lottie.compose.rememberLottieComposition
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import java.io.ByteArrayOutputStream
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.foundation.border
+import kotlin.math.max
+import kotlin.math.min
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.PathEffect
@@ -125,14 +158,22 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.ui.graphics.graphicsLayer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.time.Instant
-import java.time.OffsetDateTime
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.util.Locale
-import java.util.TimeZone
+import kotlin.coroutines.resume
 import kotlin.math.roundToInt
+
+private const val ProfileGitHubSectionKey = "profile_github_section"
+private val RetroGameCream = Color(0xFFF3EFE3)
+private val RetroGameInk = Color(0xFF111111)
+private val RetroGameYellow = Color(0xFFFFD414)
+private val RetroGameRed = Color(0xFFFF3B30)
+private val RetroGameBlue = Color(0xFF3F6FFF)
+private val RetroGameGreen = Color(0xFF28D17C)
 
 // ==================== Main Profile Screen ====================
 
@@ -146,6 +187,9 @@ fun ProfileScreen(
     onNavigateBack: () -> Unit = {},
     onEditProfile: () -> Unit = {},
     onMessage: (String) -> Unit = {},
+    showStartConversation: Boolean = false,
+    isPreparingConversationStarter: Boolean = false,
+    onStartConversation: (String) -> Unit = {},
     onOpenFeedItem: (FeedItem) -> Unit = {},
     onOpenProfile: ((String) -> Unit)? = null
 ) {
@@ -159,15 +203,32 @@ fun ProfileScreen(
     // Theme detection
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
     val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
-    val isGlassTheme = themeMode == "glass"
-    val isDarkTheme = themeMode == "dark"
-    val isLightTheme = themeMode == "light"
+    val profileThemePreference by SettingsPreferences.profileTheme(context).collectAsState(initial = DefaultProfileThemeKey)
+    val showProfileLocation by SettingsPreferences.showProfileLocation(context).collectAsState(initial = true)
+    val appearance = currentVormexAppearance(themeMode)
+    val isGlassTheme = appearance.isGlassTheme
+    val isDarkTheme = appearance.isDarkTheme
+    val profileUser = uiState.profile?.user
+    val canUseProfileTheme =
+        profileUser?.canAccessProfileCustomization == true || profileUser?.isPremium == true
+    val activeProfileThemeKey = normalizeProfileThemeKey(
+        if (uiState.isOwner && canUseProfileTheme) {
+            profileThemePreference
+        } else {
+            profileUser?.profileTheme
+        }
+    )
+    val isGameProfileTheme = activeProfileThemeKey == GameRetroProfileThemeKey
     
     // Project screen state
     var showAddProject by remember { mutableStateOf(false) }
     var editingProject by remember { mutableStateOf<Project?>(null) }
     var projectDetailProject by remember { mutableStateOf<Project?>(null) }
     var projectDetailVisible by remember { mutableStateOf(false) }
+    var showReportProfileDialog by remember { mutableStateOf(false) }
+    var isSubmittingProfileReport by remember { mutableStateOf(false) }
+    var isBlockingProfileUser by remember { mutableStateOf(false) }
+    var openedActivityItemId by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     fun dismissProjectDetail(afterDismiss: (() -> Unit)? = null) {
@@ -176,6 +237,68 @@ fun ProfileScreen(
             delay(220)
             projectDetailProject = null
             afterDismiss?.invoke()
+        }
+    }
+
+    fun targetProfileUserId(): String? {
+        val targetUser = uiState.profile?.user ?: return null
+        return targetUser.id.takeIf { it.isNotBlank() && !uiState.isOwner }
+    }
+
+    fun submitProfileReport(reason: String, details: String, blockUser: Boolean) {
+        val targetUserId = targetProfileUserId() ?: return
+        if (isSubmittingProfileReport) return
+        scope.launch {
+            isSubmittingProfileReport = true
+            ApiClient.reportUser(
+                context = context,
+                userId = targetUserId,
+                reason = reason,
+                description = details.ifBlank { null },
+                blockUser = blockUser
+            ).onSuccess {
+                Toast.makeText(
+                    context,
+                    if (blockUser) {
+                        "Report sent and user blocked."
+                    } else {
+                        "Thanks - we received your report."
+                    },
+                    Toast.LENGTH_LONG
+                ).show()
+                showReportProfileDialog = false
+                if (blockUser) onNavigateBack()
+            }.onFailure { error ->
+                Toast.makeText(
+                    context,
+                    error.message ?: "Could not submit report",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            isSubmittingProfileReport = false
+        }
+    }
+
+    fun blockProfileUser() {
+        val targetUserId = targetProfileUserId() ?: return
+        if (isBlockingProfileUser) return
+        scope.launch {
+            isBlockingProfileUser = true
+            ApiClient.blockUser(
+                context = context,
+                userId = targetUserId,
+                reason = "Blocked from profile"
+            ).onSuccess {
+                Toast.makeText(context, "User blocked.", Toast.LENGTH_LONG).show()
+                onNavigateBack()
+            }.onFailure { error ->
+                Toast.makeText(
+                    context,
+                    error.message ?: "Could not block user",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            isBlockingProfileUser = false
         }
     }
     
@@ -202,7 +325,8 @@ fun ProfileScreen(
     
     // Handle back button for profile overlays, or navigate back from profile
     BackHandler(
-        enabled = showAddProject || editingProject != null || projectDetailProject != null ||
+        enabled = uiState.isEditingProfile || uiState.isEditingBio || uiState.isEditingInterests ||
+                showAddProject || editingProject != null || projectDetailProject != null ||
                 showAddExperience || editingExperience != null ||
                 showAddEducation || editingEducation != null ||
                 showAddCertificate || editingCertificate != null || viewingCertificate != null ||
@@ -212,6 +336,10 @@ fun ProfileScreen(
     ) {
         when {
             // Close any open dialogs/overlays first
+            openedActivityItemId != null -> openedActivityItemId = null
+            uiState.isEditingProfile -> screenViewModel.cancelEditingProfile()
+            uiState.isEditingBio -> screenViewModel.cancelEditingBio()
+            uiState.isEditingInterests -> screenViewModel.cancelEditingInterests()
             showAddProject -> showAddProject = false
             editingProject != null -> editingProject = null
             projectDetailProject != null -> dismissProjectDetail()
@@ -235,369 +363,523 @@ fun ProfileScreen(
         screenViewModel.loadProfile(userId)
     }
     
-    Box(Modifier.fillMaxSize()) {
-        // Prefer cached profile while refreshing (stale-while-revalidate). Checking isLoading first
-        // would flash the skeleton on every tab revisit because loadProfile(forceRefresh) sets loading.
-        when {
-            uiState.profile != null -> {
-                ProfileContent(
-                    uiState = uiState,
+    // Sections and dialogs resolve theme via LocalVormexAppearance; without this the
+    // composition local is unset here and they silently fall back to the Light palette.
+    CompositionLocalProvider(LocalVormexAppearance provides appearance) {
+        Box(Modifier.fillMaxSize()) {
+            // Prefer cached profile while refreshing (stale-while-revalidate). Checking isLoading first
+            // would flash the skeleton on every tab revisit because loadProfile(forceRefresh) sets loading.
+            when {
+                uiState.profile != null -> {
+                    ProfileContent(
+                        uiState = uiState,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isGlassTheme = isGlassTheme,
+                        isDarkTheme = isDarkTheme,
+                        profileThemeOverride = profileThemePreference,
+                        showOwnerProfileLocation = showProfileLocation,
+                        onEditProfile = { screenViewModel.startEditingProfile() },
+                        onConnect = { screenViewModel.sendConnectionRequest() },
+                        onCancelRequest = { screenViewModel.cancelConnectionRequest() },
+                        onAcceptRequest = { screenViewModel.acceptConnectionRequest() },
+                        onRejectRequest = { screenViewModel.rejectConnectionRequest() },
+                        onRemoveConnection = { screenViewModel.removeConnection() },
+                        onToggleFollow = { screenViewModel.toggleFollow() },
+                        onToggleProfileSave = { screenViewModel.toggleProfileSave() },
+                        onFilterChange = { screenViewModel.setFeedFilter(it) },
+                        onYearChange = { screenViewModel.loadActivityForYear(it) },
+                        onEditBio = { screenViewModel.startEditingBio() },
+                        onSaveBio = { screenViewModel.saveEditedBio() },
+                        onCancelEditBio = { screenViewModel.cancelEditingBio() },
+                        onBioChange = { screenViewModel.updateEditedBio(it) },
+                        onEditInterests = { screenViewModel.startEditingInterests() },
+                        onToggleOpenToWork = { screenViewModel.updateOpenToOpportunities(it) },
+                        onOpenConnections = { screenViewModel.openConnectionsSheet() },
+                        onOpenFollowers = { screenViewModel.openFollowersSheet() },
+                        onMessage = onMessage,
+                        showStartConversation = showStartConversation,
+                        isPreparingConversationStarter = isPreparingConversationStarter,
+                        onStartConversation = onStartConversation,
+                        onOpenProfile = onOpenProfile,
+                        onOpenFeedItem = { item -> openedActivityItemId = item.id },
+                        onVotePoll = { postId, optionId -> screenViewModel.votePoll(postId, optionId) },
+                        onUploadAvatar = { screenViewModel.uploadAvatar(it) },
+                        onUploadBanner = { screenViewModel.uploadBanner(it) },
+                        onReportUser = { showReportProfileDialog = true },
+                        onBlockUser = { blockProfileUser() },
+                        onConnectGitHub = {
+                            screenViewModel.startGitHubOAuth { authUrl ->
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)))
+                                }.onFailure {
+                                    screenViewModel.reportGitHubBrowserOpenFailure(
+                                        "Couldn't open GitHub authorization"
+                                    )
+                                }
+                            }
+                        },
+                        onSyncGitHub = { screenViewModel.syncGitHubStats() },
+                        onDisconnectGitHub = { screenViewModel.disconnectGitHub() },
+                        // Project callbacks
+                        onAddProject = { showAddProject = true },
+                        onEditProject = { editingProject = it },
+                        onViewProject = {
+                            projectDetailProject = it
+                            projectDetailVisible = true
+                        },
+                        onToggleProjectFeatured = { screenViewModel.toggleProjectFeatured(it.id) },
+                        // Experience callbacks
+                        onAddExperience = { showAddExperience = true },
+                        onEditExperience = { editingExperience = it },
+                        onViewExperience = { /* Experiences view in place */ },
+                        onDeleteExperience = { experience ->
+                            screenViewModel.deleteExperience(
+                                experienceId = experience.id,
+                                onSuccess = {},
+                                onError = { /* Show error toast */ }
+                            )
+                        },
+                        // Education callbacks
+                        onAddEducation = { showAddEducation = true },
+                        onEditEducation = { editingEducation = it },
+                        onViewEducation = { /* Education view in place */ },
+                        onDeleteEducation = { education ->
+                            screenViewModel.deleteEducation(
+                                educationId = education.id,
+                                onSuccess = {},
+                                onError = { /* Show error toast */ }
+                            )
+                        },
+                        // Certificate callbacks
+                        onAddCertificate = { showAddCertificate = true },
+                        onEditCertificate = { editingCertificate = it },
+                        onViewCertificate = { viewingCertificate = it },
+                        onDeleteCertificate = { certificate ->
+                            screenViewModel.deleteCertificate(
+                                certificateId = certificate.id,
+                                onSuccess = {},
+                                onError = { /* Show error toast */ }
+                            )
+                        },
+                        // Achievement callbacks
+                        onAddAchievement = { showAddAchievement = true },
+                        onEditAchievement = { editingAchievement = it },
+                        onViewAchievement = { viewingAchievement = it },
+                        onDeleteAchievement = { achievement ->
+                            screenViewModel.deleteAchievement(
+                                achievementId = achievement.id,
+                                onSuccess = {},
+                                onError = { /* Show error toast */ }
+                            )
+                        },
+                        // Skills callbacks
+                        onAddSkill = { showAddSkill = true },
+                        onRemoveSkill = { skill -> screenViewModel.removeLocalSkill(skill.id) },
+                        onDeleteFeedPost = { postId ->
+                            screenViewModel.deleteFeedPost(
+                                postId = postId,
+                                onSuccess = {},
+                                onError = { }
+                            )
+                        }
+                    )
+                }
+                uiState.error != null -> {
+                    ProfileError(
+                        error = uiState.error!!,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        onRetry = { screenViewModel.retry() }
+                    )
+                }
+                uiState.isLoading -> {
+                    ProfileLoadingContent(
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        visitLoaderGiftId = uiState.visitLoaderGiftIdHint,
+                        reduceAnimations = reduceAnimations
+                    )
+                }
+                else -> {
+                    ProfileLoadingContent(
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        visitLoaderGiftId = uiState.visitLoaderGiftIdHint,
+                        reduceAnimations = reduceAnimations
+                    )
+                }
+            }
+
+            openedActivityItemId?.let { selectedItemId ->
+                ProfileActivityFeedOverlay(
+                    items = uiState.feedItems,
+                    selectedItemId = selectedItemId,
+                    profileUser = uiState.profile?.user ?: return@let,
+                    currentFilter = uiState.feedFilter,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    isDarkTheme = isDarkTheme,
+                    onDismiss = { openedActivityItemId = null },
+                    onOpenItem = onOpenFeedItem,
+                    onVotePoll = { postId, optionId -> screenViewModel.votePoll(postId, optionId) }
+                )
+            }
+
+            if (uiState.peopleSheet.isVisible) {
+                ProfilePeopleSheetDialog(
+                    sheetState = uiState.peopleSheet,
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
                     isGlassTheme = isGlassTheme,
                     isDarkTheme = isDarkTheme,
-                    onEditProfile = onEditProfile,
-                    onConnect = { screenViewModel.sendConnectionRequest() },
-                    onCancelRequest = { screenViewModel.cancelConnectionRequest() },
-                    onAcceptRequest = { screenViewModel.acceptConnectionRequest() },
-                    onRejectRequest = { screenViewModel.rejectConnectionRequest() },
-                    onRemoveConnection = { screenViewModel.removeConnection() },
-                    onToggleFollow = { screenViewModel.toggleFollow() },
-                    onFilterChange = { screenViewModel.setFeedFilter(it) },
-                    onLoadMore = { screenViewModel.loadMoreFeed() },
-                    onYearChange = { screenViewModel.loadActivityForYear(it) },
-                    onEditBio = { screenViewModel.startEditingBio() },
-                    onSaveBio = { screenViewModel.saveEditedBio() },
-                    onCancelEditBio = { screenViewModel.cancelEditingBio() },
-                    onBioChange = { screenViewModel.updateEditedBio(it) },
-                    onToggleOpenToWork = { screenViewModel.updateOpenToOpportunities(it) },
-                    onOpenConnections = { screenViewModel.openConnectionsSheet() },
-                    onOpenFollowers = { screenViewModel.openFollowersSheet() },
-                    onMessage = onMessage,
-                    onOpenFeedItem = onOpenFeedItem,
-                    onVotePoll = { postId, optionId -> screenViewModel.votePoll(postId, optionId) },
-                    onUploadAvatar = { screenViewModel.uploadAvatar(it) },
-                    onUploadBanner = { screenViewModel.uploadBanner(it) },
-                    // Project callbacks
-                    onAddProject = { showAddProject = true },
-                    onEditProject = { editingProject = it },
-                    onViewProject = {
-                        projectDetailProject = it
-                        projectDetailVisible = true
-                    },
-                    onToggleProjectFeatured = { screenViewModel.toggleProjectFeatured(it.id) },
-                    // Experience callbacks
-                    onAddExperience = { showAddExperience = true },
-                    onEditExperience = { editingExperience = it },
-                    onViewExperience = { /* Experiences view in place */ },
-                    // Education callbacks
-                    onAddEducation = { showAddEducation = true },
-                    onEditEducation = { editingEducation = it },
-                    onViewEducation = { /* Education view in place */ },
-                    // Certificate callbacks
-                    onAddCertificate = { showAddCertificate = true },
-                    onEditCertificate = { editingCertificate = it },
-                    onViewCertificate = { viewingCertificate = it },
-                    // Achievement callbacks
-                    onAddAchievement = { showAddAchievement = true },
-                    onEditAchievement = { editingAchievement = it },
-                    onViewAchievement = { viewingAchievement = it },
-                    // Skills callbacks
-                    onAddSkill = { showAddSkill = true },
-                    onRemoveSkill = { skill -> screenViewModel.removeLocalSkill(skill.id) },
-                    onDeleteFeedPost = { postId ->
-                        screenViewModel.deleteFeedPost(
-                            postId = postId,
-                            onSuccess = {},
-                            onError = { }
-                        )
+                    onDismiss = { screenViewModel.dismissPeopleSheet() },
+                    onRetry = { screenViewModel.retryPeopleSheet() },
+                    onLoadMore = { screenViewModel.loadMorePeopleSheet() },
+                    onPersonClick = onOpenProfile?.let { callback ->
+                        { personId ->
+                            screenViewModel.dismissPeopleSheet()
+                            callback(personId)
+                        }
                     }
                 )
             }
-            uiState.error != null -> {
-                ProfileError(
-                    error = uiState.error!!,
+
+            if (showReportProfileDialog) {
+                SafetyReportDialog(
+                    title = "Report profile",
+                    subtitle = "Tell Trust & Safety what is wrong with this profile.",
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    blockLabel = "Also block this user",
+                    isSubmitting = isSubmittingProfileReport,
+                    onDismiss = {
+                        if (!isSubmittingProfileReport) showReportProfileDialog = false
+                    },
+                    onSubmit = ::submitProfileReport
+                )
+            }
+
+            val profileEditDraft = uiState.profileEditDraft
+            if (uiState.isEditingProfile && profileEditDraft != null) {
+                EditProfileScreen(
+                    draft = profileEditDraft,
+                    isSaving = uiState.isSavingProfile,
+                    error = uiState.profileEditError,
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
-                    onRetry = { screenViewModel.retry() }
+                    isGameProfileTheme = isGameProfileTheme,
+                    onDraftChange = { screenViewModel.updateProfileEditDraft { _ -> it } },
+                    onDraftTransform = { transform -> screenViewModel.updateProfileEditDraft(transform) },
+                    onDismiss = { screenViewModel.cancelEditingProfile() },
+                    onSave = { screenViewModel.saveProfileEdits() }
                 )
             }
-            uiState.isLoading -> {
-                ProfileLoadingContent(
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    visitLoaderGiftId = uiState.visitLoaderGiftIdHint,
-                    reduceAnimations = reduceAnimations
-                )
-            }
-            else -> {
-                ProfileLoadingContent(
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    visitLoaderGiftId = uiState.visitLoaderGiftIdHint,
-                    reduceAnimations = reduceAnimations
-                )
-            }
-        }
 
-        if (uiState.peopleSheet.isVisible) {
-            ProfilePeopleSheetDialog(
-                sheetState = uiState.peopleSheet,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isGlassTheme = isGlassTheme,
-                isDarkTheme = isDarkTheme,
-                onDismiss = { screenViewModel.dismissPeopleSheet() },
-                onRetry = { screenViewModel.retryPeopleSheet() },
-                onLoadMore = { screenViewModel.loadMorePeopleSheet() },
-                onPersonClick = onOpenProfile?.let { callback ->
-                    { personId ->
-                        screenViewModel.dismissPeopleSheet()
-                        callback(personId)
-                    }
-                }
-            )
-        }
+            if (uiState.isEditingBio) {
+                EditAboutScreen(
+                    value = uiState.editedBio,
+                    isSaving = uiState.isSavingBio,
+                    error = uiState.bioEditError,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onValueChange = { screenViewModel.updateEditedBio(it) },
+                    onDismiss = { screenViewModel.cancelEditingBio() },
+                    onSave = { screenViewModel.saveEditedBio() }
+                )
+            }
+
+            if (uiState.isEditingInterests) {
+                EditInterestsScreen(
+                    interests = uiState.editedInterests,
+                    isSaving = uiState.isSavingInterests,
+                    error = uiState.interestsEditError,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onInterestsChange = { screenViewModel.updateEditedInterests(it) },
+                    onDismiss = { screenViewModel.cancelEditingInterests() },
+                    onSave = { screenViewModel.saveEditedInterests() }
+                )
+            }
         
-        // Add Project Screen
-        if (showAddProject) {
-            AddEditProjectScreen(
-                project = null,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { showAddProject = false },
-                onDelete = null,
-                onCancel = { showAddProject = false }
-            )
-        }
+            // Add Project Screen
+            if (showAddProject) {
+                AddEditProjectScreen(
+                    project = null,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    isGameProfileTheme = isGameProfileTheme,
+                    onSave = { showAddProject = false },
+                    onDelete = null,
+                    onCancel = { showAddProject = false }
+                )
+            }
         
-        // Edit Project Screen
-        editingProject?.let { project ->
-            AddEditProjectScreen(
-                project = project,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { editingProject = null },
-                onDelete = {
-                    screenViewModel.deleteProject(
-                        projectId = project.id,
-                        onSuccess = { editingProject = null },
-                        onError = { /* Show error toast */ }
-                    )
-                },
-                onCancel = { editingProject = null }
-            )
-        }
-        
-        AnimatedVisibility(
-            visible = projectDetailProject != null && projectDetailVisible,
-            enter = fadeIn(animationSpec = tween(180)) + scaleIn(
-                initialScale = 0.94f,
-                animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
-            ),
-            exit = fadeOut(animationSpec = tween(180)) + scaleOut(
-                targetScale = 0.98f,
-                animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)
-            )
-        ) {
-            projectDetailProject?.let { project ->
-                ProjectDetailScreen(
+            // Edit Project Screen
+            editingProject?.let { project ->
+                AddEditProjectScreen(
                     project = project,
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onEdit = {
-                        dismissProjectDetail {
-                            editingProject = project
-                        }
+                    isGameProfileTheme = isGameProfileTheme,
+                    onSave = { editingProject = null },
+                    onDelete = {
+                        screenViewModel.deleteProject(
+                            projectId = project.id,
+                            onSuccess = { editingProject = null },
+                            onError = { /* Show error toast */ }
+                        )
                     },
-                    onBack = { dismissProjectDetail() }
+                    onCancel = { editingProject = null }
                 )
             }
-        }
         
-        // Add Experience Screen
-        if (showAddExperience) {
-            AddEditExperienceScreen(
-                experience = null,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedExperience ->
-                    screenViewModel.addExperience(savedExperience)
-                    showAddExperience = false
-                },
-                onDelete = null,
-                onCancel = { showAddExperience = false }
-            )
-        }
+            AnimatedVisibility(
+                visible = projectDetailProject != null && projectDetailVisible,
+                enter = fadeIn(animationSpec = tween(180)) + scaleIn(
+                    initialScale = 0.94f,
+                    animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                ),
+                exit = fadeOut(animationSpec = tween(180)) + scaleOut(
+                    targetScale = 0.98f,
+                    animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)
+                )
+            ) {
+                projectDetailProject?.let { project ->
+                    val orderedProjects = remember(uiState.profile?.projects) {
+                        uiState.profile?.projects.orEmpty().sortedWith(
+                            compareByDescending<Project> { it.featured }
+                                .thenByDescending { it.isCurrent }
+                                .thenByDescending { it.startDate }
+                        )
+                    }.ifEmpty { listOf(project) }
+                    val initialProjectPage = orderedProjects.indexOfFirst { it.id == project.id }.coerceAtLeast(0)
+
+                    key(project.id, orderedProjects.size) {
+                        val projectPagerState = rememberPagerState(
+                            initialPage = initialProjectPage,
+                            pageCount = { orderedProjects.size }
+                        )
+
+                        HorizontalPager(
+                            state = projectPagerState,
+                            modifier = Modifier.fillMaxSize()
+                        ) { page ->
+                            val pageProject = orderedProjects[page]
+                            ProjectDetailScreen(
+                                project = pageProject,
+                                backdrop = backdrop,
+                                contentColor = contentColor,
+                                accentColor = accentColor,
+                                isGameProfileTheme = isGameProfileTheme,
+                                isOwner = uiState.isOwner,
+                                onEdit = {
+                                    dismissProjectDetail {
+                                        editingProject = pageProject
+                                    }
+                                },
+                                onBack = { dismissProjectDetail() }
+                            )
+                        }
+                    }
+                }
+            }
+            // Add Experience Screen
+            if (showAddExperience) {
+                AddEditExperienceScreen(
+                    experience = null,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onSave = { savedExperience ->
+                        screenViewModel.addExperience(savedExperience)
+                        showAddExperience = false
+                    },
+                    onDelete = null,
+                    onCancel = { showAddExperience = false }
+                )
+            }
         
-        // Add Skill Screen
-        if (showAddSkill) {
-            AddSkillDialog(
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { name, proficiency ->
-                    screenViewModel.addLocalSkill(name = name, proficiency = proficiency)
-                    showAddSkill = false
-                },
-                onCancel = { showAddSkill = false }
-            )
-        }
+            // Add Skill Screen
+            if (showAddSkill) {
+                AddSkillDialog(
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onSave = { name, proficiency ->
+                        screenViewModel.addLocalSkill(name = name, proficiency = proficiency)
+                        showAddSkill = false
+                    },
+                    onCancel = { showAddSkill = false }
+                )
+            }
         
-        // Edit Experience Screen
-        editingExperience?.let { experience ->
-            AddEditExperienceScreen(
-                experience = experience,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedExperience ->
-                    screenViewModel.updateExperience(savedExperience)
-                    editingExperience = null
-                },
-                onDelete = {
-                    screenViewModel.deleteExperience(
-                        experienceId = experience.id,
-                        onSuccess = { editingExperience = null },
-                        onError = { /* Show error toast */ }
-                    )
-                },
-                onCancel = { editingExperience = null }
-            )
-        }
+            // Edit Experience Screen
+            editingExperience?.let { experience ->
+                AddEditExperienceScreen(
+                    experience = experience,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onSave = { savedExperience ->
+                        screenViewModel.updateExperience(savedExperience)
+                        editingExperience = null
+                    },
+                    onDelete = {
+                        screenViewModel.deleteExperience(
+                            experienceId = experience.id,
+                            onSuccess = { editingExperience = null },
+                            onError = { /* Show error toast */ }
+                        )
+                    },
+                    onCancel = { editingExperience = null }
+                )
+            }
         
-        // Add Education Screen
-        if (showAddEducation) {
-            AddEditEducationScreen(
-                education = null,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedEducation ->
-                    screenViewModel.addEducation(savedEducation)
-                    showAddEducation = false
-                },
-                onDelete = null,
-                onCancel = { showAddEducation = false }
-            )
-        }
+            // Add Education Screen
+            if (showAddEducation) {
+                AddEditEducationScreen(
+                    education = null,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onSave = { savedEducation ->
+                        screenViewModel.addEducation(savedEducation)
+                        showAddEducation = false
+                    },
+                    onDelete = null,
+                    onCancel = { showAddEducation = false }
+                )
+            }
         
-        // Edit Education Screen
-        editingEducation?.let { education ->
-            AddEditEducationScreen(
-                education = education,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedEducation ->
-                    screenViewModel.updateEducation(savedEducation)
-                    editingEducation = null
-                },
-                onDelete = {
-                    screenViewModel.deleteEducation(
-                        educationId = education.id,
-                        onSuccess = { editingEducation = null },
-                        onError = { /* Show error toast */ }
-                    )
-                },
-                onCancel = { editingEducation = null }
-            )
-        }
+            // Edit Education Screen
+            editingEducation?.let { education ->
+                AddEditEducationScreen(
+                    education = education,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onSave = { savedEducation ->
+                        screenViewModel.updateEducation(savedEducation)
+                        editingEducation = null
+                    },
+                    onDelete = {
+                        screenViewModel.deleteEducation(
+                            educationId = education.id,
+                            onSuccess = { editingEducation = null },
+                            onError = { /* Show error toast */ }
+                        )
+                    },
+                    onCancel = { editingEducation = null }
+                )
+            }
         
-        // Add Certificate Screen
-        if (showAddCertificate) {
-            AddEditCertificateScreen(
-                certificate = null,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedCertificate ->
-                    screenViewModel.addCertificate(savedCertificate)
-                    showAddCertificate = false
-                },
-                onDelete = null,
-                onCancel = { showAddCertificate = false }
-            )
-        }
+            // Add Certificate Screen
+            if (showAddCertificate) {
+                AddEditCertificateScreen(
+                    certificate = null,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    onSave = { savedCertificate ->
+                        screenViewModel.addCertificate(savedCertificate)
+                        showAddCertificate = false
+                    },
+                    onDelete = null,
+                    onCancel = { showAddCertificate = false }
+                )
+            }
         
-        // Edit Certificate Screen
-        editingCertificate?.let { certificate ->
-            AddEditCertificateScreen(
-                certificate = certificate,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedCertificate ->
-                    screenViewModel.updateCertificate(savedCertificate)
-                    editingCertificate = null
-                },
-                onDelete = {
-                    screenViewModel.deleteCertificate(
-                        certificateId = certificate.id,
-                        onSuccess = { editingCertificate = null },
-                        onError = { /* Show error toast */ }
-                    )
-                },
-                onCancel = { editingCertificate = null }
-            )
-        }
+            // Edit Certificate Screen
+            editingCertificate?.let { certificate ->
+                AddEditCertificateScreen(
+                    certificate = certificate,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    onSave = { savedCertificate ->
+                        screenViewModel.updateCertificate(savedCertificate)
+                        editingCertificate = null
+                    },
+                    onDelete = {
+                        screenViewModel.deleteCertificate(
+                            certificateId = certificate.id,
+                            onSuccess = { editingCertificate = null },
+                            onError = { /* Show error toast */ }
+                        )
+                    },
+                    onCancel = { editingCertificate = null }
+                )
+            }
         
-        // View Certificate Detail Modal
-        viewingCertificate?.let { certificate ->
-            CertificateDetailModal(
-                certificate = certificate,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onDismiss = { viewingCertificate = null }
-            )
-        }
+            // View Certificate Detail Modal
+            viewingCertificate?.let { certificate ->
+                CertificateDetailModal(
+                    certificate = certificate,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    certificates = uiState.profile?.certificates.orEmpty(),
+                    onDismiss = { viewingCertificate = null }
+                )
+            }
         
-        // Add Achievement Screen
-        if (showAddAchievement) {
-            AddEditAchievementScreen(
-                achievement = null,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedAchievement ->
-                    screenViewModel.addAchievement(savedAchievement)
-                    showAddAchievement = false
-                },
-                onDelete = null,
-                onCancel = { showAddAchievement = false }
-            )
-        }
+            // Add Achievement Screen
+            if (showAddAchievement) {
+                AddEditAchievementScreen(
+                    achievement = null,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    onSave = { savedAchievement ->
+                        screenViewModel.addAchievement(savedAchievement)
+                        showAddAchievement = false
+                    },
+                    onDelete = null,
+                    onCancel = { showAddAchievement = false }
+                )
+            }
         
-        // Edit Achievement Screen
-        editingAchievement?.let { achievement ->
-            AddEditAchievementScreen(
-                achievement = achievement,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onSave = { savedAchievement ->
-                    screenViewModel.updateAchievement(savedAchievement)
-                    editingAchievement = null
-                },
-                onDelete = {
-                    screenViewModel.deleteAchievement(
-                        achievementId = achievement.id,
-                        onSuccess = { editingAchievement = null },
-                        onError = { /* Show error toast */ }
-                    )
-                },
-                onCancel = { editingAchievement = null }
-            )
-        }
-        
-        // View Achievement Detail Modal
-        viewingAchievement?.let { achievement ->
-            AchievementDetailModal(
-                achievement = achievement,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onDismiss = { viewingAchievement = null }
-            )
+            // Edit Achievement Screen
+            editingAchievement?.let { achievement ->
+                AddEditAchievementScreen(
+                    achievement = achievement,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    onSave = { savedAchievement ->
+                        screenViewModel.updateAchievement(savedAchievement)
+                        editingAchievement = null
+                    },
+                    onDelete = {
+                        screenViewModel.deleteAchievement(
+                            achievementId = achievement.id,
+                            onSuccess = { editingAchievement = null },
+                            onError = { /* Show error toast */ }
+                        )
+                    },
+                    onCancel = { editingAchievement = null }
+                )
+            }
+
+            // View Achievement Detail Modal
+            viewingAchievement?.let { achievement ->
+                AchievementDetailModal(
+                    achievement = achievement,
+                    backdrop = backdrop,
+                    contentColor = Color(0xFF111827),
+                    accentColor = accentColor,
+                    achievements = uiState.profile?.achievements.orEmpty(),
+                    onDismiss = { viewingAchievement = null }
+                )
+            }
         }
     }
 }
@@ -733,6 +1015,698 @@ private fun AddSkillDialog(
 }
 
 @Composable
+private fun EditProfileScreen(
+    draft: ProfileEditDraft,
+    isSaving: Boolean,
+    error: String?,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    isGameProfileTheme: Boolean = false,
+    onDraftChange: (ProfileEditDraft) -> Unit,
+    onDraftTransform: ((ProfileEditDraft) -> ProfileEditDraft) -> Unit,
+    onDismiss: () -> Unit,
+    onSave: () -> Unit
+) {
+    val appearance = currentVormexAppearance()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var isResolvingDeviceLocation by remember { mutableStateOf(false) }
+    var deviceLocationMessage by remember { mutableStateOf<String?>(null) }
+    var deviceLocationError by remember { mutableStateOf<String?>(null) }
+
+    fun applyDeviceLocation() {
+        if (isResolvingDeviceLocation) return
+        deviceLocationMessage = null
+        deviceLocationError = null
+        isResolvingDeviceLocation = true
+        scope.launch {
+            getProfileLocationLabelFromDevice(context)
+                .onSuccess { label ->
+                    onDraftTransform { current -> current.copy(location = label) }
+                    deviceLocationMessage = "Location updated from device"
+                }
+                .onFailure { failure ->
+                    deviceLocationError = failure.message ?: "Couldn't get device location"
+                }
+            isResolvingDeviceLocation = false
+        }
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val granted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true ||
+            hasProfileLocationPermission(context)
+        if (granted) {
+            applyDeviceLocation()
+        } else {
+            deviceLocationMessage = null
+            deviceLocationError = "Location permission denied"
+        }
+    }
+
+    fun requestDeviceLocation() {
+        if (hasProfileLocationPermission(context)) {
+            applyDeviceLocation()
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (isGameProfileTheme) {
+                    Modifier.background(RetroGameCream)
+                } else if (appearance.isGlassTheme) {
+                    Modifier.drawBackdrop(
+                        backdrop = backdrop,
+                        shape = { RoundedRectangle(0f.dp) },
+                        effects = {
+                            vibrancy()
+                            blur(22f.dp.toPx())
+                        },
+                        onDrawSurface = {
+                            drawRect(Color.Black.copy(alpha = if (appearance.isDarkTheme) 0.42f else 0.24f))
+                        }
+                    )
+                } else {
+                    Modifier.background(appearance.backgroundColor)
+                }
+            )
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        if (isGameProfileTheme) {
+                            RetroGameCream
+                        } else if (appearance.isGlassTheme) {
+                            Color.Black.copy(alpha = 0.14f)
+                        } else {
+                            appearance.navigationColor
+                        }
+                    )
+                    .border(
+                        if (isGameProfileTheme) 2.dp else 1.dp,
+                        if (isGameProfileTheme) RetroGameInk else appearance.navigationBorderColor,
+                        RoundedCornerShape(0.dp)
+                    )
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                if (isGameProfileTheme) {
+                    RetroGameMiniButton(
+                        label = "CANCEL",
+                        background = Color.White,
+                        onClick = onDismiss
+                    )
+                } else {
+                    BasicText(
+                        "Cancel",
+                        style = TextStyle(
+                            contentColor.copy(alpha = if (isSaving) 0.35f else 0.76f),
+                            14.sp,
+                            FontWeight.Medium
+                        ),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(enabled = !isSaving, onClick = onDismiss)
+                            .padding(horizontal = 8.dp, vertical = 8.dp)
+                    )
+                }
+
+                BasicText(
+                    if (isGameProfileTheme) "EDIT / PROFILE" else "Edit Profile",
+                    style = TextStyle(
+                        if (isGameProfileTheme) RetroGameInk else contentColor,
+                        if (isGameProfileTheme) 14.sp else 18.sp,
+                        FontWeight.Black,
+                        letterSpacing = if (isGameProfileTheme) 1.sp else 0.sp
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                if (isGameProfileTheme) {
+                    RetroGameMiniButton(
+                        label = if (isSaving) "SAVING" else "SAVE",
+                        background = if (isSaving) RetroGameRed.copy(alpha = 0.62f) else RetroGameRed,
+                        content = Color.White,
+                        onClick = onSave
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (isSaving) accentColor.copy(alpha = 0.62f) else accentColor)
+                            .clickable(enabled = !isSaving, onClick = onSave)
+                            .padding(horizontal = 14.dp, vertical = 9.dp)
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isSaving) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                            BasicText(
+                                if (isSaving) "Saving" else "Save",
+                                style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold)
+                            )
+                        }
+                    }
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    top = 16.dp,
+                    end = 16.dp,
+                    bottom = 112.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                error?.let {
+                    item {
+                        BasicText(
+                            it,
+                            style = TextStyle(Color(0xFFEF4444), 12.sp, FontWeight.Medium)
+                        )
+                    }
+                }
+
+                item {
+                    ProfileEditTextField(
+                        label = "Name",
+                        value = draft.name,
+                        placeholder = "Your full name",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
+                        onValueChange = { onDraftChange(draft.copy(name = it)) }
+                    )
+                }
+                item {
+                    ProfileEditTextField(
+                        label = "Headline",
+                        value = draft.headline,
+                        placeholder = "Student, Android developer, founder...",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
+                        onValueChange = { onDraftChange(draft.copy(headline = it)) }
+                    )
+                }
+                item {
+                    ProfileEditOpenToWorkRow(
+                        checked = draft.isOpenToOpportunities,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
+                        onToggle = {
+                            onDraftChange(
+                                draft.copy(isOpenToOpportunities = !draft.isOpenToOpportunities)
+                            )
+                        }
+                    )
+                }
+                item {
+                    ProfileEditLocationField(
+                        value = draft.location,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
+                        isResolvingDeviceLocation = isResolvingDeviceLocation,
+                        deviceLocationMessage = deviceLocationMessage,
+                        deviceLocationError = deviceLocationError,
+                        onUseDeviceLocation = ::requestDeviceLocation,
+                        onValueChange = {
+                            deviceLocationMessage = null
+                            deviceLocationError = null
+                            onDraftChange(draft.copy(location = it))
+                        }
+                    )
+                }
+                item {
+                    ProfileEditTextField(
+                        label = "LinkedIn",
+                        value = draft.linkedinUrl,
+                        placeholder = "https://linkedin.com/in/username",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
+                        onValueChange = { onDraftChange(draft.copy(linkedinUrl = it)) }
+                    )
+                }
+                item {
+                    ProfileEditTextField(
+                        label = "GitHub",
+                        value = draft.githubProfileUrl,
+                        placeholder = "https://github.com/username",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
+                        onValueChange = { onDraftChange(draft.copy(githubProfileUrl = it)) }
+                    )
+                }
+                item {
+                    ProfileEditTextField(
+                        label = "Portfolio",
+                        value = draft.portfolioUrl,
+                        placeholder = "https://your-site.com",
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isGameProfileTheme = isGameProfileTheme,
+                        onValueChange = { onDraftChange(draft.copy(portfolioUrl = it)) }
+                    )
+                }
+                item {
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileEditLocationField(
+    value: String,
+    contentColor: Color,
+    accentColor: Color,
+    isGameProfileTheme: Boolean = false,
+    isResolvingDeviceLocation: Boolean,
+    deviceLocationMessage: String?,
+    deviceLocationError: String?,
+    onUseDeviceLocation: () -> Unit,
+    onValueChange: (String) -> Unit
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText(
+                if (isGameProfileTheme) "// LOCATION" else "Location",
+                style = TextStyle(
+                    if (isGameProfileTheme) RetroGameInk else contentColor.copy(alpha = 0.62f),
+                    12.sp,
+                    if (isGameProfileTheme) FontWeight.Black else FontWeight.SemiBold,
+                    letterSpacing = if (isGameProfileTheme) 0.8.sp else 0.sp
+                )
+            )
+            Row(
+                modifier = Modifier
+                    .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp))
+                    .background(
+                        if (isGameProfileTheme) RetroGameYellow
+                        else accentColor.copy(alpha = if (isResolvingDeviceLocation) 0.12f else 0.18f)
+                    )
+                    .border(
+                        if (isGameProfileTheme) 2.dp else 0.dp,
+                        if (isGameProfileTheme) RetroGameInk else Color.Transparent,
+                        RoundedCornerShape(0.dp)
+                    )
+                    .clickable(enabled = !isResolvingDeviceLocation, onClick = onUseDeviceLocation)
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (isResolvingDeviceLocation) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(13.dp),
+                        color = if (isGameProfileTheme) RetroGameInk else accentColor,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_location),
+                        contentDescription = null,
+                        tint = if (isGameProfileTheme) RetroGameInk else accentColor,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                BasicText(
+                    if (isResolvingDeviceLocation) "Locating" else "Use device",
+                    style = TextStyle(
+                        if (isGameProfileTheme) RetroGameInk else accentColor,
+                        12.sp,
+                        if (isGameProfileTheme) FontWeight.Black else FontWeight.SemiBold
+                    )
+                )
+            }
+        }
+
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            textStyle = TextStyle(if (isGameProfileTheme) RetroGameInk else contentColor, 14.sp),
+            cursorBrush = SolidColor(if (isGameProfileTheme) RetroGameRed else accentColor),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            decorationBox = { inner ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp))
+                        .background(if (isGameProfileTheme) Color.White.copy(alpha = 0.72f) else contentColor.copy(alpha = 0.06f))
+                        .border(
+                            if (isGameProfileTheme) 2.dp else 1.dp,
+                            if (isGameProfileTheme) RetroGameInk else contentColor.copy(alpha = 0.10f),
+                            if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp)
+                        )
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    if (value.isEmpty()) {
+                        BasicText(
+                            "City, State",
+                            style = TextStyle(
+                                if (isGameProfileTheme) RetroGameInk.copy(alpha = 0.42f) else contentColor.copy(alpha = 0.36f),
+                                14.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    inner()
+                }
+            }
+        )
+
+        deviceLocationError?.let {
+            BasicText(
+                it,
+                style = TextStyle(Color(0xFFEF4444), 12.sp, FontWeight.Medium)
+            )
+        } ?: deviceLocationMessage?.let {
+            BasicText(
+                it,
+                style = TextStyle(
+                    if (isGameProfileTheme) RetroGameInk.copy(alpha = 0.62f) else contentColor.copy(alpha = 0.56f),
+                    12.sp,
+                    FontWeight.Medium
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProfileEditTextField(
+    label: String,
+    value: String,
+    placeholder: String,
+    contentColor: Color,
+    accentColor: Color,
+    isGameProfileTheme: Boolean = false,
+    modifier: Modifier = Modifier,
+    singleLine: Boolean = true,
+    minHeight: androidx.compose.ui.unit.Dp = 48.dp,
+    onValueChange: (String) -> Unit
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        BasicText(
+            if (isGameProfileTheme) "// ${label.uppercase(Locale.US)}" else label,
+            style = TextStyle(
+                if (isGameProfileTheme) RetroGameInk else contentColor.copy(alpha = 0.62f),
+                12.sp,
+                if (isGameProfileTheme) FontWeight.Black else FontWeight.SemiBold,
+                letterSpacing = if (isGameProfileTheme) 0.8.sp else 0.sp
+            )
+        )
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            textStyle = TextStyle(if (isGameProfileTheme) RetroGameInk else contentColor, 14.sp),
+            cursorBrush = SolidColor(if (isGameProfileTheme) RetroGameRed else accentColor),
+            singleLine = singleLine,
+            modifier = Modifier.fillMaxWidth(),
+            decorationBox = { inner ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = minHeight)
+                        .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp))
+                        .background(if (isGameProfileTheme) Color.White.copy(alpha = 0.72f) else contentColor.copy(alpha = 0.06f))
+                        .border(
+                            if (isGameProfileTheme) 2.dp else 1.dp,
+                            if (isGameProfileTheme) RetroGameInk else contentColor.copy(alpha = 0.10f),
+                            if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp)
+                        )
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                    contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart
+                ) {
+                    if (value.isEmpty()) {
+                        BasicText(
+                            placeholder,
+                            style = TextStyle(
+                                if (isGameProfileTheme) RetroGameInk.copy(alpha = 0.42f) else contentColor.copy(alpha = 0.36f),
+                                14.sp
+                            ),
+                            maxLines = if (singleLine) 1 else 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    inner()
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ProfileEditOpenToWorkRow(
+    checked: Boolean,
+    contentColor: Color,
+    accentColor: Color,
+    isGameProfileTheme: Boolean = false,
+    onToggle: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(14.dp))
+            .background(
+                if (isGameProfileTheme && checked) RetroGameGreen
+                else if (isGameProfileTheme) Color.White.copy(alpha = 0.72f)
+                else if (checked) Color(0xFF22C55E).copy(alpha = 0.15f)
+                else contentColor.copy(alpha = 0.06f)
+            )
+            .border(
+                if (isGameProfileTheme) 2.dp else 0.dp,
+                if (isGameProfileTheme) RetroGameInk else Color.Transparent,
+                RoundedCornerShape(0.dp)
+            )
+            .clickable(onClick = onToggle)
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            BasicText(
+                "Open to work",
+                style = TextStyle(
+                    if (isGameProfileTheme) RetroGameInk else contentColor,
+                    14.sp,
+                    if (isGameProfileTheme) FontWeight.Black else FontWeight.SemiBold
+                )
+            )
+            BasicText(
+                if (checked) "Shown as #OpenToWork on your profile" else "Hidden from your profile header",
+                style = TextStyle(
+                    if (isGameProfileTheme) RetroGameInk.copy(alpha = 0.68f) else contentColor.copy(alpha = 0.54f),
+                    12.sp
+                )
+            )
+        }
+        Box(
+            modifier = Modifier
+                .width(44.dp)
+                .height(24.dp)
+                .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp))
+                .background(
+                    if (isGameProfileTheme && checked) RetroGameYellow
+                    else if (isGameProfileTheme) Color.White
+                    else if (checked) Color(0xFF22C55E)
+                    else contentColor.copy(alpha = 0.16f)
+                )
+                .border(
+                    if (isGameProfileTheme) 2.dp else 0.dp,
+                    if (isGameProfileTheme) RetroGameInk else Color.Transparent,
+                    RoundedCornerShape(0.dp)
+                )
+                .padding(3.dp),
+            contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(if (isGameProfileTheme) RoundedCornerShape(0.dp) else CircleShape)
+                    .background(
+                        if (isGameProfileTheme && checked) RetroGameInk
+                        else if (isGameProfileTheme) RetroGameRed
+                        else if (checked) Color.White
+                        else accentColor.copy(alpha = 0.72f)
+                    )
+            )
+        }
+    }
+}
+
+private fun hasProfileLocationPermission(context: Context): Boolean {
+    return ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_FINE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+}
+
+private suspend fun getProfileLocationLabelFromDevice(context: Context): Result<String> {
+    if (!hasProfileLocationPermission(context)) {
+        return Result.failure(IllegalStateException("Location permission denied"))
+    }
+
+    val location = getProfileDeviceLocation(context)
+        ?: return Result.failure(IllegalStateException("Couldn't get device location"))
+    val label = reverseGeocodeProfileLocation(
+        context = context,
+        latitude = location.latitude,
+        longitude = location.longitude
+    )
+
+    return if (label.isNullOrBlank()) {
+        Result.failure(IllegalStateException("Couldn't resolve your city"))
+    } else {
+        Result.success(label)
+    }
+}
+
+@SuppressLint("MissingPermission")
+private suspend fun getProfileDeviceLocation(context: Context): Location? =
+    suspendCancellableCoroutine { continuation ->
+        val client = LocationServices.getFusedLocationProviderClient(context)
+        var callback: LocationCallback? = null
+
+        fun finish(location: Location?) {
+            if (continuation.isActive) {
+                continuation.resume(location)
+            }
+        }
+
+        fun requestFreshLocation() {
+            val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 4_000L)
+                .setMaxUpdates(1)
+                .build()
+            val freshCallback = object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    client.removeLocationUpdates(this)
+                    finish(result.lastLocation)
+                }
+            }
+            callback = freshCallback
+            runCatching {
+                client.requestLocationUpdates(
+                    request,
+                    freshCallback,
+                    Looper.getMainLooper()
+                ).addOnFailureListener {
+                    finish(null)
+                }
+            }.onFailure {
+                finish(null)
+            }
+        }
+
+        runCatching {
+            client.lastLocation
+                .addOnSuccessListener { lastLocation ->
+                    if (lastLocation != null) {
+                        finish(lastLocation)
+                    } else {
+                        requestFreshLocation()
+                    }
+                }
+                .addOnFailureListener {
+                    requestFreshLocation()
+                }
+        }.onFailure {
+            finish(null)
+        }
+
+        continuation.invokeOnCancellation {
+            callback?.let { client.removeLocationUpdates(it) }
+        }
+    }
+
+private suspend fun reverseGeocodeProfileLocation(
+    context: Context,
+    latitude: Double,
+    longitude: Double
+): String? = withContext(Dispatchers.IO) {
+    runCatching {
+        val geocoder = Geocoder(context, Locale.getDefault())
+        val addresses = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            suspendCancellableCoroutine<List<android.location.Address>?> { continuation ->
+                geocoder.getFromLocation(latitude, longitude, 1) { result ->
+                    if (continuation.isActive) {
+                        continuation.resume(result)
+                    }
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            geocoder.getFromLocation(latitude, longitude, 1)
+        }
+
+        addresses
+            ?.firstOrNull()
+            ?.let { address ->
+                listOfNotNull(
+                    address.locality ?: address.subAdminArea ?: address.subLocality,
+                    address.adminArea,
+                    address.countryName
+                )
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .joinToString(", ")
+                    .takeIf { it.isNotBlank() }
+            }
+    }.getOrNull()
+}
+
+@Composable
 private fun ProfileContent(
     uiState: ProfileUiState,
     backdrop: LayerBackdrop,
@@ -740,6 +1714,8 @@ private fun ProfileContent(
     accentColor: Color,
     isGlassTheme: Boolean,
     isDarkTheme: Boolean,
+    profileThemeOverride: String? = null,
+    showOwnerProfileLocation: Boolean = true,
     onEditProfile: () -> Unit = {},
     onConnect: () -> Unit,
     onCancelRequest: () -> Unit,
@@ -747,21 +1723,31 @@ private fun ProfileContent(
     onRejectRequest: () -> Unit,
     onRemoveConnection: () -> Unit,
     onToggleFollow: () -> Unit,
+    onToggleProfileSave: () -> Unit,
     onFilterChange: (String) -> Unit,
-    onLoadMore: () -> Unit,
     onYearChange: (Int) -> Unit,
     onEditBio: () -> Unit,
     onSaveBio: () -> Unit,
     onCancelEditBio: () -> Unit,
     onBioChange: (String) -> Unit,
+    onEditInterests: () -> Unit,
     onToggleOpenToWork: (Boolean) -> Unit,
     onOpenConnections: () -> Unit,
     onOpenFollowers: () -> Unit,
     onMessage: (String) -> Unit,
+    showStartConversation: Boolean,
+    isPreparingConversationStarter: Boolean,
+    onStartConversation: (String) -> Unit,
+    onOpenProfile: ((String) -> Unit)? = null,
     onOpenFeedItem: (FeedItem) -> Unit,
     onVotePoll: (String, String) -> Unit,
     onUploadAvatar: (ByteArray) -> Unit,
     onUploadBanner: (ByteArray) -> Unit,
+    onReportUser: () -> Unit = {},
+    onBlockUser: () -> Unit = {},
+    onConnectGitHub: () -> Unit = {},
+    onSyncGitHub: () -> Unit = {},
+    onDisconnectGitHub: () -> Unit = {},
     // Project callbacks
     onAddProject: () -> Unit = {},
     onEditProject: (Project) -> Unit = {},
@@ -771,69 +1757,116 @@ private fun ProfileContent(
     onAddExperience: () -> Unit = {},
     onEditExperience: (Experience) -> Unit = {},
     onViewExperience: (Experience) -> Unit = {},
+    onDeleteExperience: (Experience) -> Unit = {},
     // Education callbacks
     onAddEducation: () -> Unit = {},
     onEditEducation: (Education) -> Unit = {},
     onViewEducation: (Education) -> Unit = {},
+    onDeleteEducation: (Education) -> Unit = {},
     // Certificate callbacks
     onAddCertificate: () -> Unit = {},
     onEditCertificate: (Certificate) -> Unit = {},
     onViewCertificate: (Certificate) -> Unit = {},
+    onDeleteCertificate: (Certificate) -> Unit = {},
     // Achievement callbacks
     onAddAchievement: () -> Unit = {},
     onEditAchievement: (Achievement) -> Unit = {},
     onViewAchievement: (Achievement) -> Unit = {},
+    onDeleteAchievement: (Achievement) -> Unit = {},
     // Skills callbacks
     onAddSkill: () -> Unit = {},
     onRemoveSkill: (UserSkill) -> Unit = {},
     onDeleteFeedPost: (String) -> Unit = {}
 ) {
     val profile = uiState.profile!!
-    // Derive isLightTheme for components that need it
-    val isLightTheme = !isDarkTheme
-    
+    val profileAppearance = currentVormexAppearance()
+    val profileThemeKey = if (uiState.isOwner) {
+        normalizeProfileThemeKey(profileThemeOverride ?: profile.user.profileTheme)
+    } else {
+        normalizeProfileThemeKey(profile.user.profileTheme)
+    }
+    val isGameProfileTheme = profileThemeKey == GameRetroProfileThemeKey
+    val listState = rememberLazyListState()
+    val profileSectionSeparatorColor = if (isDarkTheme) {
+        contentColor.copy(alpha = 0.08f)
+    } else {
+        Color(0xFFF3F2EF)
+    }
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        state = listState,
+        modifier = Modifier
+            .fillMaxSize()
+            .background(if (isGameProfileTheme || isDarkTheme) profileAppearance.backgroundColor else profileSectionSeparatorColor)
+            .then(if (isGameProfileTheme) Modifier.background(RetroGameCream) else Modifier),
         contentPadding = PaddingValues(bottom = 100.dp)
     ) {
         // Header Section
         item {
-            ProfileHeader(
-                user = profile.user,
-                stats = profile.stats,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isGlassTheme = isGlassTheme,
-                isDarkTheme = isDarkTheme,
-                isOwner = uiState.isOwner,
-                connectionStatus = uiState.connectionStatus,
-                isFollowing = uiState.isFollowing,
-                isFollowedBy = uiState.isFollowedBy,
-                connectionActionInProgress = uiState.connectionActionInProgress,
-                followActionInProgress = uiState.followActionInProgress,
-                mutualConnections = uiState.mutualConnections,
-                mutualConnectionsCount = uiState.mutualConnectionsCount,
-                isUploadingAvatar = uiState.isUploadingAvatar,
-                isUploadingBanner = uiState.isUploadingBanner,
-                onEditProfile = onEditProfile,
-                onConnect = onConnect,
-                onCancelRequest = onCancelRequest,
-                onAcceptRequest = onAcceptRequest,
-                onRejectRequest = onRejectRequest,
-                onRemoveConnection = onRemoveConnection,
-                onToggleFollow = onToggleFollow,
-                onOpenConnections = onOpenConnections,
-                onOpenFollowers = onOpenFollowers,
-                onMessage = onMessage,
-                onUploadAvatar = onUploadAvatar,
-                onUploadBanner = onUploadBanner
-            )
+            if (isGameProfileTheme) {
+                RetroGameProfileThemeSection(
+                    user = profile.user,
+                    stats = profile.stats,
+                    isOwner = uiState.isOwner,
+                    showLocation = !uiState.isOwner || showOwnerProfileLocation,
+                    showStartConversation = showStartConversation,
+                    isPreparingConversationStarter = isPreparingConversationStarter,
+                    onEditProfile = onEditProfile,
+                    onMessage = onMessage,
+                    onStartConversation = onStartConversation,
+                    onOpenConnections = onOpenConnections,
+                    onOpenFollowers = onOpenFollowers,
+                    isProfileSaved = profile.viewerContext.isProfileSaved,
+                    profileSaveActionInProgress = uiState.profileSaveActionInProgress,
+                    onToggleProfileSave = onToggleProfileSave
+                )
+            } else {
+                ProfileHeader(
+                    user = profile.user,
+                    stats = profile.stats,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    isGlassTheme = isGlassTheme,
+                    isDarkTheme = isDarkTheme,
+                    isOwner = uiState.isOwner,
+                    showLocation = !uiState.isOwner || showOwnerProfileLocation,
+                    connectionStatus = uiState.connectionStatus,
+                    isFollowing = uiState.isFollowing,
+                    isFollowedBy = uiState.isFollowedBy,
+                    connectionActionInProgress = uiState.connectionActionInProgress,
+                    followActionInProgress = uiState.followActionInProgress,
+                    isProfileSaved = profile.viewerContext.isProfileSaved,
+                    profileSaveActionInProgress = uiState.profileSaveActionInProgress,
+                    mutualConnections = uiState.mutualConnections,
+                    mutualConnectionsCount = uiState.mutualConnectionsCount,
+                    isUploadingAvatar = uiState.isUploadingAvatar,
+                    isUploadingBanner = uiState.isUploadingBanner,
+                    onEditProfile = onEditProfile,
+                    onConnect = onConnect,
+                    onCancelRequest = onCancelRequest,
+                    onAcceptRequest = onAcceptRequest,
+                    onRejectRequest = onRejectRequest,
+                    onRemoveConnection = onRemoveConnection,
+                    onToggleFollow = onToggleFollow,
+                    onToggleProfileSave = onToggleProfileSave,
+                    onOpenConnections = onOpenConnections,
+                    onOpenFollowers = onOpenFollowers,
+                    onMessage = onMessage,
+                    showStartConversation = showStartConversation,
+                    isPreparingConversationStarter = isPreparingConversationStarter,
+                    onStartConversation = onStartConversation,
+                    onOpenMutualProfile = onOpenProfile,
+                    onUploadAvatar = onUploadAvatar,
+                    onUploadBanner = onUploadBanner,
+                    onReportUser = onReportUser,
+                    onBlockUser = onBlockUser
+                )
+            }
         }
         
         // About Section
-        item {
-            Spacer(Modifier.height(12.dp))
+        if (!isGameProfileTheme) item {
+            ProfileSectionSeparator(profileSectionSeparatorColor)
             AboutSection(
                 user = profile.user,
                 backdrop = backdrop,
@@ -842,6 +1875,8 @@ private fun ProfileContent(
                 isOwner = uiState.isOwner,
                 isEditingBio = uiState.isEditingBio,
                 editedBio = uiState.editedBio,
+                isSavingBio = uiState.isSavingBio,
+                bioEditError = uiState.bioEditError,
                 onEditBio = onEditBio,
                 onSaveBio = onSaveBio,
                 onCancelEditBio = onCancelEditBio,
@@ -849,24 +1884,43 @@ private fun ProfileContent(
                 onToggleOpenToWork = onToggleOpenToWork
             )
         }
+
+        if (!isGameProfileTheme && (profile.user.interests.isNotEmpty() || uiState.isOwner)) item {
+            ProfileSectionSeparator(profileSectionSeparatorColor)
+            InterestsSection(
+                interests = profile.user.interests,
+                backdrop = backdrop,
+                contentColor = contentColor,
+                accentColor = accentColor,
+                isOwner = uiState.isOwner,
+                onEditInterests = onEditInterests
+            )
+        }
         
         // GitHub Stats Section
-        if (profile.github.connected || uiState.isOwner) {
-            item {
-                Spacer(Modifier.height(12.dp))
+        if (!isGameProfileTheme && (profile.github.connected || uiState.isOwner)) {
+            item(key = ProfileGitHubSectionKey) {
+                ProfileSectionSeparator(profileSectionSeparatorColor)
                 GitHubSection(
                     github = profile.github,
                     backdrop = backdrop,
                     contentColor = contentColor,
                     accentColor = accentColor,
-                    isOwner = uiState.isOwner
+                    isOwner = uiState.isOwner,
+                    isConnecting = uiState.isGitHubConnecting,
+                    isSyncing = uiState.isGitHubSyncing,
+                    isDisconnecting = uiState.isGitHubDisconnecting,
+                    actionError = uiState.githubActionError,
+                    onConnect = onConnectGitHub,
+                    onSync = onSyncGitHub,
+                    onDisconnect = onDisconnectGitHub
                 )
             }
         }
         
         // Activity Calendar Section
-        item {
-            Spacer(Modifier.height(12.dp))
+        if (!isGameProfileTheme) item {
+            ProfileSectionSeparator(profileSectionSeparatorColor)
             ActivityCalendarSection(
                 heatmap = uiState.activityHeatmap,
                 stats = profile.stats,
@@ -882,131 +1936,1692 @@ private fun ProfileContent(
         // Skills Section
         if (profile.skills.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
-                SkillsSection(
-                    skills = profile.skills,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddSkill = onAddSkill,
-                    onRemoveSkill = onRemoveSkill
-                )
+                ProfileSectionSeparator(profileSectionSeparatorColor)
+                if (isGameProfileTheme) {
+                    RetroGameSkillsSection(
+                        skills = profile.skills,
+                        isOwner = uiState.isOwner,
+                        onAddSkill = onAddSkill,
+                        onRemoveSkill = onRemoveSkill
+                    )
+                } else {
+                    SkillsSection(
+                        skills = profile.skills,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddSkill = onAddSkill,
+                        onRemoveSkill = onRemoveSkill
+                    )
+                }
             }
         }
         
         // Projects Section
         if (profile.projects.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
-                ProjectsSection(
-                    projects = profile.projects,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddProject = onAddProject,
-                    onEditProject = onEditProject,
-                    onViewProject = onViewProject,
-                    onToggleFeatured = onToggleProjectFeatured
-                )
+                ProfileSectionSeparator(profileSectionSeparatorColor)
+                if (isGameProfileTheme) {
+                    RetroGameProjectsSection(
+                        projects = profile.projects,
+                        isOwner = uiState.isOwner,
+                        onAddProject = onAddProject,
+                        onEditProject = onEditProject,
+                        onViewProject = onViewProject,
+                        onToggleFeatured = onToggleProjectFeatured
+                    )
+                } else {
+                    ProjectsSection(
+                        projects = profile.projects,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddProject = onAddProject,
+                        onEditProject = onEditProject,
+                        onViewProject = onViewProject,
+                        onToggleFeatured = onToggleProjectFeatured
+                    )
+                }
             }
         }
         
         // Experience Section
         if (profile.experiences.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
-                ExperienceSection(
-                    experiences = profile.experiences,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddExperience = onAddExperience,
-                    onEditExperience = onEditExperience,
-                    onViewExperience = onViewExperience
-                )
+                ProfileSectionSeparator(profileSectionSeparatorColor)
+                if (isGameProfileTheme) {
+                    RetroGameExperienceSection(
+                        experiences = profile.experiences,
+                        isOwner = uiState.isOwner,
+                        onAddExperience = onAddExperience,
+                        onEditExperience = onEditExperience,
+                        onViewExperience = onViewExperience
+                    )
+                } else {
+                    ExperienceSection(
+                        experiences = profile.experiences,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddExperience = onAddExperience,
+                        onEditExperience = onEditExperience,
+                        onViewExperience = onViewExperience,
+                        onDeleteExperience = onDeleteExperience
+                    )
+                }
             }
         }
         
         // Education Section
         if (profile.education.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
-                EducationSection(
-                    education = profile.education,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddEducation = onAddEducation,
-                    onEditEducation = onEditEducation,
-                    onViewEducation = onViewEducation
-                )
+                ProfileSectionSeparator(profileSectionSeparatorColor)
+                if (isGameProfileTheme) {
+                    RetroGameEducationSection(
+                        education = profile.education,
+                        isOwner = uiState.isOwner,
+                        onAddEducation = onAddEducation,
+                        onEditEducation = onEditEducation,
+                        onViewEducation = onViewEducation
+                    )
+                } else {
+                    EducationSection(
+                        education = profile.education,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddEducation = onAddEducation,
+                        onEditEducation = onEditEducation,
+                        onViewEducation = onViewEducation,
+                        onDeleteEducation = onDeleteEducation
+                    )
+                }
             }
         }
         
         // Certificates Section
         if (profile.certificates.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
-                CertificatesSection(
-                    certificates = profile.certificates,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddCertificate = onAddCertificate,
-                    onEditCertificate = onEditCertificate,
-                    onViewCertificate = onViewCertificate
-                )
+                ProfileSectionSeparator(profileSectionSeparatorColor)
+                if (isGameProfileTheme) {
+                    RetroGameCertificatesSection(
+                        certificates = profile.certificates,
+                        isOwner = uiState.isOwner,
+                        onAddCertificate = onAddCertificate,
+                        onEditCertificate = onEditCertificate,
+                        onViewCertificate = onViewCertificate
+                    )
+                } else {
+                    CertificatesSection(
+                        certificates = profile.certificates,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddCertificate = onAddCertificate,
+                        onEditCertificate = onEditCertificate,
+                        onViewCertificate = onViewCertificate,
+                        onDeleteCertificate = onDeleteCertificate
+                    )
+                }
             }
         }
         
         // Achievements Section
         if (profile.achievements.isNotEmpty() || uiState.isOwner) {
             item {
-                Spacer(Modifier.height(12.dp))
-                AchievementsSection(
-                    achievements = profile.achievements,
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    accentColor = accentColor,
-                    isOwner = uiState.isOwner,
-                    onAddAchievement = onAddAchievement,
-                    onEditAchievement = onEditAchievement,
-                    onViewAchievement = onViewAchievement
-                )
+                ProfileSectionSeparator(profileSectionSeparatorColor)
+                if (isGameProfileTheme) {
+                    RetroGameAchievementsSection(
+                        achievements = profile.achievements,
+                        isOwner = uiState.isOwner,
+                        onAddAchievement = onAddAchievement,
+                        onEditAchievement = onEditAchievement,
+                        onViewAchievement = onViewAchievement
+                    )
+                } else {
+                    AchievementsSection(
+                        achievements = profile.achievements,
+                        backdrop = backdrop,
+                        contentColor = contentColor,
+                        accentColor = accentColor,
+                        isOwner = uiState.isOwner,
+                        onAddAchievement = onAddAchievement,
+                        onEditAchievement = onEditAchievement,
+                        onViewAchievement = onViewAchievement,
+                        onDeleteAchievement = onDeleteAchievement
+                    )
+                }
             }
         }
         
-        // Activity Feed Section
-        item {
-            Spacer(Modifier.height(12.dp))
-            ActivityFeedSection(
-                feedItems = uiState.feedItems,
-                currentFilter = uiState.feedFilter,
-                isLoading = uiState.isLoadingFeed,
-                hasMore = uiState.feedHasMore,
-                backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                isLightTheme = isLightTheme,
-                isOwner = uiState.isOwner,
-                onFilterChange = onFilterChange,
-                onLoadMore = onLoadMore,
-                onOpenItem = onOpenFeedItem,
-                onVotePoll = onVotePoll,
-                onDeletePost = onDeleteFeedPost
+        // Profile activity feed cards
+        item(key = "profile_activity_header", contentType = "profile_activity_header") {
+            ProfileSectionSeparator(profileSectionSeparatorColor)
+            if (isGameProfileTheme) {
+                RetroGameActivityFeedHeaderSection(
+                    currentFilter = uiState.feedFilter,
+                    onFilterChange = onFilterChange
+                )
+            } else {
+                ActivityFeedHeaderSection(
+                    currentFilter = uiState.feedFilter,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onFilterChange = onFilterChange
+                )
+            }
+        }
+
+        if (uiState.feedItems.isEmpty() && !uiState.isLoadingFeed) {
+            item(key = "profile_activity_empty", contentType = "profile_activity_status") {
+                ProfileSectionSeparator(profileSectionSeparatorColor)
+                ActivityFeedGridSection(
+                    items = emptyList(),
+                    isLoading = false,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    isOwner = uiState.isOwner,
+                    onOpenItem = onOpenFeedItem,
+                    onDeletePost = onDeleteFeedPost
+                )
+            }
+        } else {
+            items(
+                items = uiState.feedItems,
+                key = { "profile_activity_${it.entityType}_${it.id}" },
+                contentType = { "profile_activity_post" }
+            ) { item ->
+                ProfileSectionSeparator(profileSectionSeparatorColor)
+                ProfileActivityPostCard(
+                    item = item,
+                    profileUser = profile.user,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onOpenItem = onOpenFeedItem,
+                    onVotePoll = onVotePoll
+                )
+            }
+        }
+
+        if (uiState.isLoadingFeed) {
+            item(key = "profile_activity_loading", contentType = "profile_activity_status") {
+                ProfileSectionSeparator(profileSectionSeparatorColor)
+                if (isGameProfileTheme) {
+                    RetroGameActivityFeedLoadingSection()
+                } else {
+                    ActivityFeedLoadingSection(
+                        contentColor = contentColor,
+                        accentColor = accentColor
+                    )
+                }
+            }
+        }
+
+    }
+}
+
+@Composable
+private fun ProfileActivityFeedOverlay(
+    items: List<FeedItem>,
+    selectedItemId: String,
+    profileUser: ProfileUser,
+    currentFilter: String,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    isDarkTheme: Boolean,
+    onDismiss: () -> Unit,
+    onOpenItem: (FeedItem) -> Unit,
+    onVotePoll: (String, String) -> Unit
+) {
+    BackHandler(onBack = onDismiss)
+
+    val initialIndex = remember(items, selectedItemId) {
+        items.indexOfFirst { it.id == selectedItemId }.coerceAtLeast(0)
+    }
+    val feedListState = rememberLazyListState(initialFirstVisibleItemIndex = initialIndex)
+    val filterLabel = when (currentFilter) {
+        "posts" -> "Posts"
+        "articles" -> "Articles"
+        "videos" -> "Reels"
+        "forum" -> "Forum"
+        else -> "All activity"
+    }
+    val background = if (isDarkTheme) Color(0xFF121212) else Color(0xFFF3F2EF)
+    val overlayInteractionSource = remember { MutableInteractionSource() }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(background)
+            .clickable(
+                interactionSource = overlayInteractionSource,
+                indication = null,
+                onClick = {}
+            )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(if (isDarkTheme) Color(0xFF191919) else Color.White)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onDismiss),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_back),
+                    contentDescription = "Back to profile",
+                    modifier = Modifier.size(22.dp),
+                    colorFilter = ColorFilter.tint(contentColor)
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                BasicText(
+                    text = "${profileUser.name}'s activity",
+                    style = TextStyle(contentColor, 17.sp, FontWeight.SemiBold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                BasicText(
+                    text = filterLabel,
+                    style = TextStyle(accentColor, 12.sp, FontWeight.Medium)
+                )
+            }
+        }
+
+        LazyColumn(
+            state = feedListState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 0.dp, top = 10.dp, end = 0.dp, bottom = 72.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(items, key = { it.id }) { item ->
+                ProfileActivityPostCard(
+                    item = item,
+                    profileUser = profileUser,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onOpenItem = onOpenItem,
+                    onVotePoll = onVotePoll
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileActivityPostCard(
+    item: FeedItem,
+    profileUser: ProfileUser,
+    backdrop: LayerBackdrop,
+    contentColor: Color,
+    accentColor: Color,
+    onOpenItem: (FeedItem) -> Unit,
+    onVotePoll: (String, String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val post = remember(item, profileUser) { item.toProfileActivityPost(profileUser) }
+
+    ApiPostCard(
+        post = post,
+        backdrop = backdrop,
+        contentColor = contentColor,
+        accentColor = accentColor,
+        onLike = {
+            scope.launch {
+                if (item.entityType.equals("reel", ignoreCase = true)) {
+                    ApiClient.toggleReelLike(context, item.id)
+                } else {
+                    ApiClient.toggleLike(context, item.id)
+                }
+            }
+        },
+        onComment = { onOpenItem(item) },
+        onShare = { onOpenItem(item) },
+        onVotePoll = onVotePoll,
+        onProfileClick = {},
+        onMentionClick = {},
+        onMenuAction = { _, action ->
+            when (action) {
+                "save" -> scope.launch {
+                    if (item.entityType.equals("reel", ignoreCase = true)) {
+                        ApiClient.toggleReelSave(context, item.id)
+                    } else {
+                        PostsApiService.toggleSave(context, item.id)
+                    }
+                }
+                "copy_link" -> {
+                    val isReel = item.entityType.equals("reel", ignoreCase = true)
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText(
+                            "Vormex post",
+                            if (isReel) VormexDeepLinks.reelUrl(item.id) else VormexDeepLinks.postUrl(item.id)
+                        )
+                    )
+                    Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
+                    scope.launch {
+                        if (isReel) {
+                            ApiClient.shareReel(context, item.id, shareType = "copy_link")
+                        } else {
+                            PostsApiService.sharePost(context, item.id)
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+private fun FeedItem.toProfileActivityPost(user: ProfileUser): com.kyant.backdrop.catalog.network.models.Post {
+    val media = when {
+        !images.isNullOrEmpty() -> images
+        !mediaUrls.isNullOrEmpty() -> mediaUrls
+        !videoThumbnail.isNullOrBlank() -> listOf(videoThumbnail)
+        !celebrationGifUrl.isNullOrBlank() -> listOf(celebrationGifUrl)
+        else -> emptyList()
+    }
+    val normalizedType = when {
+        contentType.equals("article", ignoreCase = true) -> "ARTICLE"
+        contentType.equals("short_video", ignoreCase = true) -> "VIDEO"
+        entityType.equals("reel", ignoreCase = true) -> "VIDEO"
+        !postType.isNullOrBlank() -> postType.uppercase()
+        media.isNotEmpty() -> "IMAGE"
+        else -> "TEXT"
+    }
+
+    return com.kyant.backdrop.catalog.network.models.Post(
+        id = id,
+        kind = if (entityType.equals("reel", ignoreCase = true)) "REEL" else "POST",
+        type = normalizedType,
+        authorId = user.id,
+        author = Author(
+            id = user.id,
+            username = user.username,
+            name = user.name,
+            profileImage = user.profileImage ?: user.avatar,
+            headline = user.headline,
+            verified = user.verified,
+            isVerified = user.isVerified,
+            profileBadgeStyle = user.profileBadgeStyle,
+            isPremium = user.isPremium
+        ),
+        content = content,
+        mediaUrls = media,
+        mediaCount = media.size,
+        videoUrl = videoUrl,
+        videoThumbnail = videoThumbnail,
+        defaultVideoId = defaultVideoId,
+        linkUrl = linkUrl,
+        linkTitle = linkTitle,
+        linkDescription = linkDescription,
+        linkDomain = linkDomain,
+        articleTitle = title.takeIf { normalizedType == "ARTICLE" },
+        articleCoverImage = media.firstOrNull().takeIf { normalizedType == "ARTICLE" },
+        articleTags = tags.orEmpty(),
+        pollEndsAt = pollEndsAt,
+        pollOptions = pollOptions,
+        userVotedOptionId = userVotedOptionId,
+        showResultsBeforeVote = showResultsBeforeVote,
+        celebrationType = celebrationType,
+        celebrationBadge = celebrationBadge,
+        celebrationGifUrl = celebrationGifUrl,
+        likesCount = likesCount,
+        commentsCount = commentsCount,
+        createdAt = createdAt,
+        updatedAt = updatedAt
+    )
+}
+
+@Composable
+private fun ProfileSectionSeparator(color: Color) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(10.dp)
+            .background(color)
+    )
+}
+
+// ==================== Retro Game Profile Theme ====================
+
+@Composable
+private fun RetroGameProfileThemeSection(
+    user: ProfileUser,
+    stats: ProfileStats,
+    isOwner: Boolean,
+    showLocation: Boolean,
+    showStartConversation: Boolean,
+    isPreparingConversationStarter: Boolean,
+    onEditProfile: () -> Unit,
+    onMessage: (String) -> Unit,
+    onStartConversation: (String) -> Unit,
+    onOpenConnections: () -> Unit,
+    onOpenFollowers: () -> Unit,
+    isProfileSaved: Boolean = false,
+    profileSaveActionInProgress: Boolean = false,
+    onToggleProfileSave: () -> Unit = {}
+) {
+    val context = LocalContext.current
+    val profileUrl = "https://vormex.com/@${user.username}"
+    val primaryLabel = when {
+        isOwner -> "EDIT PROFILE ->"
+        showStartConversation && isPreparingConversationStarter -> "STARTING..."
+        showStartConversation -> "START CHAT ->"
+        else -> "MESSAGE ->"
+    }
+    val headline = user.headline?.takeIf { it.isNotBlank() } ?: "Vormex profile player"
+    val locationLine = listOfNotNull(
+        if (showLocation) user.location?.takeIf { it.isNotBlank() }?.uppercase(Locale.US) else null,
+        user.college?.takeIf { it.isNotBlank() }?.uppercase(Locale.US)
+    ).joinToString("  ·  ").ifBlank { "VORMEX" }
+    val xpTarget = (stats.xp + stats.xpToNextLevel).coerceAtLeast(1)
+    val xpProgress = (stats.xp.toFloat() / xpTarget.toFloat()).coerceIn(0.08f, 1f)
+
+    fun openUrl(url: String?) {
+        if (url.isNullOrBlank()) return
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }
+    }
+
+    fun shareProfile() {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, profileUrl)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share profile"))
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(RetroGameCream)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText("VORMEX", style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black))
+            BasicText(
+                "PROFILE / 01",
+                style = TextStyle(RetroGameInk, 11.sp, FontWeight.Black),
+                modifier = Modifier
+                    .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                modifier = Modifier
+                    .size(96.dp)
+                    .retroGamePanel(RetroGameYellow)
+                    .clip(RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                val profileImageUrl = user.profileImageUrl()
+                if (profileImageUrl != null) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(profileImageUrl)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = "Profile photo",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    BasicText(
+                        profileInitials(user.name),
+                        style = TextStyle(RetroGameInk, 32.sp, FontWeight.Black)
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                BasicText(
+                    "// HUMAN_${user.id.take(3).uppercase(Locale.US)}",
+                    style = TextStyle(RetroGameInk, 11.sp, FontWeight.Black, letterSpacing = 1.sp)
+                )
+                BasicText(
+                    user.name.uppercase(Locale.US),
+                    style = TextStyle(RetroGameInk, 22.sp, FontWeight.Black, lineHeight = 22.sp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (user.isOpenToOpportunities) {
+                    BasicText(
+                        "✓ OPEN TO WORK",
+                        style = TextStyle(RetroGameInk, 10.sp, FontWeight.Black),
+                        modifier = Modifier
+                            .background(RetroGameGreen)
+                            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+                BasicText(
+                    "@${user.username}",
+                    style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                .background(Color.White.copy(alpha = 0.70f))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            BasicText(
+                headline,
+                style = TextStyle(RetroGameInk, 14.sp, FontWeight.Medium, lineHeight = 19.sp),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            BasicText(
+                "⌾ $locationLine",
+                style = TextStyle(RetroGameInk, 11.sp, FontWeight.Black, letterSpacing = 0.8.sp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RetroGameButton(
+                label = primaryLabel,
+                background = RetroGameRed,
+                content = Color.White,
+                modifier = Modifier.weight(1f),
+                onClick = {
+                    when {
+                        isOwner -> onEditProfile()
+                        showStartConversation -> onStartConversation(user.id)
+                        else -> onMessage(user.id)
+                    }
+                }
+            )
+            if (!isOwner) {
+                RetroGameButton(
+                    label = if (isProfileSaved) "SAVED" else "SAVE",
+                    background = if (isProfileSaved) RetroGameYellow else Color.White,
+                    content = RetroGameInk,
+                    modifier = Modifier.width(76.dp),
+                    onClick = {
+                        if (!profileSaveActionInProgress) {
+                            onToggleProfileSave()
+                        }
+                    }
+                )
+            }
+            RetroGameButton(
+                label = "SHARE",
+                background = Color.White,
+                content = RetroGameInk,
+                modifier = Modifier.width(86.dp),
+                onClick = ::shareProfile
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                .background(Color.White.copy(alpha = 0.70f))
+        ) {
+            RetroGameStatCell(
+                value = formatNumber(stats.connectionsCount),
+                label = "CONNECTIONS",
+                modifier = Modifier.weight(1f),
+                onClick = onOpenConnections
+            )
+            RetroGameStatCell(
+                value = formatNumber(stats.followersCount),
+                label = "FOLLOWERS",
+                background = RetroGameYellow,
+                modifier = Modifier.weight(1f),
+                onClick = onOpenFollowers
+            )
+            RetroGameStatCell(
+                value = formatNumber(stats.totalPosts),
+                label = "POSTS",
+                modifier = Modifier.weight(1f)
+            )
+            RetroGameStatCell(
+                value = formatNumber(stats.totalLikesReceived),
+                label = "LIKES",
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                .background(RetroGameBlue)
+        ) {
+            BasicText(
+                "// PROGRESSION",
+                style = TextStyle(Color.White, 11.sp, FontWeight.Black, letterSpacing = 1.2.sp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+            )
+            Row {
+                Box(
+                    modifier = Modifier
+                        .width(80.dp)
+                        .height(76.dp)
+                        .background(RetroGameYellow)
+                        .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        BasicText("LVL", style = TextStyle(RetroGameInk, 10.sp, FontWeight.Black))
+                        BasicText("${stats.level}", style = TextStyle(RetroGameInk, 34.sp, FontWeight.Black))
+                    }
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        BasicText("XP ${formatNumber(stats.xp)}", style = TextStyle(Color.White, 11.sp, FontWeight.Black))
+                        BasicText("+${formatNumber(stats.xpToNextLevel)}", style = TextStyle(Color.White, 11.sp, FontWeight.Black))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(12.dp)
+                            .background(Color.White)
+                            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(xpProgress)
+                                .fillMaxHeight()
+                                .background(RetroGameRed)
+                        )
+                    }
+                    BasicText(
+                        "STREAK · ${stats.currentStreak}D (${stats.longestStreak} BEST)",
+                        style = TextStyle(Color.White, 11.sp, FontWeight.Black),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RetroGameLinkButton(
+                label = "in LINKEDIN",
+                url = user.linkedinUrl,
+                modifier = Modifier.weight(1f),
+                onClick = ::openUrl
+            )
+            RetroGameLinkButton(
+                label = "<> GITHUB",
+                url = user.githubProfileUrl,
+                modifier = Modifier.weight(1f),
+                onClick = ::openUrl
+            )
+            RetroGameLinkButton(
+                label = "↗ PORTFOLIO",
+                url = user.portfolioUrl,
+                background = RetroGameYellow,
+                modifier = Modifier.weight(1f),
+                onClick = ::openUrl
+            )
+        }
+
+        BasicText(
+            "// ABOUT",
+            style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black, letterSpacing = 1.4.sp)
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                .background(Color.White.copy(alpha = 0.70f))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            BasicText(
+                user.bio?.takeIf { it.isNotBlank() } ?: "No bio added yet.",
+                style = TextStyle(RetroGameInk, 14.sp, FontWeight.Medium, lineHeight = 20.sp),
+                maxLines = 5,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (isOwner) {
+                RetroGameButton(
+                    label = "SHOW MORE ->",
+                    background = RetroGameInk,
+                    content = Color.White,
+                    onClick = onEditProfile
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameSection(
+    title: String,
+    count: Int? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+    content: @Composable () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .retroGamePanel(Color.White.copy(alpha = 0.72f))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText(
+                buildString {
+                    append("// ")
+                    append(title.uppercase(Locale.US))
+                    count?.let { append(" / $it") }
+                },
+                style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black, letterSpacing = 1.2.sp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (actionLabel != null && onAction != null) {
+                RetroGameMiniButton(
+                    label = actionLabel,
+                    background = RetroGameYellow,
+                    onClick = onAction
+                )
+            }
+        }
+        content()
+    }
+}
+
+@Composable
+private fun RetroGameMiniButton(
+    label: String,
+    background: Color,
+    modifier: Modifier = Modifier,
+    content: Color = RetroGameInk,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .height(30.dp)
+            .retroGamePanel(background)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            label,
+            style = TextStyle(content, 10.sp, FontWeight.Black),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun RetroGameEntryCard(
+    modifier: Modifier = Modifier,
+    highlighted: Boolean = false,
+    onClick: (() -> Unit)? = null,
+    content: @Composable () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(if (highlighted) RetroGameYellow.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.70f))
+            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+            .clickable(enabled = onClick != null) { onClick?.invoke() }
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun RetroGameEmptyState(message: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+            .background(Color.White.copy(alpha = 0.58f))
+            .padding(18.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            message.uppercase(Locale.US),
+            style = TextStyle(
+                color = RetroGameInk.copy(alpha = 0.58f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 0.8.sp,
+                textAlign = TextAlign.Center
+            )
+        )
+    }
+}
+
+@Composable
+private fun RetroGamePill(
+    label: String,
+    background: Color = Color.White,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
+) {
+    Box(
+        modifier = modifier
+            .background(background)
+            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+            .clickable(enabled = onClick != null) { onClick?.invoke() }
+            .padding(horizontal = 9.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            label.uppercase(Locale.US),
+            style = TextStyle(RetroGameInk, 10.sp, FontWeight.Black, letterSpacing = 0.4.sp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RetroGameSkillsSection(
+    skills: List<UserSkill>,
+    isOwner: Boolean,
+    onAddSkill: () -> Unit,
+    onRemoveSkill: (UserSkill) -> Unit
+) {
+    RetroGameSection(
+        title = "Skill Inventory",
+        count = skills.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddSkill else null
+    ) {
+        if (skills.isEmpty()) {
+            RetroGameEmptyState("No skills equipped yet")
+        } else {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                skills.forEach { userSkill ->
+                    Row(
+                        modifier = Modifier
+                            .background(RetroGameBlue.copy(alpha = 0.12f))
+                            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                            .padding(start = 9.dp, end = if (isOwner) 5.dp else 9.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Column {
+                            BasicText(
+                                userSkill.skill.name.uppercase(Locale.US),
+                                style = TextStyle(RetroGameInk, 10.sp, FontWeight.Black),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 150.dp)
+                            )
+                            val meta = listOfNotNull(
+                                userSkill.proficiency?.takeIf { it.isNotBlank() },
+                                userSkill.yearsOfExp?.let { "$it YRS" }
+                            ).joinToString(" / ")
+                            if (meta.isNotBlank()) {
+                                BasicText(
+                                    meta.uppercase(Locale.US),
+                                    style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 8.sp, FontWeight.Black),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        if (isOwner) {
+                            BasicText(
+                                "X",
+                                style = TextStyle(RetroGameRed, 10.sp, FontWeight.Black),
+                                modifier = Modifier
+                                    .clickable { onRemoveSkill(userSkill) }
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RetroGameProjectsSection(
+    projects: List<Project>,
+    isOwner: Boolean,
+    onAddProject: () -> Unit,
+    onEditProject: (Project) -> Unit,
+    onViewProject: (Project) -> Unit,
+    onToggleFeatured: (Project) -> Unit
+) {
+    RetroGameSection(
+        title = "Project Quests",
+        count = projects.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddProject else null
+    ) {
+        if (projects.isEmpty()) {
+            RetroGameEmptyState("No project quests posted")
+        } else {
+            val orderedProjects = remember(projects) {
+                projects.sortedWith(
+                    compareByDescending<Project> { it.featured }.thenByDescending { it.startDate }
+                )
+            }
+
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(end = 22.dp)
+            ) {
+                items(orderedProjects.size) { index ->
+                    val project = orderedProjects[index]
+                    Box(modifier = Modifier.width(284.dp)) {
+                        RetroGameEntryCard(
+                            highlighted = project.featured,
+                            onClick = { onViewProject(project) }
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    BasicText(
+                                        "QUEST_${(index + 1).toString().padStart(2, '0')}",
+                                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 9.sp, FontWeight.Black, letterSpacing = 0.8.sp)
+                                    )
+                                    BasicText(
+                                        project.name.uppercase(Locale.US),
+                                        style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black, lineHeight = 18.sp),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (project.featured) {
+                                    RetroGamePill("Featured", background = RetroGameYellow)
+                                }
+                            }
+                            project.role?.takeIf { it.isNotBlank() }?.let { role ->
+                                BasicText(
+                                    role,
+                                    style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            BasicText(
+                                project.description,
+                                style = TextStyle(RetroGameInk.copy(alpha = 0.82f), 13.sp, FontWeight.Medium, lineHeight = 18.sp),
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            BasicText(
+                                retroDateRange(project.startDate, project.endDate, project.isCurrent),
+                                style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 10.sp, FontWeight.Black)
+                            )
+                            if (project.techStack.isNotEmpty()) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    project.techStack.take(6).forEach { tech ->
+                                        RetroGamePill(tech, background = Color.White)
+                                    }
+                                }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                RetroGameMiniButton("VIEW", RetroGameBlue, content = Color.White) { onViewProject(project) }
+                                if (isOwner) {
+                                    RetroGameMiniButton("EDIT", Color.White) { onEditProject(project) }
+                                    RetroGameMiniButton(
+                                        if (project.featured) "UNPIN" else "PIN",
+                                        RetroGameYellow
+                                    ) { onToggleFeatured(project) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RetroGameExperienceSection(
+    experiences: List<Experience>,
+    isOwner: Boolean,
+    onAddExperience: () -> Unit,
+    onEditExperience: (Experience) -> Unit,
+    onViewExperience: (Experience) -> Unit
+) {
+    RetroGameSection(
+        title = "Career Missions",
+        count = experiences.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddExperience else null
+    ) {
+        if (experiences.isEmpty()) {
+            RetroGameEmptyState("No missions unlocked")
+        } else {
+            experiences.forEachIndexed { index, experience ->
+                RetroGameEntryCard(onClick = { onViewExperience(experience) }) {
+                    BasicText(
+                        "MISSION_${(index + 1).toString().padStart(2, '0')}",
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 9.sp, FontWeight.Black, letterSpacing = 0.8.sp)
+                    )
+                    BasicText(
+                        experience.title.uppercase(Locale.US),
+                        style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black, lineHeight = 18.sp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        "${experience.company} / ${experience.type}",
+                        style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        retroDateRange(experience.startDate, experience.endDate, experience.isCurrent),
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 10.sp, FontWeight.Black)
+                    )
+                    experience.description?.takeIf { it.isNotBlank() }?.let { description ->
+                        BasicText(
+                            description,
+                            style = TextStyle(RetroGameInk.copy(alpha = 0.82f), 13.sp, FontWeight.Medium, lineHeight = 18.sp),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (experience.skills.isNotEmpty()) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            experience.skills.take(6).forEach { skill ->
+                                RetroGamePill(skill, background = RetroGameYellow.copy(alpha = 0.60f))
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RetroGameMiniButton("VIEW", RetroGameBlue, content = Color.White) { onViewExperience(experience) }
+                        if (isOwner) {
+                            RetroGameMiniButton("EDIT", Color.White) { onEditExperience(experience) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameEducationSection(
+    education: List<Education>,
+    isOwner: Boolean,
+    onAddEducation: () -> Unit,
+    onEditEducation: (Education) -> Unit,
+    onViewEducation: (Education) -> Unit
+) {
+    RetroGameSection(
+        title = "Academy Log",
+        count = education.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddEducation else null
+    ) {
+        if (education.isEmpty()) {
+            RetroGameEmptyState("No academy records")
+        } else {
+            education.forEachIndexed { index, item ->
+                RetroGameEntryCard(onClick = { onViewEducation(item) }) {
+                    BasicText(
+                        "CLASS_${(index + 1).toString().padStart(2, '0')}",
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 9.sp, FontWeight.Black, letterSpacing = 0.8.sp)
+                    )
+                    BasicText(
+                        item.school.uppercase(Locale.US),
+                        style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black, lineHeight = 18.sp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        "${item.degree} / ${item.fieldOfStudy}",
+                        style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        retroDateRange(item.startDate, item.endDate, item.isCurrent),
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 10.sp, FontWeight.Black)
+                    )
+                    item.description?.takeIf { it.isNotBlank() }?.let { description ->
+                        BasicText(
+                            description,
+                            style = TextStyle(RetroGameInk.copy(alpha = 0.82f), 13.sp, FontWeight.Medium, lineHeight = 18.sp),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RetroGameMiniButton("VIEW", RetroGameBlue, content = Color.White) { onViewEducation(item) }
+                        if (isOwner) {
+                            RetroGameMiniButton("EDIT", Color.White) { onEditEducation(item) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameCertificatesSection(
+    certificates: List<Certificate>,
+    isOwner: Boolean,
+    onAddCertificate: () -> Unit,
+    onEditCertificate: (Certificate) -> Unit,
+    onViewCertificate: (Certificate) -> Unit
+) {
+    RetroGameSection(
+        title = "Power Badges",
+        count = certificates.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddCertificate else null
+    ) {
+        if (certificates.isEmpty()) {
+            RetroGameEmptyState("No power badges collected")
+        } else {
+            certificates.forEachIndexed { index, certificate ->
+                RetroGameEntryCard(onClick = { onViewCertificate(certificate) }) {
+                    BasicText(
+                        "BADGE_${(index + 1).toString().padStart(2, '0')}",
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 9.sp, FontWeight.Black, letterSpacing = 0.8.sp)
+                    )
+                    BasicText(
+                        certificate.name.uppercase(Locale.US),
+                        style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black, lineHeight = 18.sp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        certificate.issuingOrg,
+                        style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        "ISSUED ${retroCompactDate(certificate.issueDate)}",
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 10.sp, FontWeight.Black)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RetroGameMiniButton("VIEW", RetroGameBlue, content = Color.White) { onViewCertificate(certificate) }
+                        if (isOwner) {
+                            RetroGameMiniButton("EDIT", Color.White) { onEditCertificate(certificate) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameAchievementsSection(
+    achievements: List<Achievement>,
+    isOwner: Boolean,
+    onAddAchievement: () -> Unit,
+    onEditAchievement: (Achievement) -> Unit,
+    onViewAchievement: (Achievement) -> Unit
+) {
+    RetroGameSection(
+        title = "Trophy Shelf",
+        count = achievements.size,
+        actionLabel = if (isOwner) "+ ADD" else null,
+        onAction = if (isOwner) onAddAchievement else null
+    ) {
+        if (achievements.isEmpty()) {
+            RetroGameEmptyState("No trophies claimed")
+        } else {
+            achievements.forEachIndexed { index, achievement ->
+                RetroGameEntryCard(onClick = { onViewAchievement(achievement) }) {
+                    BasicText(
+                        "TROPHY_${(index + 1).toString().padStart(2, '0')}",
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 9.sp, FontWeight.Black, letterSpacing = 0.8.sp)
+                    )
+                    BasicText(
+                        achievement.title.uppercase(Locale.US),
+                        style = TextStyle(RetroGameInk, 16.sp, FontWeight.Black, lineHeight = 18.sp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        "${achievement.organization} / ${achievement.type}",
+                        style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        retroCompactDate(achievement.date),
+                        style = TextStyle(RetroGameInk.copy(alpha = 0.62f), 10.sp, FontWeight.Black)
+                    )
+                    achievement.description?.takeIf { it.isNotBlank() }?.let { description ->
+                        BasicText(
+                            description,
+                            style = TextStyle(RetroGameInk.copy(alpha = 0.82f), 13.sp, FontWeight.Medium, lineHeight = 18.sp),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RetroGameMiniButton("VIEW", RetroGameBlue, content = Color.White) { onViewAchievement(achievement) }
+                        if (isOwner) {
+                            RetroGameMiniButton("EDIT", Color.White) { onEditAchievement(achievement) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameActivityFeedHeaderSection(
+    currentFilter: String,
+    onFilterChange: (String) -> Unit
+) {
+    val filters = listOf(
+        "all" to "All",
+        "posts" to "Posts",
+        "articles" to "Articles",
+        "videos" to "Reels"
+    )
+
+    RetroGameSection(title = "Activity Grid") {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            filters.forEach { (filter, label) ->
+                val isSelected = currentFilter == filter
+                RetroGamePill(
+                    label = label,
+                    background = if (isSelected) RetroGameYellow else Color.White,
+                    onClick = { onFilterChange(filter) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroGameActivityFeedGridSection(
+    items: List<FeedItem>,
+    isLoading: Boolean,
+    isOwner: Boolean,
+    onOpenItem: (FeedItem) -> Unit,
+    onDeletePost: (String) -> Unit
+) {
+    val gridItems = remember(items) { items.mapNotNull(::retroGameActivityGridItemFor) }
+
+    RetroGameSection(
+        title = "Posts",
+        count = gridItems.size
+    ) {
+        when {
+            gridItems.isNotEmpty() -> {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    gridItems.chunked(3).forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            rowItems.forEach { gridItem ->
+                                RetroGameActivityGridTile(
+                                    gridItem = gridItem,
+                                    isOwner = isOwner,
+                                    onOpenItem = onOpenItem,
+                                    onDeletePost = onDeletePost,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            repeat(3 - rowItems.size) {
+                                Spacer(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .aspectRatio(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            !isLoading -> RetroGameEmptyState("No image or video posts yet")
+        }
+    }
+}
+
+@Composable
+private fun RetroGameActivityGridTile(
+    gridItem: RetroGameActivityGridItem,
+    isOwner: Boolean,
+    onOpenItem: (FeedItem) -> Unit,
+    onDeletePost: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val item = gridItem.item
+
+    Box(
+        modifier = modifier
+            .aspectRatio(1f)
+            .background(Color.White.copy(alpha = 0.70f))
+            .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+            .clickable { onOpenItem(item) }
+    ) {
+        if (gridItem.thumbnailUrl != null) {
+            AsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(gridItem.thumbnailUrl)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = if (gridItem.isVideo) "Video thumbnail" else "Post thumbnail",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else if (gridItem.defaultVideoId != null) {
+            DefaultPostVideoPlayer(
+                defaultVideoId = gridItem.defaultVideoId,
+                modifier = Modifier.fillMaxSize(),
+                reduceAnimations = true,
+                accentColor = RetroGameRed,
+                height = null,
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(RetroGameYellow.copy(alpha = 0.45f))
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                BasicText(
+                    text = when (item.contentType) {
+                        "article" -> "ARTICLE"
+                        "short_video" -> "REEL"
+                        else -> "POST"
+                    },
+                    style = TextStyle(RetroGameRed, 9.sp, FontWeight.Black, letterSpacing = 0.6.sp)
+                )
+                BasicText(
+                    text = item.title?.takeIf { it.isNotBlank() } ?: item.content,
+                    style = TextStyle(RetroGameInk, 12.sp, FontWeight.Black, lineHeight = 14.sp),
+                    maxLines = 5,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.22f),
+                        0.55f to Color.Transparent,
+                        1f to Color.Black.copy(alpha = 0.28f)
+                    )
+                )
+        )
+
+        if (gridItem.mediaCount > 1) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .background(RetroGameYellow)
+                    .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                    .padding(5.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_image),
+                    contentDescription = "Multiple media",
+                    modifier = Modifier.size(14.dp),
+                    colorFilter = ColorFilter.tint(RetroGameInk)
+                )
+            }
+        }
+
+    }
+}
+
+@Composable
+private fun RetroGameActivityFeedLoadingSection() {
+    RetroGameSection(title = "Loading") {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+                .background(Color.White.copy(alpha = 0.70f))
+                .padding(vertical = 18.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                strokeWidth = 2.dp,
+                color = RetroGameRed
             )
         }
     }
 }
 
+private data class RetroGameActivityGridItem(
+    val item: FeedItem,
+    val thumbnailUrl: String?,
+    val mediaCount: Int,
+    val isVideo: Boolean,
+    val defaultVideoId: String?
+)
+
+private fun retroGameActivityGridItemFor(item: FeedItem): RetroGameActivityGridItem? {
+    val imageUrls = item.images.orEmpty().filter { it.isNotBlank() }
+    val mediaUrls = item.mediaUrls.orEmpty().filter { it.isNotBlank() }
+    val mediaItems = when {
+        imageUrls.isNotEmpty() -> imageUrls
+        mediaUrls.isNotEmpty() -> mediaUrls
+        else -> emptyList()
+    }
+    val hasDefaultVideo = findDefaultPostVideo(item.defaultVideoId) != null
+    val isVideo =
+        item.contentType == "short_video" ||
+            item.postType?.equals("VIDEO", ignoreCase = true) == true ||
+            item.entityType?.equals("reel", ignoreCase = true) == true ||
+            !item.videoUrl.isNullOrBlank() ||
+            !item.videoThumbnail.isNullOrBlank() ||
+            hasDefaultVideo
+    val thumbnailUrl = when {
+        !item.videoThumbnail.isNullOrBlank() -> item.videoThumbnail
+        mediaItems.isNotEmpty() -> mediaItems.first()
+        !item.celebrationGifUrl.isNullOrBlank() -> item.celebrationGifUrl
+        else -> null
+    }
+
+    return RetroGameActivityGridItem(
+        item = item,
+        thumbnailUrl = thumbnailUrl,
+        mediaCount = mediaItems.size.coerceAtLeast(if (isVideo || thumbnailUrl != null) 1 else 0),
+        isVideo = isVideo,
+        defaultVideoId = item.defaultVideoId?.takeIf { hasDefaultVideo }
+    )
+}
+
+private fun retroCompactDate(value: String?): String =
+    value
+        ?.takeIf { it.isNotBlank() }
+        ?.take(10)
+        ?.replace("-", ".")
+        ?: "NOW"
+
+private fun retroDateRange(startDate: String?, endDate: String?, isCurrent: Boolean): String {
+    val start = retroCompactDate(startDate)
+    val end = if (isCurrent) "PRESENT" else retroCompactDate(endDate)
+    return "$start - $end"
+}
+
+@Composable
+private fun RetroGameButton(
+    label: String,
+    background: Color,
+    content: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .height(40.dp)
+            .retroGamePanel(background)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            label,
+            style = TextStyle(content, 13.sp, FontWeight.Black),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun RetroGameLinkButton(
+    label: String,
+    url: String?,
+    background: Color = Color.White,
+    modifier: Modifier = Modifier,
+    onClick: (String?) -> Unit
+) {
+    Box(
+        modifier = modifier
+            .height(34.dp)
+            .retroGamePanel(if (url.isNullOrBlank()) Color(0xFFE8E2D4) else background)
+            .clickable(enabled = !url.isNullOrBlank()) { onClick(url) },
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            label,
+            style = TextStyle(
+                color = RetroGameInk.copy(alpha = if (url.isNullOrBlank()) 0.45f else 1f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Black
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun RowScope.RetroGameStatCell(
+    value: String,
+    label: String,
+    modifier: Modifier = Modifier,
+    background: Color = Color.White.copy(alpha = 0.70f),
+    onClick: (() -> Unit)? = null
+) {
+    Column(
+        modifier = modifier
+            .height(80.dp)
+            .background(background)
+            .border(1.dp, RetroGameInk, RoundedCornerShape(0.dp))
+            .clickable(enabled = onClick != null) { onClick?.invoke() }
+            .padding(horizontal = 4.dp, vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        BasicText(value, style = TextStyle(RetroGameInk, 22.sp, FontWeight.Black))
+        Spacer(Modifier.height(4.dp))
+        BasicText(
+            label,
+            style = TextStyle(RetroGameInk, 9.sp, FontWeight.Black, letterSpacing = 0.7.sp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+private fun Modifier.retroGamePanel(background: Color): Modifier =
+    this
+        .drawBehind {
+            val shadowOffset = 4.dp.toPx()
+            drawRect(
+                color = RetroGameInk,
+                topLeft = Offset(shadowOffset, shadowOffset),
+                size = size
+            )
+        }
+        .background(background)
+        .border(2.dp, RetroGameInk, RoundedCornerShape(0.dp))
+
 // ==================== Profile Header ====================
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun ProfileHeader(
     user: ProfileUser,
     stats: ProfileStats,
@@ -1016,11 +3631,14 @@ private fun ProfileHeader(
     isGlassTheme: Boolean,
     isDarkTheme: Boolean,
     isOwner: Boolean,
+    showLocation: Boolean,
     connectionStatus: String,
     isFollowing: Boolean,
     isFollowedBy: Boolean,
     connectionActionInProgress: Boolean,
     followActionInProgress: Boolean,
+    isProfileSaved: Boolean,
+    profileSaveActionInProgress: Boolean,
     mutualConnections: List<MutualConnection>,
     mutualConnectionsCount: Int,
     isUploadingAvatar: Boolean = false,
@@ -1032,38 +3650,56 @@ private fun ProfileHeader(
     onRejectRequest: () -> Unit,
     onRemoveConnection: () -> Unit,
     onToggleFollow: () -> Unit,
+    onToggleProfileSave: () -> Unit,
     onOpenConnections: () -> Unit,
     onOpenFollowers: () -> Unit,
     onMessage: (String) -> Unit,
+    showStartConversation: Boolean,
+    isPreparingConversationStarter: Boolean,
+    onStartConversation: (String) -> Unit,
+    onOpenMutualProfile: ((String) -> Unit)? = null,
     onUploadAvatar: (ByteArray) -> Unit = {},
-    onUploadBanner: (ByteArray) -> Unit = {}
+    onUploadBanner: (ByteArray) -> Unit = {},
+    onReportUser: () -> Unit = {},
+    onBlockUser: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val profileFrameEnabled by SettingsPreferences.profileFrameEnabled(context).collectAsState(initial = false)
-    val reduceAnimations by SettingsPreferences.reduceAnimations(context).collectAsState(initial = false)
     var showShareMenu by remember { mutableStateOf(false) }
+    var shareMenuAnchorBounds by remember { mutableStateOf<Rect?>(null) }
+    val profileMenuAppearance = currentVormexAppearance(
+        fallbackThemeMode = when {
+            isGlassTheme -> VormexThemeMode.Glass.key
+            isDarkTheme -> VormexThemeMode.Dark.key
+            else -> VormexThemeMode.Light.key
+        }
+    )
+    val profileMenuContainerColor = profileMenuAppearance.overlayColor
+    val profileMenuContentColor = profileMenuAppearance.contentColor
+    val profileMenuMutedContentColor = profileMenuAppearance.mutedContentColor
+    val profileMenuDangerColor = if (profileMenuAppearance.isDarkTheme) Color(0xFFF87171) else Color(0xFFDC2626)
+    val profileSaveMenuColor = if (isProfileSaved) accentColor else profileMenuContentColor
+    val profileBodySurfaceColor = profileMenuAppearance.cardColor
+    val profileBodyContentColor = profileMenuAppearance.contentColor
+    val profileBodyMutedContentColor = profileMenuAppearance.mutedContentColor
+    val profileBodySubtleColor = if (isGlassTheme) {
+        profileMenuAppearance.controlColor
+    } else {
+        profileMenuAppearance.subtleColor
+    }
+    val profileBodyBorderColor = profileMenuAppearance.cardBorderColor
+    val profileAvatarRingColor = profileMenuAppearance.cardColor
     
     // Image editor state
     var showAvatarEditor by remember { mutableStateOf(false) }
     var showBannerEditor by remember { mutableStateOf(false) }
+    var showAvatarPreview by remember { mutableStateOf(false) }
     var selectedImageBytes by remember { mutableStateOf<ByteArray?>(null) }
     
     // Cache key to force image refresh
     var avatarCacheKey by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var bannerCacheKey by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    val hasAnimatedProfileFrame = isAnimatedProfileFrame(user.profileRing)
-    val hasProfileRing = !user.profileRing.isNullOrBlank()
-    val showProfileFrame = if (isOwner) profileFrameEnabled || hasAnimatedProfileFrame else hasAnimatedProfileFrame
-    val avatarContainerSize = if (hasProfileRing) 92.dp else 88.dp
-    val avatarOuterSize = if (showProfileFrame) 164.dp else avatarContainerSize
-    val avatarImageSize = when {
-        showProfileFrame -> 86.dp
-        hasProfileRing -> 84.dp
-        else -> 88.dp
-    }
-    val avatarOffsetX = if (showProfileFrame) 10.dp else 0.dp
-    val isCurrentlyOnline = isProfileCurrentlyOnline(user, stats)
-    val presenceLabel = buildProfilePresenceLabel(user, stats, isOwner)
+    val avatarContainerSize = 104.dp
+    val bannerImageUrl = user.bannerImageUrl?.takeIf { it.isNotBlank() }
     
     // Image pickers
     val avatarPicker = rememberLauncherForActivityResult(
@@ -1131,32 +3767,19 @@ private fun ProfileHeader(
             }
         )
     }
+
+    if (showAvatarPreview) {
+        ProfileAvatarPreviewDialog(
+            user = user,
+            avatarCacheKey = avatarCacheKey,
+            onDismiss = { showAvatarPreview = false }
+        )
+    }
     
     Box(
         Modifier
             .fillMaxWidth()
-            .then(
-                when {
-                    isGlassTheme -> Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { RoundedRectangle(24f.dp) },
-                        effects = {
-                            vibrancy()
-                            blur(16f.dp.toPx())
-                            lens(8f.dp.toPx(), 16f.dp.toPx())
-                        },
-                        onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = 0.12f))
-                        }
-                    )
-                    isDarkTheme -> Modifier
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(Color(0xFF1E1E1E))
-                    else -> Modifier
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(Color.White)
-                }
-            )
+            .background(profileMenuAppearance.cardColor)
     ) {
         Column {
             // Banner
@@ -1164,40 +3787,17 @@ private fun ProfileHeader(
                 Modifier
                     .fillMaxWidth()
                     .height(140.dp)
-                    .then(
-                        if (user.bannerImageUrl != null)
-                            Modifier.background(Color.Transparent)
-                        else when {
-                            isGlassTheme -> Modifier.drawBackdrop(
-                                backdrop = backdrop,
-                                shape = { RoundedRectangle(0f.dp) },
-                                effects = {
-                                    vibrancy()
-                                    blur(20f.dp.toPx())
-                                    lens(10f.dp.toPx(), 20f.dp.toPx())
-                                },
-                                onDrawSurface = {
-                                    drawRect(
-                                        Brush.verticalGradient(
-                                            listOf(accentColor.copy(alpha = 0.3f), Color.White.copy(alpha = 0.08f))
-                                        )
-                                    )
-                                }
-                            )
-                            isDarkTheme -> Modifier.background(
-                                Brush.verticalGradient(
-                                    listOf(accentColor.copy(alpha = 0.4f), Color(0xFF2D2D2D))
-                                )
-                            )
-                            else -> Modifier.background(
-                                Brush.verticalGradient(
-                                    listOf(accentColor.copy(alpha = 0.3f), Color(0xFFF0F0F0))
-                                )
-                            )
-                        }
-                    )
+                    .background(Color.Transparent)
             ) {
-                user.bannerImageUrl?.let { url ->
+                Image(
+                    painter = painterResource(R.drawable.profile_default_banner_vx),
+                    contentDescription = "Default banner",
+                    contentScale = ContentScale.Crop,
+                    alignment = androidx.compose.ui.BiasAlignment(horizontalBias = 0.65f, verticalBias = 0f),
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                bannerImageUrl?.let { url ->
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(url)
@@ -1210,7 +3810,7 @@ private fun ProfileHeader(
                         modifier = Modifier.fillMaxSize()
                     )
                 }
-                
+
                 // Edit cover button (owner only)
                 if (isOwner) {
                     Box(
@@ -1251,12 +3851,17 @@ private fun ProfileHeader(
                 }
             }
             
-            Column(Modifier.padding(horizontal = 16.dp)) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .background(profileBodySurfaceColor)
+                    .padding(horizontal = 16.dp)
+            ) {
                 // Avatar Row
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .offset(y = (-36).dp),
+                        .offset(y = (-54).dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.Bottom
                 ) {
@@ -1264,72 +3869,59 @@ private fun ProfileHeader(
                     Box(
                         modifier = Modifier
                             .size(avatarContainerSize)
-                            .offset(x = avatarOffsetX)
+                            .clickable { showAvatarPreview = true }
                             .graphicsLayer { clip = false },
                         contentAlignment = Alignment.Center
                     ) {
-                        // Profile ring
-                        if (!showProfileFrame && hasProfileRing) {
-                            Box(
-                                Modifier
-                                    .size(92.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        Brush.sweepGradient(
-                                            listOf(
-                                                Color(0xFFFF6B6B),
-                                                Color(0xFFFFE66D),
-                                                Color(0xFF4ECDC4),
-                                                Color(0xFF9B59B6),
-                                                Color(0xFFFF6B6B)
-                                            )
-                                        )
-                                    )
-                            )
-                        }
-                        
                         Box(
                             Modifier
-                                .size(avatarImageSize)
+                                .size(avatarContainerSize)
+                                .shadow(
+                                    elevation = 5.dp,
+                                    shape = CircleShape,
+                                    clip = false,
+                                    ambientColor = Color.Black.copy(alpha = 0.14f),
+                                    spotColor = Color.Black.copy(alpha = 0.18f)
+                                )
                                 .clip(CircleShape)
-                                .background(accentColor.copy(alpha = 0.8f)),
+                                .background(profileAvatarRingColor)
+                                .border(1.dp, profileBodyBorderColor, CircleShape)
+                                .padding(6.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (!user.avatar.isNullOrEmpty()) {
-                                AsyncImage(
-                                    model = ImageRequest.Builder(context)
-                                        .data(user.avatar)
-                                        .memoryCacheKey("avatar_${user.id}_$avatarCacheKey")
-                                        .diskCachePolicy(CachePolicy.DISABLED)
-                                        .crossfade(true)
-                                        .build(),
-                                    contentDescription = "Avatar",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            } else {
-                                val initials = user.name
-                                    .split(" ")
-                                    .mapNotNull { it.firstOrNull()?.uppercase() }
-                                    .take(2)
-                                    .joinToString("")
-                                BasicText(
-                                    initials,
-                                    style = TextStyle(Color.White, 28.sp, FontWeight.Bold)
-                                )
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .clip(CircleShape)
+                                    .background(accentColor.copy(alpha = 0.8f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                val profileImageUrl = user.profileImageUrl()
+                                if (profileImageUrl != null) {
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(context)
+                                            .data(profileImageUrl)
+                                            .memoryCacheKey("avatar_${user.id}_$avatarCacheKey")
+                                            .diskCachePolicy(CachePolicy.DISABLED)
+                                            .crossfade(true)
+                                            .build(),
+                                        contentDescription = "Avatar",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    val initials = user.name
+                                        .split(" ")
+                                        .mapNotNull { it.firstOrNull()?.uppercase() }
+                                        .take(2)
+                                        .joinToString("")
+                                    BasicText(
+                                        initials,
+                                        style = TextStyle(Color.White, 28.sp, FontWeight.Bold)
+                                    )
+                                }
                             }
-                            
                         }
-
-                        if (showProfileFrame) {
-                            ProfileFrameLottie(
-                                modifier = Modifier
-                                    .requiredSize(avatarOuterSize)
-                                    .graphicsLayer { clip = false },
-                                isPlaying = !reduceAnimations
-                            )
-                        }
-                        
                     }
                     
                     // Action buttons
@@ -1382,79 +3974,187 @@ private fun ProfileHeader(
                             Box {
                                 Box(
                                     Modifier
+                                        .size(36.dp)
                                         .clip(CircleShape)
-                                        .background(contentColor.copy(alpha = 0.1f))
-                                        .clickable { showShareMenu = true }
-                                        .padding(10.dp)
+                                        .background(profileBodySubtleColor)
+                                        .onGloballyPositioned { shareMenuAnchorBounds = it.boundsInWindow() }
+                                        .clickable {
+                                            showShareMenu = true
+                                        }
+                                        .padding(8.dp),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    BasicText("↗", style = TextStyle(contentColor, 16.sp))
+                                    Image(
+                                        painter = painterResource(R.drawable.ic_more),
+                                        contentDescription = "More options",
+                                        modifier = Modifier.size(20.dp),
+                                        colorFilter = ColorFilter.tint(profileBodyContentColor)
+                                    )
                                 }
-                                
-                                DropdownMenu(
-                                    expanded = showShareMenu,
-                                    onDismissRequest = { showShareMenu = false }
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { BasicText("Copy profile link", style = TextStyle(contentColor)) },
-                                        onClick = {
-                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                            clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
-                                            showShareMenu = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { BasicText("Share profile", style = TextStyle(contentColor)) },
-                                        onClick = {
-                                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                                type = "text/plain"
-                                                putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
+
+                                if (isGlassTheme) {
+                                    GlassDropdownMenu(
+                                        expanded = showShareMenu,
+                                        onDismissRequest = { showShareMenu = false },
+                                        backdrop = backdrop,
+                                        contentColor = profileMenuContentColor,
+                                        anchorBounds = shareMenuAnchorBounds
+                                    ) {
+                                        GlassMenuItem(
+                                            onClick = {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
+                                                showShareMenu = false
+                                            },
+                                            contentColor = profileMenuContentColor,
+                                            text = "Copy profile link"
+                                        )
+                                        GlassMenuItem(
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
+                                                }
+                                                context.startActivity(Intent.createChooser(intent, "Share profile"))
+                                                showShareMenu = false
+                                            },
+                                            contentColor = profileMenuContentColor,
+                                            text = "Share profile"
+                                        )
+                                    }
+                                } else {
+                                    DropdownMenu(
+                                        expanded = showShareMenu,
+                                        onDismissRequest = { showShareMenu = false },
+                                        containerColor = profileMenuContainerColor
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { BasicText("Copy profile link", style = TextStyle(profileMenuContentColor)) },
+                                            onClick = {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
+                                                showShareMenu = false
                                             }
-                                            context.startActivity(Intent.createChooser(intent, "Share profile"))
-                                            showShareMenu = false
-                                        }
-                                    )
+                                        )
+                                        DropdownMenuItem(
+                                            text = { BasicText("Share profile", style = TextStyle(profileMenuContentColor)) },
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
+                                                }
+                                                context.startActivity(Intent.createChooser(intent, "Share profile"))
+                                                showShareMenu = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         } else {
-                            // Message button
-                            Box(
+                            val primaryActionText = when {
+                                isPreparingConversationStarter -> "Writing..."
+                                showStartConversation -> "Start conversation"
+                                else -> "Message"
+                            }
+                            val primaryActionIcon = if (showStartConversation) R.drawable.vormex_logo else R.drawable.ic_message
+                            val startConversationOrange = Color(0xFFFF8A3D)
+                            val startConversationDeepOrange = if (isDarkTheme) Color(0xFFFFB071) else Color(0xFF9A3412)
+                            val startConversationShape = RoundedCornerShape(24.dp)
+                            val primaryActionBackground = if (showStartConversation) {
                                 Modifier
-                                    .clip(RoundedCornerShape(20.dp))
-                                    .then(
-                                        when {
-                                            isGlassTheme -> Modifier.drawBackdrop(
-                                                backdrop = backdrop,
-                                                shape = { RoundedRectangle(20f.dp) },
-                                                effects = {
-                                                    vibrancy()
-                                                    blur(12f.dp.toPx())
-                                                    lens(6f.dp.toPx(), 12f.dp.toPx())
-                                                },
-                                                onDrawSurface = {
-                                                    drawRect(Color.White.copy(alpha = 0.15f))
-                                                }
-                                            )
-                                            isDarkTheme -> Modifier.background(Color.White.copy(alpha = 0.1f))
-                                            else -> Modifier.background(Color.Black.copy(alpha = 0.05f))
+                                    .shadow(
+                                        elevation = if (isPreparingConversationStarter) 7.dp else 12.dp,
+                                        shape = startConversationShape,
+                                        ambientColor = Color(0xFF9A5725).copy(alpha = if (isDarkTheme) 0.38f else 0.22f)
+                                    )
+                                    .background(
+                                        brush = Brush.linearGradient(
+                                            colors = if (isDarkTheme) {
+                                                listOf(Color(0xFF301A10), Color(0xFF482312), Color(0xFF6B2E12))
+                                            } else {
+                                                listOf(Color(0xFFFFFBF6), Color(0xFFFFE4C7), Color(0xFFFFB071))
+                                            }
+                                        ),
+                                        shape = startConversationShape
+                                    )
+                                    .border(
+                                        width = 1.dp,
+                                        color = startConversationOrange.copy(alpha = if (isPreparingConversationStarter) 0.28f else 0.48f),
+                                        shape = startConversationShape
+                                    )
+                            } else {
+                                when {
+                                    isGlassTheme -> Modifier.drawBackdrop(
+                                        backdrop = backdrop,
+                                        shape = { RoundedRectangle(20f.dp) },
+                                        effects = {
+                                            vibrancy()
+                                            blur(12f.dp.toPx())
+                                            lens(6f.dp.toPx(), 12f.dp.toPx())
+                                        },
+                                        onDrawSurface = {
+                                            drawRect(Color.White.copy(alpha = 0.15f))
                                         }
                                     )
-                                    .clickable { onMessage(user.id) }
-                                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                                    isDarkTheme -> Modifier.background(profileBodySubtleColor)
+                                    else -> Modifier.background(profileBodySubtleColor)
+                                }
+                            }
+                            val primaryActionContentColor = if (showStartConversation) startConversationDeepOrange else profileBodyContentColor
+                            val primaryActionShape = if (showStartConversation) startConversationShape else RoundedCornerShape(20.dp)
+                            val primaryActionPreBackgroundClip =
+                                if (showStartConversation) Modifier else Modifier.clip(primaryActionShape)
+                            val primaryActionPostBackgroundClip =
+                                if (showStartConversation) Modifier.clip(primaryActionShape) else Modifier
+
+                            // Message / Vormex opener button
+                            Box(
+                                Modifier
+                                    .then(primaryActionPreBackgroundClip)
+                                    .then(primaryActionBackground)
+                                    .then(primaryActionPostBackgroundClip)
+                                    .clickable(enabled = !isPreparingConversationStarter) {
+                                        if (showStartConversation) {
+                                            onStartConversation(user.id)
+                                        } else {
+                                            onMessage(user.id)
+                                        }
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Image(
-                                        painter = painterResource(R.drawable.ic_message),
-                                        contentDescription = "Message",
-                                        modifier = Modifier.size(16.dp),
-                                        colorFilter = ColorFilter.tint(contentColor)
-                                    )
+                                    if (isPreparingConversationStarter) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            color = primaryActionContentColor,
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Image(
+                                            painter = painterResource(primaryActionIcon),
+                                            contentDescription = primaryActionText,
+                                            modifier = if (showStartConversation) {
+                                                Modifier
+                                                    .size(30.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color.White.copy(alpha = if (isDarkTheme) 0.14f else 0.82f))
+                                                    .border(1.dp, startConversationOrange.copy(alpha = 0.26f), CircleShape)
+                                                    .padding(3.dp)
+                                            } else {
+                                                Modifier.size(16.dp)
+                                            },
+                                            colorFilter = if (showStartConversation) null else ColorFilter.tint(primaryActionContentColor)
+                                        )
+                                    }
                                     BasicText(
-                                        "Message",
-                                        style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold)
+                                        primaryActionText,
+                                        style = TextStyle(primaryActionContentColor, 14.sp, FontWeight.SemiBold),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -1479,187 +4179,415 @@ private fun ProfileHeader(
                                                         drawRect(Color.White.copy(alpha = 0.15f))
                                                     }
                                                 )
-                                                isDarkTheme -> Modifier.background(Color.White.copy(alpha = 0.1f))
-                                                else -> Modifier.background(Color.Black.copy(alpha = 0.05f))
+                                                isDarkTheme -> Modifier.background(profileBodySubtleColor)
+                                                else -> Modifier.background(profileBodySubtleColor)
                                             }
                                         )
-                                        .clickable { showShareMenu = true },
+                                        .onGloballyPositioned { shareMenuAnchorBounds = it.boundsInWindow() }
+                                        .clickable {
+                                            showShareMenu = true
+                                        },
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Image(
                                         painter = painterResource(R.drawable.ic_more),
                                         contentDescription = "More options",
                                         modifier = Modifier.size(20.dp),
-                                        colorFilter = ColorFilter.tint(contentColor)
+                                        colorFilter = ColorFilter.tint(profileBodyContentColor)
                                     )
                                 }
                                 
-                                DropdownMenu(
-                                    expanded = showShareMenu,
-                                    onDismissRequest = { showShareMenu = false }
-                                ) {
-                                    DropdownMenuItem(
-                                        text = {
-                                            BasicText(
-                                                text = when (connectionStatus) {
-                                                    "connected" -> "Connection: Connected"
-                                                    "pending_sent" -> "Connection: Request sent"
-                                                    "pending_received" -> "Connection: Request received"
-                                                    else -> "Connection: Not connected"
-                                                },
-                                                style = TextStyle(contentColor.copy(alpha = 0.7f), 13.sp)
-                                            )
-                                        },
-                                        enabled = false,
-                                        onClick = {}
-                                    )
-                                    when (connectionStatus) {
-                                        "connected" -> {
-                                            DropdownMenuItem(
-                                                text = {
-                                                    BasicText(
-                                                        "Remove Connection",
-                                                        style = TextStyle(Color.Red, 14.sp)
-                                                    )
-                                                },
-                                                enabled = !connectionActionInProgress,
-                                                onClick = {
-                                                    onRemoveConnection()
-                                                    showShareMenu = false
-                                                }
-                                            )
+                                if (isGlassTheme) {
+                                    GlassDropdownMenu(
+                                        expanded = showShareMenu,
+                                        onDismissRequest = { showShareMenu = false },
+                                        backdrop = backdrop,
+                                        contentColor = profileMenuContentColor,
+                                        anchorBounds = shareMenuAnchorBounds
+                                    ) {
+                                        GlassMenuItem(
+                                            onClick = {},
+                                            contentColor = profileMenuContentColor,
+                                            text = when (connectionStatus) {
+                                                "connected" -> "Connection: Connected"
+                                                "pending_sent" -> "Connection: Request sent"
+                                                "pending_received" -> "Connection: Request received"
+                                                else -> "Connection: Not connected"
+                                            },
+                                            textColor = profileMenuMutedContentColor,
+                                            enabled = false
+                                        )
+                                        GlassMenuDivider(contentColor = profileMenuContentColor)
+                                        when (connectionStatus) {
+                                            "connected" -> {
+                                                GlassMenuItem(
+                                                    onClick = {
+                                                        onRemoveConnection()
+                                                        showShareMenu = false
+                                                    },
+                                                    contentColor = profileMenuContentColor,
+                                                    text = "Remove Connection",
+                                                    textColor = profileMenuDangerColor,
+                                                    enabled = !connectionActionInProgress
+                                                )
+                                            }
+                                            "pending_sent" -> {
+                                                GlassMenuItem(
+                                                    onClick = {
+                                                        onCancelRequest()
+                                                        showShareMenu = false
+                                                    },
+                                                    contentColor = profileMenuContentColor,
+                                                    text = "Cancel Request",
+                                                    enabled = !connectionActionInProgress
+                                                )
+                                            }
+                                            "pending_received" -> {
+                                                GlassMenuItem(
+                                                    onClick = {
+                                                        onAcceptRequest()
+                                                        showShareMenu = false
+                                                    },
+                                                    contentColor = profileMenuContentColor,
+                                                    text = "Accept Request",
+                                                    enabled = !connectionActionInProgress
+                                                )
+                                                GlassMenuItem(
+                                                    onClick = {
+                                                        onRejectRequest()
+                                                        showShareMenu = false
+                                                    },
+                                                    contentColor = profileMenuContentColor,
+                                                    text = "Ignore Request",
+                                                    enabled = !connectionActionInProgress
+                                                )
+                                            }
+                                            else -> {
+                                                GlassMenuItem(
+                                                    onClick = {
+                                                        onConnect()
+                                                        showShareMenu = false
+                                                    },
+                                                    contentColor = profileMenuContentColor,
+                                                    text = "Connect",
+                                                    enabled = !connectionActionInProgress
+                                                )
+                                            }
                                         }
-                                        "pending_sent" -> {
-                                            DropdownMenuItem(
-                                                text = {
-                                                    BasicText(
-                                                        "Cancel Request",
-                                                        style = TextStyle(contentColor, 14.sp)
-                                                    )
-                                                },
-                                                enabled = !connectionActionInProgress,
-                                                onClick = {
-                                                    onCancelRequest()
-                                                    showShareMenu = false
-                                                }
-                                            )
-                                        }
-                                        "pending_received" -> {
-                                            DropdownMenuItem(
-                                                text = {
-                                                    BasicText(
-                                                        "Accept Request",
-                                                        style = TextStyle(contentColor, 14.sp)
-                                                    )
-                                                },
-                                                enabled = !connectionActionInProgress,
-                                                onClick = {
-                                                    onAcceptRequest()
-                                                    showShareMenu = false
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = {
-                                                    BasicText(
-                                                        "Ignore Request",
-                                                        style = TextStyle(contentColor, 14.sp)
-                                                    )
-                                                },
-                                                enabled = !connectionActionInProgress,
-                                                onClick = {
-                                                    onRejectRequest()
-                                                    showShareMenu = false
-                                                }
-                                            )
-                                        }
-                                        else -> {
-                                            DropdownMenuItem(
-                                                text = {
-                                                    BasicText(
-                                                        "Connect",
-                                                        style = TextStyle(contentColor, 14.sp)
-                                                    )
-                                                },
-                                                enabled = !connectionActionInProgress,
-                                                onClick = {
-                                                    onConnect()
-                                                    showShareMenu = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                    // Follow option
-                                    DropdownMenuItem(
-                                        text = {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
+                                        GlassMenuItem(
+                                            onClick = {
+                                                onToggleFollow()
+                                                showShareMenu = false
+                                            },
+                                            contentColor = profileMenuContentColor,
+                                            leadingIcon = {
                                                 Image(
                                                     painter = painterResource(R.drawable.ic_users),
                                                     contentDescription = null,
                                                     modifier = Modifier.size(18.dp),
-                                                    colorFilter = ColorFilter.tint(contentColor)
+                                                    colorFilter = ColorFilter.tint(profileMenuContentColor)
                                                 )
-                                                BasicText(
-                                                    if (isFollowing) "Unfollow" else "Follow",
-                                                    style = TextStyle(contentColor, 14.sp)
+                                            },
+                                            text = if (isFollowing) "Unfollow" else "Follow",
+                                            enabled = !followActionInProgress
+                                        )
+                                        GlassMenuItem(
+                                            onClick = {
+                                                onToggleProfileSave()
+                                                showShareMenu = false
+                                            },
+                                            contentColor = profileMenuContentColor,
+                                            leadingIcon = {
+                                                Image(
+                                                    painter = painterResource(
+                                                        if (isProfileSaved) R.drawable.ic_bookmark else R.drawable.ic_bookmark_outline
+                                                    ),
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                    colorFilter = ColorFilter.tint(profileSaveMenuColor)
                                                 )
-                                            }
-                                        },
-                                        enabled = !followActionInProgress,
-                                        onClick = {
-                                            onToggleFollow()
-                                            showShareMenu = false
-                                        }
-                                    )
-                                    // Copy profile link
-                                    DropdownMenuItem(
-                                        text = {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
+                                            },
+                                            text = if (isProfileSaved) "Saved profile" else "Save profile",
+                                            textColor = profileSaveMenuColor,
+                                            enabled = !profileSaveActionInProgress
+                                        )
+                                        GlassMenuItem(
+                                            onClick = {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
+                                                showShareMenu = false
+                                            },
+                                            contentColor = profileMenuContentColor,
+                                            leadingIcon = {
                                                 Image(
                                                     painter = painterResource(R.drawable.ic_link),
                                                     contentDescription = null,
                                                     modifier = Modifier.size(18.dp),
-                                                    colorFilter = ColorFilter.tint(contentColor)
+                                                    colorFilter = ColorFilter.tint(profileMenuContentColor)
                                                 )
-                                                BasicText("Copy profile link", style = TextStyle(contentColor, 14.sp))
-                                            }
-                                        },
-                                        onClick = {
-                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                            clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
-                                            showShareMenu = false
-                                        }
-                                    )
-                                    // Share profile
-                                    DropdownMenuItem(
-                                        text = {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
+                                            },
+                                            text = "Copy profile link"
+                                        )
+                                        GlassMenuItem(
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
+                                                }
+                                                context.startActivity(Intent.createChooser(intent, "Share profile"))
+                                                showShareMenu = false
+                                            },
+                                            contentColor = profileMenuContentColor,
+                                            leadingIcon = {
                                                 Image(
                                                     painter = painterResource(R.drawable.ic_share),
                                                     contentDescription = null,
                                                     modifier = Modifier.size(18.dp),
-                                                    colorFilter = ColorFilter.tint(contentColor)
+                                                    colorFilter = ColorFilter.tint(profileMenuContentColor)
                                                 )
-                                                BasicText("Share profile", style = TextStyle(contentColor, 14.sp))
-                                            }
-                                        },
-                                        onClick = {
-                                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                                type = "text/plain"
-                                                putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
-                                            }
-                                            context.startActivity(Intent.createChooser(intent, "Share profile"))
-                                            showShareMenu = false
+                                            },
+                                            text = "Share profile"
+                                        )
+                                        if (!isOwner) {
+                                            GlassMenuDivider(contentColor = profileMenuContentColor)
+                                            GlassMenuItem(
+                                                onClick = {
+                                                    showShareMenu = false
+                                                    onReportUser()
+                                                },
+                                                contentColor = profileMenuContentColor,
+                                                text = "Report profile",
+                                                textColor = profileMenuDangerColor
+                                            )
+                                            GlassMenuItem(
+                                                onClick = {
+                                                    showShareMenu = false
+                                                    onBlockUser()
+                                                },
+                                                contentColor = profileMenuContentColor,
+                                                text = "Block user",
+                                                textColor = profileMenuDangerColor
+                                            )
                                         }
-                                    )
+                                    }
+                                } else {
+                                    DropdownMenu(
+                                        expanded = showShareMenu,
+                                        onDismissRequest = { showShareMenu = false },
+                                        containerColor = profileMenuContainerColor
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                BasicText(
+                                                    text = when (connectionStatus) {
+                                                        "connected" -> "Connection: Connected"
+                                                        "pending_sent" -> "Connection: Request sent"
+                                                        "pending_received" -> "Connection: Request received"
+                                                        else -> "Connection: Not connected"
+                                                    },
+                                                    style = TextStyle(profileMenuMutedContentColor, 13.sp)
+                                                )
+                                            },
+                                            enabled = false,
+                                            onClick = {}
+                                        )
+                                        when (connectionStatus) {
+                                            "connected" -> {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        BasicText(
+                                                            "Remove Connection",
+                                                            style = TextStyle(profileMenuDangerColor, 14.sp)
+                                                        )
+                                                    },
+                                                    enabled = !connectionActionInProgress,
+                                                    onClick = {
+                                                        onRemoveConnection()
+                                                        showShareMenu = false
+                                                    }
+                                                )
+                                            }
+                                            "pending_sent" -> {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        BasicText(
+                                                            "Cancel Request",
+                                                            style = TextStyle(profileMenuContentColor, 14.sp)
+                                                        )
+                                                    },
+                                                    enabled = !connectionActionInProgress,
+                                                    onClick = {
+                                                        onCancelRequest()
+                                                        showShareMenu = false
+                                                    }
+                                                )
+                                            }
+                                            "pending_received" -> {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        BasicText(
+                                                            "Accept Request",
+                                                            style = TextStyle(profileMenuContentColor, 14.sp)
+                                                        )
+                                                    },
+                                                    enabled = !connectionActionInProgress,
+                                                    onClick = {
+                                                        onAcceptRequest()
+                                                        showShareMenu = false
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        BasicText(
+                                                            "Ignore Request",
+                                                            style = TextStyle(profileMenuContentColor, 14.sp)
+                                                        )
+                                                    },
+                                                    enabled = !connectionActionInProgress,
+                                                    onClick = {
+                                                        onRejectRequest()
+                                                        showShareMenu = false
+                                                    }
+                                                )
+                                            }
+                                            else -> {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        BasicText(
+                                                            "Connect",
+                                                            style = TextStyle(profileMenuContentColor, 14.sp)
+                                                        )
+                                                    },
+                                                    enabled = !connectionActionInProgress,
+                                                    onClick = {
+                                                        onConnect()
+                                                        showShareMenu = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Image(
+                                                        painter = painterResource(R.drawable.ic_users),
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp),
+                                                        colorFilter = ColorFilter.tint(profileMenuContentColor)
+                                                    )
+                                                    BasicText(
+                                                        if (isFollowing) "Unfollow" else "Follow",
+                                                        style = TextStyle(profileMenuContentColor, 14.sp)
+                                                    )
+                                                }
+                                            },
+                                            enabled = !followActionInProgress,
+                                            onClick = {
+                                                onToggleFollow()
+                                                showShareMenu = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Image(
+                                                        painter = painterResource(
+                                                            if (isProfileSaved) R.drawable.ic_bookmark else R.drawable.ic_bookmark_outline
+                                                    ),
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                    colorFilter = ColorFilter.tint(profileSaveMenuColor)
+                                                )
+                                                    BasicText(
+                                                        if (isProfileSaved) "Saved profile" else "Save profile",
+                                                        style = TextStyle(profileSaveMenuColor, 14.sp, FontWeight.SemiBold)
+                                                    )
+                                                }
+                                            },
+                                            enabled = !profileSaveActionInProgress,
+                                            onClick = {
+                                                onToggleProfileSave()
+                                                showShareMenu = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Image(
+                                                        painter = painterResource(R.drawable.ic_link),
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp),
+                                                        colorFilter = ColorFilter.tint(profileMenuContentColor)
+                                                    )
+                                                    BasicText("Copy profile link", style = TextStyle(profileMenuContentColor, 14.sp))
+                                                }
+                                            },
+                                            onClick = {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", "https://vormex.com/@${user.username}"))
+                                                showShareMenu = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Image(
+                                                        painter = painterResource(R.drawable.ic_share),
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp),
+                                                        colorFilter = ColorFilter.tint(profileMenuContentColor)
+                                                    )
+                                                    BasicText("Share profile", style = TextStyle(profileMenuContentColor, 14.sp))
+                                                }
+                                            },
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(Intent.EXTRA_TEXT, "Check out ${user.name}'s profile on Vormex: https://vormex.com/@${user.username}")
+                                                }
+                                                context.startActivity(Intent.createChooser(intent, "Share profile"))
+                                                showShareMenu = false
+                                            }
+                                        )
+                                        if (!isOwner) {
+                                            DropdownMenuItem(
+                                                text = {
+                                                    BasicText(
+                                                        "Report profile",
+                                                        style = TextStyle(profileMenuDangerColor, 14.sp, FontWeight.SemiBold)
+                                                    )
+                                                },
+                                                onClick = {
+                                                    showShareMenu = false
+                                                    onReportUser()
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = {
+                                                    BasicText(
+                                                        "Block user",
+                                                        style = TextStyle(profileMenuDangerColor, 14.sp, FontWeight.SemiBold)
+                                                    )
+                                                },
+                                                onClick = {
+                                                    showShareMenu = false
+                                                    onBlockUser()
+                                                }
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1674,58 +4602,41 @@ private fun ProfileHeader(
                 ) {
                     BasicText(
                         user.name,
-                        style = TextStyle(contentColor, 22.sp, FontWeight.Bold)
+                        style = TextStyle(profileBodyContentColor, 22.sp, FontWeight.Bold)
                     )
-                    
-                    if (user.isOpenToOpportunities) {
-                        Box(
-                            Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(Color(0xFF22C55E).copy(alpha = 0.2f))
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            BasicText(
-                                "#OpenToWork",
-                                style = TextStyle(Color(0xFF22C55E), 12.sp, FontWeight.Medium)
-                            )
-                        }
+
+                    if (user.hasVerificationBadge()) {
+                        ProfileVerificationBadge(badgeStyle = user.verificationBadgeStyle())
+                    }
+                }
+
+                if (user.isOpenToOpportunities) {
+                    Box(
+                        Modifier
+                            .offset(y = (-20).dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color(0xFF22C55E).copy(alpha = 0.2f))
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        BasicText(
+                            "#OpenToWork",
+                            style = TextStyle(Color(0xFF22C55E), 12.sp, FontWeight.Medium)
+                        )
                     }
                 }
                 
                 // Username
                 BasicText(
                     "@${user.username}",
-                    style = TextStyle(contentColor.copy(alpha = 0.6f), 14.sp),
+                    style = TextStyle(profileBodyMutedContentColor, 14.sp),
                     modifier = Modifier.offset(y = (-20).dp)
                 )
-
-                Row(
-                    modifier = Modifier
-                        .offset(y = (-16).dp)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(
-                            if (isCurrentlyOnline) Color(0xFF22C55E).copy(alpha = 0.14f)
-                            else contentColor.copy(alpha = 0.08f)
-                        )
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    BasicText(
-                        presenceLabel,
-                        style = TextStyle(
-                            color = if (isCurrentlyOnline) Color(0xFF22C55E) else contentColor.copy(alpha = 0.7f),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    )
-                }
                 
                 // Headline
                 user.headline?.let { headline ->
                     BasicText(
                         headline,
-                        style = TextStyle(contentColor, 14.sp),
+                        style = TextStyle(profileBodyContentColor, 14.sp),
                         modifier = Modifier.offset(y = (-12).dp)
                     )
                 }
@@ -1735,18 +4646,18 @@ private fun ProfileHeader(
                     Modifier.offset(y = (-8).dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    user.location?.let { location ->
+                    if (showLocation) user.location?.let { location ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Image(
                                 painter = painterResource(R.drawable.ic_location),
                                 contentDescription = "Location",
                                 modifier = Modifier.size(14.dp),
-                                colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.7f))
+                                colorFilter = ColorFilter.tint(profileBodyMutedContentColor)
                             )
                             Spacer(Modifier.width(4.dp))
                             BasicText(
                                 location,
-                                style = TextStyle(contentColor.copy(alpha = 0.7f), 12.sp)
+                                style = TextStyle(profileBodyMutedContentColor, 12.sp)
                             )
                         }
                     }
@@ -1757,12 +4668,12 @@ private fun ProfileHeader(
                                 painter = painterResource(R.drawable.ic_education),
                                 contentDescription = "Education",
                                 modifier = Modifier.size(14.dp),
-                                colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.7f))
+                                colorFilter = ColorFilter.tint(profileBodyMutedContentColor)
                             )
                             Spacer(Modifier.width(4.dp))
                             BasicText(
                                 user.college,
-                                style = TextStyle(contentColor.copy(alpha = 0.7f), 12.sp)
+                                style = TextStyle(profileBodyMutedContentColor, 12.sp)
                             )
                         }
                     }
@@ -1778,7 +4689,8 @@ private fun ProfileHeader(
                             icon = "in",
                             label = "LinkedIn",
                             url = url,
-                            accentColor = accentColor
+                            accentColor = accentColor,
+                            showTextIcon = true
                         )
                     }
                     user.githubProfileUrl?.let { url ->
@@ -1786,7 +4698,7 @@ private fun ProfileHeader(
                             icon = "⌘",
                             label = "GitHub",
                             url = url,
-                            accentColor = contentColor
+                            accentColor = profileBodyContentColor
                         )
                     }
                     user.portfolioUrl?.let { url ->
@@ -1794,8 +4706,7 @@ private fun ProfileHeader(
                             icon = "",
                             label = "Portfolio",
                             url = url,
-                            accentColor = accentColor,
-                            iconRes = R.drawable.ic_link
+                            accentColor = accentColor
                         )
                     }
                 }
@@ -1809,27 +4720,27 @@ private fun ProfileHeader(
                     StatItem(
                         value = formatNumber(stats.connectionsCount),
                         label = "connections",
-                        contentColor = contentColor,
+                        contentColor = profileBodyContentColor,
                         onClick = onOpenConnections,
                         modifier = Modifier.weight(1f)
                     )
                     StatItem(
                         value = formatNumber(stats.followersCount),
                         label = "followers",
-                        contentColor = contentColor,
+                        contentColor = profileBodyContentColor,
                         onClick = onOpenFollowers,
                         modifier = Modifier.weight(1f)
                     )
                     StatItem(
                         value = formatNumber(stats.totalPosts),
                         label = "posts",
-                        contentColor = contentColor,
+                        contentColor = profileBodyContentColor,
                         modifier = Modifier.weight(1f)
                     )
                     StatItem(
                         value = formatNumber(stats.totalLikesReceived),
                         label = "likes",
-                        contentColor = contentColor,
+                        contentColor = profileBodyContentColor,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -1837,66 +4748,74 @@ private fun ProfileHeader(
                 ProfileGamificationRow(
                     stats = stats,
                     backdrop = backdrop,
-                    contentColor = contentColor,
+                    contentColor = profileBodyContentColor,
                     accentColor = accentColor,
                     isGlassTheme = isGlassTheme,
                     isDarkTheme = isDarkTheme
                 )
                 
-                // Mutual info (visitor only)
-                if (!isOwner && mutualConnectionsCount > 0) {
-                    Row(
-                        Modifier.padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                if (!isOwner && (mutualConnectionsCount > 0 || isFollowedBy)) {
+                    Column(
+                        modifier = Modifier.padding(vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Mutual avatars
-                        Row {
-                            mutualConnections.take(3).forEachIndexed { index, mutual ->
-                                Box(
-                                    Modifier
-                                        .offset(x = (-index * 8).dp)
-                                        .size(24.dp)
-                                        .clip(CircleShape)
-                                        .background(accentColor.copy(alpha = 0.8f)),
-                                    contentAlignment = Alignment.Center
+                        if (mutualConnectionsCount > 0) {
+                            BasicText(
+                                "$mutualConnectionsCount mutual connections",
+                                style = TextStyle(profileBodyMutedContentColor, 12.sp)
+                            )
+
+                            if (mutualConnections.isNotEmpty()) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    if (!mutual.avatar.isNullOrEmpty()) {
-                                        AsyncImage(
-                                            model = mutual.avatar,
-                                            contentDescription = null,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize()
+                                    mutualConnections.forEach { mutual ->
+                                        MutualConnectionChip(
+                                            mutual = mutual,
+                                            contentColor = profileBodyContentColor,
+                                            accentColor = accentColor,
+                                            onClick = onOpenMutualProfile?.let { callback ->
+                                                { callback(mutual.id) }
+                                            }
                                         )
-                                    } else {
-                                        BasicText(
-                                            mutual.name?.firstOrNull()?.uppercase() ?: "?",
-                                            style = TextStyle(Color.White, 10.sp, FontWeight.Bold)
-                                        )
+                                    }
+
+                                    val remainingMutuals =
+                                        (mutualConnectionsCount - mutualConnections.size).coerceAtLeast(0)
+                                    if (remainingMutuals > 0) {
+                                        Box(
+                                            Modifier
+                                                .clip(RoundedCornerShape(999.dp))
+                                                .background(profileBodySubtleColor)
+                                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                        ) {
+                                            BasicText(
+                                                "+$remainingMutuals more",
+                                                style = TextStyle(
+                                                    color = profileBodyMutedContentColor,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Medium
+                                                )
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                        
-                        Spacer(Modifier.width(8.dp))
-                        
-                        BasicText(
-                            "$mutualConnectionsCount mutual connections",
-                            style = TextStyle(contentColor.copy(alpha = 0.6f), 12.sp)
-                        )
-                    }
-                    
-                    // Follows you badge
-                    if (isFollowedBy) {
-                        Box(
-                            Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(contentColor.copy(alpha = 0.1f))
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            BasicText(
-                                "Follows you",
-                                style = TextStyle(contentColor.copy(alpha = 0.6f), 11.sp)
-                            )
+
+                        if (isFollowedBy) {
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(profileBodySubtleColor)
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                BasicText(
+                                    "Follows you",
+                                    style = TextStyle(profileBodyMutedContentColor, 11.sp)
+                                )
+                            }
                         }
                     }
                 }
@@ -1908,39 +4827,317 @@ private fun ProfileHeader(
 }
 
 @Composable
+private fun ProfileVerificationBadge(
+    badgeStyle: String?,
+    modifier: Modifier = Modifier
+) {
+    VerificationBadge(
+        verified = true,
+        badgeStyle = badgeStyle,
+        modifier = modifier,
+        size = VerificationBadgeSize.Large
+    )
+}
+
+@Composable
+private fun ProfileAvatarPreviewDialog(
+    user: ProfileUser,
+    avatarCacheKey: Long,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val profileUrl = remember(user.username) { "https://vormex.com/@${user.username}" }
+    val avatarUrl = user.profileImageUrl()
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 28.dp, start = 18.dp, end = 18.dp)
+                    .align(Alignment.TopCenter)
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.vormex_logo),
+                    contentDescription = "Vormex",
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .align(Alignment.Center)
+                )
+
+                ProfileAvatarPreviewIconButton(
+                    iconRes = R.drawable.ic_close,
+                    contentDescription = "Close",
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.CenterEnd)
+                )
+            }
+
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 24.dp, vertical = 96.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Box(
+                    Modifier
+                        .size(286.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.08f))
+                        .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (avatarUrl != null) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(avatarUrl)
+                                .memoryCacheKey("avatar_preview_${user.id}_$avatarCacheKey")
+                                .diskCachePolicy(CachePolicy.DISABLED)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = "${user.name} profile picture",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        BasicText(
+                            profileInitials(user.name),
+                            style = TextStyle(Color.White, 72.sp, FontWeight.Bold)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(22.dp))
+
+                BasicText(
+                    user.name,
+                    style = TextStyle(Color.White, 22.sp, FontWeight.Bold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                BasicText(
+                    "@${user.username}",
+                    style = TextStyle(Color.White.copy(alpha = 0.58f), 14.sp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 20.dp, vertical = 30.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ProfileAvatarPreviewActionButton(
+                    iconRes = R.drawable.ic_share,
+                    label = "Share",
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(
+                                Intent.EXTRA_TEXT,
+                                "Check out ${user.name}'s profile on Vormex: $profileUrl"
+                            )
+                        }
+                        context.startActivity(Intent.createChooser(intent, "Share profile"))
+                    }
+                )
+                ProfileAvatarPreviewActionButton(
+                    iconRes = R.drawable.ic_copy,
+                    label = "Copy",
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Profile URL", profileUrl))
+                        Toast.makeText(context, "Profile link copied", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileAvatarPreviewIconButton(
+    iconRes: Int,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier
+            .size(42.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.12f))
+            .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(iconRes),
+            contentDescription = contentDescription,
+            modifier = Modifier.size(18.dp),
+            colorFilter = ColorFilter.tint(Color.White)
+        )
+    }
+}
+
+@Composable
+private fun ProfileAvatarPreviewActionButton(
+    iconRes: Int,
+    label: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.White.copy(alpha = 0.13f))
+            .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Image(
+            painter = painterResource(iconRes),
+            contentDescription = label,
+            modifier = Modifier.size(18.dp),
+            colorFilter = ColorFilter.tint(Color.White)
+        )
+        Spacer(Modifier.width(8.dp))
+        BasicText(
+            label,
+            style = TextStyle(Color.White, 14.sp, FontWeight.SemiBold),
+            maxLines = 1
+        )
+    }
+}
+
+private fun profileInitials(name: String): String {
+    return name
+        .split(" ")
+        .mapNotNull { it.firstOrNull()?.uppercase() }
+        .take(2)
+        .joinToString("")
+        .ifBlank { "V" }
+}
+
+private fun ProfileUser.profileImageUrl(): String? {
+    return avatar?.takeIf { it.isNotBlank() }
+        ?: profileImage?.takeIf { it.isNotBlank() }
+}
+
+@Composable
+private fun MutualConnectionChip(
+    mutual: MutualConnection,
+    contentColor: Color,
+    accentColor: Color,
+    onClick: (() -> Unit)? = null
+) {
+    val label = mutual.name?.takeIf { it.isNotBlank() }
+        ?: mutual.username?.takeIf { it.isNotBlank() }?.let { "@$it" }
+        ?: "Vormex member"
+
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(contentColor.copy(alpha = 0.08f))
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(accentColor.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (!mutual.avatar.isNullOrBlank()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(mutual.avatar)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = label,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                BasicText(
+                    mutual.name?.firstOrNull()?.uppercase()
+                        ?: mutual.username?.firstOrNull()?.uppercase()
+                        ?: "?",
+                    style = TextStyle(accentColor, 11.sp, FontWeight.Bold)
+                )
+            }
+        }
+
+        BasicText(
+            label,
+            modifier = Modifier.widthIn(max = 132.dp),
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.84f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        VerificationBadge(
+            verified = mutual.hasVerificationBadge(),
+            badgeStyle = mutual.verificationBadgeStyle(),
+            size = VerificationBadgeSize.Micro
+        )
+    }
+}
+
+@Composable
 private fun SocialLinkChip(
     icon: String,
     label: String,
     url: String,
     accentColor: Color,
-    iconRes: Int? = null  // Optional drawable resource
+    showTextIcon: Boolean = false
 ) {
     val context = LocalContext.current
     
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(accentColor.copy(alpha = 0.15f))
+    Row(
+        modifier = Modifier
             .clickable {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                 context.startActivity(intent)
-            }
-            .padding(horizontal = 10.dp, vertical = 4.dp)
+            },
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (iconRes != null) {
-                Image(
-                    painter = painterResource(iconRes),
-                    contentDescription = label,
-                    modifier = Modifier.size(14.dp),
-                    colorFilter = ColorFilter.tint(accentColor)
-                )
-            } else {
-                BasicText(icon, style = TextStyle(accentColor, 12.sp, FontWeight.Bold))
-            }
+        if (showTextIcon && icon.isNotBlank()) {
+            BasicText(icon, style = TextStyle(accentColor, 12.sp, FontWeight.Bold))
             Spacer(Modifier.width(4.dp))
-            BasicText(label, style = TextStyle(accentColor, 12.sp))
         }
+        BasicText(
+            label,
+            style = TextStyle(accentColor, 12.sp, FontWeight.Medium)
+        )
     }
 }
 
@@ -2249,7 +5446,7 @@ private fun ProfilePeopleRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .clip(ProfileCardShape)
             .background(contentColor.copy(alpha = 0.06f))
             .then(
                 if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
@@ -2298,7 +5495,14 @@ private fun ProfilePeopleRow(
                     text = person.name ?: person.username ?: "Unknown member",
                     style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold),
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+
+                VerificationBadge(
+                    verified = person.hasVerificationBadge(),
+                    badgeStyle = person.verificationBadgeStyle(),
+                    size = VerificationBadgeSize.Small
                 )
 
                 if (person.isOnline) {
@@ -2806,61 +6010,6 @@ private fun formatNumber(num: Int): String {
     }
 }
 
-private const val PROFILE_PRESENCE_ONLINE_WINDOW_MS = 5 * 60 * 1000L
-
-private val profilePresenceTimestampPatterns = listOf(
-    "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-    "yyyy-MM-dd'T'HH:mm:ss'Z'",
-    "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
-    "yyyy-MM-dd'T'HH:mm:ssXXX",
-    "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'",
-    "yyyy-MM-dd HH:mm:ss"
-)
-
-private fun parseProfilePresenceMillis(raw: String?): Long? {
-    if (raw.isNullOrBlank()) return null
-    runCatching { Instant.parse(raw) }.getOrNull()?.toEpochMilli()?.let { return it }
-    runCatching { OffsetDateTime.parse(raw) }.getOrNull()?.toInstant()?.toEpochMilli()?.let { return it }
-    for (pattern in profilePresenceTimestampPatterns) {
-        runCatching {
-            SimpleDateFormat(pattern, Locale.US).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-                isLenient = true
-            }.parse(raw)?.time
-        }.getOrNull()?.let { return it }
-    }
-    runCatching { SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).parse(raw)?.time }
-        .getOrNull()?.let { return it }
-    return null
-}
-
-private fun isProfileCurrentlyOnline(user: ProfileUser, stats: ProfileStats): Boolean {
-    if (user.isOnline) return true
-    val lastSeenMillis = parseProfilePresenceMillis(user.lastActiveAt ?: stats.lastActiveDate)
-    return lastSeenMillis != null && (System.currentTimeMillis() - lastSeenMillis) < PROFILE_PRESENCE_ONLINE_WINDOW_MS
-}
-
-private fun buildProfilePresenceLabel(user: ProfileUser, stats: ProfileStats, isOwner: Boolean): String {
-    if (isProfileCurrentlyOnline(user, stats)) {
-        return if (isOwner) "Online now" else "Active now"
-    }
-
-    val lastSeenMillis = parseProfilePresenceMillis(user.lastActiveAt ?: stats.lastActiveDate)
-        ?: return if (isOwner) "Offline" else "Recently active"
-    val diffMs = (System.currentTimeMillis() - lastSeenMillis).coerceAtLeast(0L)
-    val minutes = diffMs / 60_000L
-
-    val elapsed = when {
-        minutes < 1L -> "just now"
-        minutes < 60L -> "${minutes}m ago"
-        minutes < 1_440L -> "${minutes / 60L}h ago"
-        minutes < 10_080L -> "${minutes / 1_440L}d ago"
-        else -> "recently"
-    }
-
-    return "Last active $elapsed"
-}
-
 // ==================== Loading (lightweight; avoids heavy shimmer + blur skeleton) ====================
 
 @Composable
@@ -2990,29 +6139,6 @@ private fun ProfileGamificationRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 10.dp)
-            .then(
-                when {
-                    isGlassTheme -> Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { RoundedRectangle(20f.dp) },
-                        effects = {
-                            vibrancy()
-                            blur(12f.dp.toPx())
-                            lens(6f.dp.toPx(), 12f.dp.toPx())
-                        },
-                        onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = 0.08f))
-                        }
-                    )
-                    isDarkTheme -> Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(Color.White.copy(alpha = 0.06f))
-                    else -> Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(Color.Black.copy(alpha = 0.035f))
-                }
-            )
-            .border(1.dp, contentColor.copy(alpha = 0.1f), RoundedCornerShape(20.dp))
     ) {
         Row(
             Modifier

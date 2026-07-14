@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -18,7 +18,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.catalog.linkedin.VerificationBadge
+import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
+import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.network.models.*
 
 /**
@@ -390,7 +394,14 @@ private fun CommentPreviewItem(
                 ) {
                     BasicText(
                         text = comment.author.name ?: "Unknown",
-                        style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold)
+                        style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold),
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    VerificationBadge(
+                        verified = comment.author.hasVerificationBadge(),
+                        badgeStyle = comment.author.verificationBadgeStyle(),
+                        size = VerificationBadgeSize.Small
                     )
                     BasicText(
                         text = formatTimeAgo(comment.createdAt),

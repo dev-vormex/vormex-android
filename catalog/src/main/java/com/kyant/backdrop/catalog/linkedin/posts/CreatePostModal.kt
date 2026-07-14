@@ -10,8 +10,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -36,6 +36,11 @@ import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.catalog.components.LiquidButton
+import com.kyant.backdrop.catalog.linkedin.VerificationBadge
+import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
+import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
+import com.kyant.backdrop.catalog.media.MediaReadSafety
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.shapes.RoundedRectangle
 
@@ -127,11 +132,13 @@ fun CreatePostModal(
         if (uris.isNotEmpty()) {
             val newBytes = uris.mapNotNull { uri ->
                 try {
-                    context.contentResolver.openInputStream(uri)?.use { stream ->
-                        val bytes = stream.readBytes()
-                        val filename = uri.lastPathSegment ?: "image.jpg"
-                        bytes to filename
-                    }
+                    MediaReadSafety.readMediaBytes(
+                        context = context,
+                        uri = uri,
+                        fallbackFileName = "image.jpg",
+                        maxBytes = MediaReadSafety.MaxPostImageBytes,
+                        label = "Image"
+                    )
                 } catch (e: Exception) {
                     null
                 }
@@ -146,12 +153,15 @@ fun CreatePostModal(
     ) { uri ->
         uri?.let {
             try {
-                context.contentResolver.openInputStream(it)?.use { stream ->
-                    val bytes = stream.readBytes()
-                    val filename = it.lastPathSegment ?: "video.mp4"
-                    videoUri = it
-                    videoBytes = bytes to filename
-                }
+                val pickedVideo = MediaReadSafety.readMediaBytes(
+                    context = context,
+                    uri = it,
+                    fallbackFileName = "video.mp4",
+                    maxBytes = MediaReadSafety.MaxPostVideoBytes,
+                    label = "Video"
+                )
+                videoUri = it
+                videoBytes = pickedVideo
             } catch (e: Exception) {
                 // Handle error
             }
@@ -163,12 +173,15 @@ fun CreatePostModal(
     ) { uri ->
         uri?.let {
             try {
-                context.contentResolver.openInputStream(it)?.use { stream ->
-                    val bytes = stream.readBytes()
-                    val filename = it.lastPathSegment ?: "cover.jpg"
-                    articleCoverUri = it
-                    articleCoverBytes = bytes to filename
-                }
+                val pickedCover = MediaReadSafety.readMediaBytes(
+                    context = context,
+                    uri = it,
+                    fallbackFileName = "cover.jpg",
+                    maxBytes = MediaReadSafety.MaxPostImageBytes,
+                    label = "Cover image"
+                )
+                articleCoverUri = it
+                articleCoverBytes = pickedCover
             } catch (e: Exception) {
                 // Handle error
             }
@@ -926,11 +939,24 @@ private fun MentionSuggestions(
                         }
                     }
                     
-                    Column {
-                        BasicText(
-                            text = user.name ?: "Unknown",
-                            style = TextStyle(contentColor, 14.sp, FontWeight.Medium)
-                        )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            BasicText(
+                                text = user.name ?: "Unknown",
+                                style = TextStyle(contentColor, 14.sp, FontWeight.Medium),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            VerificationBadge(
+                                verified = user.hasVerificationBadge(),
+                                badgeStyle = user.verificationBadgeStyle(),
+                                size = VerificationBadgeSize.Small
+                            )
+                        }
                         user.username?.let {
                             BasicText(
                                 text = "@$it",

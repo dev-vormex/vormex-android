@@ -6,11 +6,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
@@ -32,6 +33,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -46,7 +48,15 @@ import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.catalog.linkedin.VormexSurfaceTone
+import com.kyant.backdrop.catalog.linkedin.LikeHeartsEffect
+import com.kyant.backdrop.catalog.linkedin.SaveLottieEffect
+import com.kyant.backdrop.catalog.linkedin.DefaultPostVideoPlayer
+import com.kyant.backdrop.catalog.linkedin.findDefaultPostVideo
+import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.linkedin.vormexSurface
+import com.kyant.backdrop.catalog.linkedin.VerificationBadge
+import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.shapes.RoundedRectangle
 import kotlinx.coroutines.MainScope
@@ -83,7 +93,8 @@ fun PostCard(
     isLightTheme: Boolean = true
 ) {
     var showMenu by remember { mutableStateOf(false) }
-    var showDoubleTapHeart by remember { mutableStateOf(false) }
+    var likeEffectTrigger by remember(post.id) { mutableIntStateOf(0) }
+    var saveEffectTrigger by remember(post.id) { mutableIntStateOf(0) }
     // State for mention profile preview
     var showMentionPreview by remember { mutableStateOf(false) }
     var mentionUsername by remember { mutableStateOf("") }
@@ -92,41 +103,10 @@ fun PostCard(
     var showFullScreenVideo by remember { mutableStateOf(false) }
     var videoUrlToPlay by remember { mutableStateOf("") }
     val isOwner = currentUserId == post.authorId
-    
-    // Heart animation for double-tap
-    val heartScale = remember { Animatable(0f) }
-    val heartAlpha = remember { Animatable(0f) }
-    
-    LaunchedEffect(showDoubleTapHeart) {
-        if (showDoubleTapHeart) {
-            // Animate heart in
-            heartAlpha.snapTo(1f)
-            heartScale.animateTo(
-                targetValue = 1f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessLow
-                )
-            )
-            delay(600)
-            // Animate heart out
-            heartAlpha.animateTo(0f, tween(200))
-            heartScale.snapTo(0f)
-            showDoubleTapHeart = false
-        }
-    }
-    
+
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .vormexSurface(
-                backdrop = backdrop,
-                tone = VormexSurfaceTone.Card,
-                cornerRadius = 0.dp,
-                blurRadius = 20.dp,
-                lensRadius = 6.dp,
-                lensDepth = 12.dp
-            )
     ) {
         Column {
             // Header: Author info with menu (Instagram style - compact)
@@ -143,7 +123,7 @@ fun PostCard(
                 onReportClick = { onReportPost(post.id) },
                 onCopyLinkClick = { onCopyLink(post.id) }
             )
-            
+
             // Content with double-tap to like
             Box(
                 modifier = Modifier
@@ -152,8 +132,8 @@ fun PostCard(
                             onDoubleTap = {
                                 if (!post.isLiked) {
                                     onLike(post.id)
+                                    likeEffectTrigger++
                                 }
-                                showDoubleTapHeart = true
                             }
                         )
                     }
@@ -173,38 +153,31 @@ fun PostCard(
                         showFullScreenVideo = true
                     }
                 )
-                
-                // Double-tap heart overlay
-                if (showDoubleTapHeart) {
-                    BasicText(
-                        text = "❤️",
-                        style = TextStyle(fontSize = 80.sp),
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .scale(heartScale.value)
-                            .graphicsLayer { alpha = heartAlpha.value }
-                    )
-                }
             }
-            
+
             // Instagram-style action bar
             PostActionsInstagram(
                 post = post,
                 contentColor = contentColor,
                 accentColor = accentColor,
                 onLike = { onLike(post.id) },
+                onLikeEffect = { likeEffectTrigger++ },
                 onComment = { onComment(post.id) },
                 onShare = { onShare(post.id) },
-                onSave = { onSave(post.id) }
+                saveEffectTrigger = saveEffectTrigger,
+                onSave = {
+                    if (!post.isSaved) saveEffectTrigger++
+                    onSave(post.id)
+                }
             )
-            
+
             // Engagement stats (Instagram style - below actions)
             EngagementStatsInstagram(
                 post = post,
                 contentColor = contentColor,
                 onLikesClick = { onLikesClick(post.id) }
             )
-            
+
             // Text content below engagement (Instagram style)
             post.content?.let { content ->
                 if (content.isNotBlank() && post.type.uppercase() != "POLL") {
@@ -222,7 +195,7 @@ fun PostCard(
                     )
                 }
             }
-            
+
             // Comment preview
             if (post.commentsCount > 0) {
                 Box(
@@ -240,7 +213,7 @@ fun PostCard(
                     )
                 }
             }
-            
+
             // Timestamp (Instagram style)
             BasicText(
                 text = formatTimeAgo(post.createdAt).uppercase(),
@@ -252,8 +225,15 @@ fun PostCard(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
             )
         }
+
+        LikeHeartsEffect(
+            trigger = likeEffectTrigger,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .requiredSize(260.dp)
+        )
     }
-    
+
     // Full screen image viewer dialog
     if (showImageViewer && post.mediaUrls.isNotEmpty()) {
         androidx.compose.ui.window.Dialog(
@@ -272,7 +252,7 @@ fun PostCard(
             )
         }
     }
-    
+
     // Full screen video player dialog
     if (showFullScreenVideo && videoUrlToPlay.isNotEmpty()) {
         androidx.compose.ui.window.Dialog(
@@ -289,7 +269,7 @@ fun PostCard(
             )
         }
     }
-    
+
     // Mention profile preview popup (glass theme)
     if (showMentionPreview && mentionUsername.isNotEmpty()) {
         MentionProfilePreviewPopup(
@@ -298,7 +278,7 @@ fun PostCard(
             contentColor = contentColor,
             accentColor = accentColor,
             onDismiss = { showMentionPreview = false },
-            onViewProfile = { 
+            onViewProfile = {
                 showMentionPreview = false
                 onMentionClick(mentionUsername)
             }
@@ -336,7 +316,7 @@ private fun PostHeaderInstagram(
             .take(2)
             .joinToString("")
             .ifEmpty { "U" }
-        
+
         Box(
             modifier = Modifier
                 .size(40.dp)
@@ -378,9 +358,9 @@ private fun PostHeaderInstagram(
                 }
             }
         }
-        
+
         Spacer(modifier = Modifier.width(10.dp))
-        
+
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 BasicText(
@@ -390,9 +370,17 @@ private fun PostHeaderInstagram(
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold
                     ),
-                    modifier = Modifier.clickable(onClick = onProfileClick)
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .clickable(onClick = onProfileClick)
                 )
-                // Verified badge placeholder
+                VerificationBadge(
+                    verified = post.author.hasVerificationBadge(),
+                    badgeStyle = post.author.verificationBadgeStyle(),
+                    size = VerificationBadgeSize.Small
+                )
                 post.author.headline?.let {
                     Spacer(Modifier.width(4.dp))
                     BasicText(
@@ -414,7 +402,7 @@ private fun PostHeaderInstagram(
                 }
             }
         }
-        
+
         // Menu button
         Box {
             Box(
@@ -435,7 +423,7 @@ private fun PostHeaderInstagram(
                     )
                 )
             }
-            
+
             DropdownMenu(
                 expanded = showMenu,
                 onDismissRequest = { onMenuToggle(false) }
@@ -453,7 +441,7 @@ private fun PostHeaderInstagram(
                         onCopyLinkClick()
                     }
                 )
-                
+
                 if (isOwner) {
                     DropdownMenuItem(
                         text = {
@@ -468,7 +456,7 @@ private fun PostHeaderInstagram(
                             onEditClick()
                         }
                     )
-                    
+
                     DropdownMenuItem(
                         text = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -511,8 +499,10 @@ private fun PostActionsInstagram(
     contentColor: Color,
     accentColor: Color,
     onLike: () -> Unit,
+    onLikeEffect: () -> Unit = {},
     onComment: () -> Unit,
     onShare: () -> Unit,
+    saveEffectTrigger: Int = 0,
     onSave: () -> Unit
 ) {
     Row(
@@ -527,39 +517,35 @@ private fun PostActionsInstagram(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Like button with animation
-            var likePressed by remember { mutableStateOf(false) }
-            val likeScale by animateFloatAsState(
-                targetValue = if (likePressed) 0.7f else 1f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessHigh
-                ),
-                finishedListener = { likePressed = false },
-                label = "likeScale"
-            )
-            
             Box(
                 modifier = Modifier
                     .size(28.dp)
-                    .scale(likeScale)
-                    .clickable {
-                        likePressed = true
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        if (!post.isLiked) onLikeEffect()
                         onLike()
                     },
                 contentAlignment = Alignment.Center
             ) {
-                BasicText(
-                    text = if (post.isLiked) "❤️" else "🤍",
-                    style = TextStyle(fontSize = 24.sp)
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    BasicText(
+                        text = if (post.isLiked) "❤️" else "🤍",
+                        style = TextStyle(fontSize = 24.sp)
+                    )
+                }
             }
-            
+
             // Comment button
             Box(
                 modifier = Modifier
                     .size(28.dp)
-                    .clickable(onClick = onComment),
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onComment
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 BasicText(
@@ -567,12 +553,16 @@ private fun PostActionsInstagram(
                     style = TextStyle(fontSize = 22.sp)
                 )
             }
-            
+
             // Share button
             Box(
                 modifier = Modifier
                     .size(28.dp)
-                    .clickable(onClick = onShare),
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onShare
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 BasicText(
@@ -581,33 +571,29 @@ private fun PostActionsInstagram(
                 )
             }
         }
-        
+
         // Right: Save button
-        var savePressed by remember { mutableStateOf(false) }
-        val saveScale by animateFloatAsState(
-            targetValue = if (savePressed) 0.7f else 1f,
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessHigh
-            ),
-            finishedListener = { savePressed = false },
-            label = "saveScale"
-        )
-        
         Box(
             modifier = Modifier
                 .size(28.dp)
-                .scale(saveScale)
-                .clickable {
-                    savePressed = true
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) {
                     onSave()
                 },
             contentAlignment = Alignment.Center
         ) {
-            BasicText(
-                text = if (post.isSaved) "🔖" else "📑",
-                style = TextStyle(fontSize = 22.sp)
-            )
+            Box(contentAlignment = Alignment.Center) {
+                BasicText(
+                    text = if (post.isSaved) "🔖" else "📑",
+                    style = TextStyle(fontSize = 22.sp)
+                )
+                SaveLottieEffect(
+                    trigger = saveEffectTrigger,
+                    modifier = Modifier.requiredSize(72.dp)
+                )
+            }
         }
     }
 }
@@ -668,7 +654,7 @@ private fun PostCaptionInstagram(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val maxLines = if (expanded) Int.MAX_VALUE else 2
-    
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -683,10 +669,10 @@ private fun PostCaptionInstagram(
             // Parse content for color tags and mentions
             appendFormattedContent(content, contentColor)
         }
-        
+
         // Use ClickableText with gesture detection for mentions
         val layoutResult = remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
-        
+
         BasicText(
             text = annotatedString,
             style = TextStyle(
@@ -745,8 +731,9 @@ private fun PostContentInstagram(
     onImageClick: (String, Int) -> Unit,
     onVideoClick: (String) -> Unit = {}
 ) {
-    // Type-specific content
-    when (post.type.uppercase()) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // Type-specific content
+        when (post.type.uppercase()) {
         "IMAGE" -> {
             if (post.mediaUrls.isNotEmpty()) {
                 ImageCarouselInstagram(
@@ -856,6 +843,17 @@ private fun PostContentInstagram(
                 }
             }
         }
+        }
+
+        if (findDefaultPostVideo(post.defaultVideoId) != null) {
+            DefaultPostVideoPlayer(
+                defaultVideoId = post.defaultVideoId,
+                accentColor = accentColor,
+                height = null,
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 
@@ -875,7 +873,7 @@ private fun ImageCarouselInstagram(
     val spacing = 2.dp
     val displayImages = images.take(9)
     val extraCount = (images.size - 9).coerceAtLeast(0)
-    
+
     Box(
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -1050,7 +1048,7 @@ private fun ImageCarouselInstagram(
                             }
                         }
                     }
-                    
+
                     // Remaining images in rows of 3
                     if (displayImages.size > 3) {
                         val remainingImages = displayImages.drop(3)
@@ -1062,7 +1060,7 @@ private fun ImageCarouselInstagram(
                                 rowImages.forEachIndexed { colIndex, url ->
                                     val imageIndex = 3 + rowIndex * 3 + colIndex
                                     val isLastVisibleImage = imageIndex == 8 && extraCount > 0
-                                    
+
                                     Box(
                                         modifier = Modifier
                                             .weight(1f)
@@ -1074,7 +1072,7 @@ private fun ImageCarouselInstagram(
                                             modifier = Modifier.fillMaxSize(),
                                             onClick = { onImageClick(imageIndex) }
                                         )
-                                        
+
                                         // "+N" overlay for extra images
                                         if (isLastVisibleImage) {
                                             Box(
@@ -1164,7 +1162,7 @@ private fun VideoContentInstagram(
                     .background(Color.Black.copy(alpha = 0.1f))
             )
         }
-        
+
         // Play button overlay (smaller, more modern)
         Box(
             modifier = Modifier
@@ -1178,7 +1176,7 @@ private fun VideoContentInstagram(
                 style = TextStyle(Color.White, 20.sp)
             )
         }
-        
+
         // Duration badge
         duration?.let { dur ->
             val minutes = dur / 60
@@ -1218,7 +1216,7 @@ private fun PollContentInstagram(
     val showResults = hasVoted || showResultsBeforeVote
     val totalVotes = options.sumOf { it.votes }
     val isPollEnded = endsAt?.let { isPollExpired(it) } ?: false
-    
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1226,13 +1224,13 @@ private fun PollContentInstagram(
         options.forEach { option ->
             val isSelected = option.id == userVotedOptionId
             val percentage = if (totalVotes > 0) (option.votes.toFloat() / totalVotes * 100) else 0f
-            
+
             val animatedPercentage by animateFloatAsState(
                 targetValue = if (showResults) percentage / 100f else 0f,
                 animationSpec = tween(500),
                 label = "pollPercentage"
             )
-            
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1254,7 +1252,7 @@ private fun PollContentInstagram(
                             )
                     )
                 }
-                
+
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
@@ -1279,7 +1277,7 @@ private fun PollContentInstagram(
                             )
                         )
                     }
-                    
+
                     if (showResults) {
                         BasicText(
                             text = "${percentage.toInt()}%",
@@ -1293,7 +1291,7 @@ private fun PollContentInstagram(
                 }
             }
         }
-        
+
         // Poll info
         Row(
             modifier = Modifier
@@ -1308,7 +1306,7 @@ private fun PollContentInstagram(
                     fontSize = 12.sp
                 )
             )
-            
+
             endsAt?.let {
                 BasicText(
                     text = if (isPollEnded) "Final results" else "Ends ${formatPollEndTime(it)}",
@@ -1351,7 +1349,7 @@ private fun PostHeader(
             .take(2)
             .joinToString("")
             .ifEmpty { "U" }
-        
+
         Box(
             modifier = Modifier
                 .size(48.dp)
@@ -1381,18 +1379,31 @@ private fun PostHeader(
                 )
             }
         }
-        
+
         Spacer(modifier = Modifier.width(12.dp))
-        
+
         Column(modifier = Modifier.weight(1f)) {
-            BasicText(
-                text = authorName,
-                style = TextStyle(
-                    color = contentColor,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                BasicText(
+                    text = authorName,
+                    style = TextStyle(
+                        color = contentColor,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
-            )
+                VerificationBadge(
+                    verified = post.author.hasVerificationBadge(),
+                    badgeStyle = post.author.verificationBadgeStyle(),
+                    size = VerificationBadgeSize.Small
+                )
+            }
             post.author.headline?.let { headline ->
                 BasicText(
                     text = headline,
@@ -1412,7 +1423,7 @@ private fun PostHeader(
                     )
                 )
             }
-            
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 BasicText(
                     text = formatTimeAgo(post.createdAt),
@@ -1421,7 +1432,7 @@ private fun PostHeader(
                         fontSize = 11.sp
                     )
                 )
-                
+
                 // Visibility indicator
                 val visibilityIcon = when (post.visibility) {
                     "PUBLIC" -> "🌐"
@@ -1436,7 +1447,7 @@ private fun PostHeader(
                 )
             }
         }
-        
+
         // Menu button
         Box {
             Box(
@@ -1456,7 +1467,7 @@ private fun PostHeader(
                     )
                 )
             }
-            
+
             DropdownMenu(
                 expanded = showMenu,
                 onDismissRequest = { onMenuToggle(false) }
@@ -1474,7 +1485,7 @@ private fun PostHeader(
                         onCopyLinkClick()
                     }
                 )
-                
+
                 DropdownMenuItem(
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1488,7 +1499,7 @@ private fun PostHeader(
                         onSaveClick()
                     }
                 )
-                
+
                 if (isOwner) {
                     DropdownMenuItem(
                         text = {
@@ -1503,7 +1514,7 @@ private fun PostHeader(
                             onEditClick()
                         }
                     )
-                    
+
                     DropdownMenuItem(
                         text = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1556,7 +1567,7 @@ private fun PostContent(
                 )
             }
         }
-        
+
         // Type-specific content
         when (post.type.uppercase()) {
             "IMAGE" -> {
@@ -1629,15 +1640,32 @@ private fun PostContent(
                 )
             }
         }
+
+        if (findDefaultPostVideo(post.defaultVideoId) != null) {
+            DefaultPostVideoPlayer(
+                defaultVideoId = post.defaultVideoId,
+                accentColor = accentColor,
+                height = null,
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 
 // Regex patterns for formatting
-private val COLOR_TAG_REGEX = Regex("\\[color:(#[0-9a-fA-F]{3,8})\\](.*?)\\[/color\\]", RegexOption.DOT_MATCHES_ALL)
+private val COLOR_TAG_REGEX = Regex(
+    "\\[color:([^\\]]{1,32})\\](.*?)\\[/color\\]",
+    setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+)
+private val RAW_COLOR_TAG_REGEX = Regex("\\[/?color(?::[^\\]]*)?\\]", RegexOption.IGNORE_CASE)
+private val COLOR_OPEN_TAG_REGEX = Regex("\\[color:([^\\]]{1,32})\\]", RegexOption.IGNORE_CASE)
+private val CENTER_TAG_REGEX = Regex("\\[center\\](.*?)\\[/center\\]", RegexOption.DOT_MATCHES_ALL)
 private val BOLD_REGEX = Regex("\\*\\*(.+?)\\*\\*")
 private val ITALIC_REGEX = Regex("(?<!\\*)\\*([^*]+?)\\*(?!\\*)")
+private val STRIKETHROUGH_REGEX = Regex("~~(.+?)~~")
 private val CODE_REGEX = Regex("`([^`]+)`")
-private val MENTION_REGEX = Regex("@([a-zA-Z][a-zA-Z0-9_]{2,29})")
+private val MENTION_REGEX = Regex("(?<![A-Za-z0-9_.])@([A-Za-z0-9_][A-Za-z0-9_.-]{1,29})")
 
 // Mention styling color - bold blue
 private val MentionBlue = Color(0xFF1E90FF)
@@ -1649,9 +1677,50 @@ private sealed class FormattedToken {
     data class Plain(val text: String) : FormattedToken()
     data class Bold(val text: String) : FormattedToken()
     data class Italic(val text: String) : FormattedToken()
+    data class Strikethrough(val text: String) : FormattedToken()
     data class Code(val text: String) : FormattedToken()
     data class Colored(val text: String, val hex: String) : FormattedToken()
     data class Mention(val username: String) : FormattedToken()
+}
+
+private data class FormattedContentBlock(
+    val text: String,
+    val textAlign: TextAlign
+)
+
+private fun parseFormattedBlocks(content: String): List<FormattedContentBlock> {
+    val blocks = mutableListOf<FormattedContentBlock>()
+    var currentIndex = 0
+
+    CENTER_TAG_REGEX.findAll(content).forEach { match ->
+        if (match.range.first > currentIndex) {
+            blocks.add(
+                FormattedContentBlock(
+                    text = content.substring(currentIndex, match.range.first),
+                    textAlign = TextAlign.Start
+                )
+            )
+        }
+        blocks.add(
+            FormattedContentBlock(
+                text = match.groupValues[1],
+                textAlign = TextAlign.Center
+            )
+        )
+        currentIndex = match.range.last + 1
+    }
+
+    if (currentIndex < content.length) {
+        blocks.add(
+            FormattedContentBlock(
+                text = content.substring(currentIndex),
+                textAlign = TextAlign.Start
+            )
+        )
+    }
+
+    return blocks.takeIf { it.isNotEmpty() }
+        ?: listOf(FormattedContentBlock(content, TextAlign.Start))
 }
 
 /**
@@ -1659,27 +1728,28 @@ private sealed class FormattedToken {
  */
 private fun parseFormattedContent(content: String): List<FormattedToken> {
     data class Match(val start: Int, val end: Int, val token: FormattedToken)
-    
+
+    val displayContent = normalizeColorTagsForDisplay(content)
     val matches = mutableListOf<Match>()
-    
+
     // Find all color tags
-    COLOR_TAG_REGEX.findAll(content).forEach { match ->
+    COLOR_TAG_REGEX.findAll(displayContent).forEach { match ->
         val hex = match.groupValues[1]
         val innerText = match.groupValues[2]
         matches.add(Match(match.range.first, match.range.last + 1, FormattedToken.Colored(innerText, hex)))
     }
-    
+
     // Find all bold (only if not inside color tag)
-    BOLD_REGEX.findAll(content).forEach { match ->
+    BOLD_REGEX.findAll(displayContent).forEach { match ->
         val overlaps = matches.any { it.start <= match.range.first && it.end >= match.range.last + 1 }
         if (!overlaps) {
             matches.add(Match(match.range.first, match.range.last + 1, FormattedToken.Bold(match.groupValues[1])))
         }
     }
-    
+
     // Find all italic (only if not inside other formatting)
-    ITALIC_REGEX.findAll(content).forEach { match ->
-        val overlaps = matches.any { 
+    ITALIC_REGEX.findAll(displayContent).forEach { match ->
+        val overlaps = matches.any {
             (match.range.first >= it.start && match.range.first < it.end) ||
             (match.range.last >= it.start && match.range.last < it.end)
         }
@@ -1687,10 +1757,21 @@ private fun parseFormattedContent(content: String): List<FormattedToken> {
             matches.add(Match(match.range.first, match.range.last + 1, FormattedToken.Italic(match.groupValues[1])))
         }
     }
-    
+
+    // Find all strikethrough (only if not inside other formatting)
+    STRIKETHROUGH_REGEX.findAll(displayContent).forEach { match ->
+        val overlaps = matches.any {
+            (match.range.first >= it.start && match.range.first < it.end) ||
+            (match.range.last >= it.start && match.range.last < it.end)
+        }
+        if (!overlaps) {
+            matches.add(Match(match.range.first, match.range.last + 1, FormattedToken.Strikethrough(match.groupValues[1])))
+        }
+    }
+
     // Find all code (only if not inside other formatting)
-    CODE_REGEX.findAll(content).forEach { match ->
-        val overlaps = matches.any { 
+    CODE_REGEX.findAll(displayContent).forEach { match ->
+        val overlaps = matches.any {
             (match.range.first >= it.start && match.range.first < it.end) ||
             (match.range.last >= it.start && match.range.last < it.end)
         }
@@ -1698,10 +1779,10 @@ private fun parseFormattedContent(content: String): List<FormattedToken> {
             matches.add(Match(match.range.first, match.range.last + 1, FormattedToken.Code(match.groupValues[1])))
         }
     }
-    
+
     // Find all @mentions (only if not inside other formatting)
-    MENTION_REGEX.findAll(content).forEach { match ->
-        val overlaps = matches.any { 
+    MENTION_REGEX.findAll(displayContent).forEach { match ->
+        val overlaps = matches.any {
             (match.range.first >= it.start && match.range.first < it.end) ||
             (match.range.last >= it.start && match.range.last < it.end)
         }
@@ -1709,66 +1790,135 @@ private fun parseFormattedContent(content: String): List<FormattedToken> {
             matches.add(Match(match.range.first, match.range.last + 1, FormattedToken.Mention(match.groupValues[1])))
         }
     }
-    
+
     // Sort by start position
     matches.sortBy { it.start }
-    
+
     // Build final token list with plain text between matches
     val tokens = mutableListOf<FormattedToken>()
     var currentIndex = 0
-    
+
     for (match in matches) {
         if (match.start > currentIndex) {
-            tokens.add(FormattedToken.Plain(content.substring(currentIndex, match.start)))
+            tokens.add(FormattedToken.Plain(displayContent.substring(currentIndex, match.start)))
         }
         tokens.add(match.token)
         currentIndex = match.end
     }
-    
-    if (currentIndex < content.length) {
-        tokens.add(FormattedToken.Plain(content.substring(currentIndex)))
+
+    if (currentIndex < displayContent.length) {
+        tokens.add(FormattedToken.Plain(displayContent.substring(currentIndex)))
     }
-    
+
     return tokens
 }
+
+private fun normalizeColorTagsForDisplay(content: String): String {
+    if (!content.contains("[color:", ignoreCase = true) &&
+        !content.contains("[/color]", ignoreCase = true)
+    ) {
+        return content
+    }
+
+    val normalized = StringBuilder(content.length)
+    var index = 0
+    var colorOpen = false
+
+    while (index < content.length) {
+        val closeTag = "[/color]"
+        if (content.startsWith(closeTag, index, ignoreCase = true)) {
+            if (colorOpen) {
+                normalized.append(closeTag)
+                colorOpen = false
+            }
+            index += closeTag.length
+            continue
+        }
+
+        val openMatch = COLOR_OPEN_TAG_REGEX.find(content, index)
+        if (openMatch != null && openMatch.range.first == index) {
+            val colorValue = openMatch.groupValues[1].trim()
+            val validColor = runCatching {
+                android.graphics.Color.parseColor(colorValue)
+            }.isSuccess
+            if (validColor) {
+                if (colorOpen) {
+                    normalized.append(closeTag)
+                }
+                normalized.append("[color:")
+                    .append(colorValue)
+                    .append("]")
+                colorOpen = true
+            }
+            index = openMatch.range.last + 1
+            continue
+        }
+
+        normalized.append(content[index])
+        index++
+    }
+
+    if (colorOpen) {
+        normalized.append("[/color]")
+    }
+
+    return normalized.toString()
+}
+
+private fun stripRawColorTags(text: String): String = text.replace(RAW_COLOR_TAG_REGEX, "")
 
 /**
  * Helper extension to append content with all formatting parsed
  */
 private fun AnnotatedString.Builder.appendFormattedContent(content: String, defaultColor: Color) {
     val tokens = parseFormattedContent(content)
-    
+
     for (token in tokens) {
         when (token) {
             is FormattedToken.Plain -> {
-                withStyle(SpanStyle(color = defaultColor)) { append(token.text) }
+                withStyle(SpanStyle(color = defaultColor)) { append(stripRawColorTags(token.text)) }
             }
             is FormattedToken.Bold -> {
-                withStyle(SpanStyle(color = defaultColor, fontWeight = FontWeight.Bold)) { append(token.text) }
+                withStyle(SpanStyle(color = defaultColor, fontWeight = FontWeight.Bold)) {
+                    append(stripRawColorTags(token.text))
+                }
             }
             is FormattedToken.Italic -> {
-                withStyle(SpanStyle(color = defaultColor, fontStyle = FontStyle.Italic)) { append(token.text) }
+                withStyle(SpanStyle(color = defaultColor, fontStyle = FontStyle.Italic)) {
+                    append(stripRawColorTags(token.text))
+                }
+            }
+            is FormattedToken.Strikethrough -> {
+                withStyle(SpanStyle(color = defaultColor, textDecoration = TextDecoration.LineThrough)) {
+                    append(stripRawColorTags(token.text))
+                }
             }
             is FormattedToken.Code -> {
                 withStyle(SpanStyle(
                     color = defaultColor.copy(alpha = 0.9f),
                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                     background = defaultColor.copy(alpha = 0.1f)
-                )) { append(token.text) }
+                )) { append(stripRawColorTags(token.text)) }
             }
             is FormattedToken.Colored -> {
                 try {
                     val spanColor = Color(android.graphics.Color.parseColor(token.hex))
-                    withStyle(SpanStyle(color = spanColor)) { append(token.text) }
+                    withStyle(SpanStyle(color = spanColor)) { append(stripRawColorTags(token.text)) }
                 } catch (_: Exception) {
-                    withStyle(SpanStyle(color = defaultColor)) { append(token.text) }
+                    withStyle(SpanStyle(color = defaultColor)) { append(stripRawColorTags(token.text)) }
                 }
             }
             is FormattedToken.Mention -> {
                 // Bold blue mention with clickable annotation
                 pushStringAnnotation(tag = "MENTION", annotation = token.username)
                 withStyle(SpanStyle(
-                    color = MentionBlue,
+                    brush = Brush.linearGradient(
+                        listOf(
+                            Color(0xFF0A66C2),
+                            Color(0xFF16A34A),
+                            Color(0xFFF59E0B)
+                        )
+                    ),
                     fontWeight = FontWeight.Bold
                 )) { append("@${token.username}") }
                 pop()
@@ -1788,18 +1938,62 @@ fun FormattedContent(
     onMentionClick: (String) -> Unit = {},
     onMentionLongPress: (String) -> Unit = {}
 ) {
+    val blocks = parseFormattedBlocks(content)
+
+    if (blocks.size > 1 || blocks.first().textAlign != TextAlign.Start) {
+        Column(modifier = modifier) {
+            blocks.forEach { block ->
+                FormattedTextBlock(
+                    content = block.text,
+                    contentColor = contentColor,
+                    modifier = Modifier.fillMaxWidth(),
+                    fontSize = fontSize,
+                    lineHeight = lineHeight,
+                    textAlign = block.textAlign,
+                    onMentionClick = onMentionClick,
+                    onMentionLongPress = onMentionLongPress
+                )
+            }
+        }
+        return
+    }
+
+    FormattedTextBlock(
+        content = blocks.first().text,
+        contentColor = contentColor,
+        modifier = modifier,
+        fontSize = fontSize,
+        lineHeight = lineHeight,
+        textAlign = TextAlign.Start,
+        onMentionClick = onMentionClick,
+        onMentionLongPress = onMentionLongPress
+    )
+}
+
+@Composable
+private fun FormattedTextBlock(
+    content: String,
+    contentColor: Color,
+    modifier: Modifier,
+    fontSize: TextUnit,
+    lineHeight: TextUnit,
+    textAlign: TextAlign,
+    onMentionClick: (String) -> Unit,
+    onMentionLongPress: (String) -> Unit
+) {
     val annotatedString = buildAnnotatedString {
         appendFormattedContent(content, contentColor)
     }
-    
+
     val layoutResult = remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
-    
+
     BasicText(
         text = annotatedString,
         style = TextStyle(
             color = contentColor,
             fontSize = fontSize,
-            lineHeight = lineHeight
+            lineHeight = lineHeight,
+            textAlign = textAlign
         ),
         onTextLayout = { layoutResult.value = it },
         modifier = modifier.pointerInput(annotatedString) {
@@ -1858,7 +2052,7 @@ private fun ImageCarousel(
     } else {
         // Multiple images - carousel
         var selectedIndex by remember { mutableIntStateOf(0) }
-        
+
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             // Main image
             Box(
@@ -1877,7 +2071,7 @@ private fun ImageCarousel(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
-                
+
                 // Counter badge
                 Box(
                     modifier = Modifier
@@ -1893,7 +2087,7 @@ private fun ImageCarousel(
                     )
                 }
             }
-            
+
             // Thumbnails
             Row(
                 modifier = Modifier
@@ -1957,7 +2151,7 @@ private fun VideoContent(
                 modifier = Modifier.fillMaxSize()
             )
         }
-        
+
         // Play button overlay
         Box(
             modifier = Modifier
@@ -1971,7 +2165,7 @@ private fun VideoContent(
                 style = TextStyle(Color.White, 24.sp)
             )
         }
-        
+
         // Duration badge
         duration?.let { dur ->
             val minutes = dur / 60
@@ -2023,7 +2217,7 @@ private fun LinkPreview(
                     .height(120.dp)
             )
         }
-        
+
         Column(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -2038,7 +2232,7 @@ private fun LinkPreview(
                     )
                 )
             }
-            
+
             // Title
             title?.let {
                 BasicText(
@@ -2052,7 +2246,7 @@ private fun LinkPreview(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            
+
             // Description
             description?.let {
                 BasicText(
@@ -2084,7 +2278,7 @@ private fun PollContent(
     val showResults = hasVoted || showResultsBeforeVote
     val totalVotes = options.sumOf { it.votes }
     val isPollEnded = endsAt?.let { isPollExpired(it) } ?: false
-    
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -2092,7 +2286,7 @@ private fun PollContent(
         options.forEach { option ->
             val isSelected = option.id == userVotedOptionId
             val percentage = if (totalVotes > 0) (option.votes.toFloat() / totalVotes * 100) else 0f
-            
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2112,7 +2306,7 @@ private fun PollContent(
                             )
                     )
                 }
-                
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2137,7 +2331,7 @@ private fun PollContent(
                             )
                         )
                     }
-                    
+
                     if (showResults) {
                         BasicText(
                             text = "${percentage.toInt()}%",
@@ -2151,7 +2345,7 @@ private fun PollContent(
                 }
             }
         }
-        
+
         // Poll info
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -2164,7 +2358,7 @@ private fun PollContent(
                     fontSize = 12.sp
                 )
             )
-            
+
             endsAt?.let {
                 BasicText(
                     text = if (isPollEnded) "Poll ended" else "Ends ${formatPollEndTime(it)}",
@@ -2207,7 +2401,7 @@ private fun ArticleContent(
                     .height(140.dp)
             )
         }
-        
+
         Column(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -2223,7 +2417,7 @@ private fun ArticleContent(
                     )
                 )
             }
-            
+
             // Read time
             readTime?.let {
                 BasicText(
@@ -2234,7 +2428,7 @@ private fun ArticleContent(
                     )
                 )
             }
-            
+
             // Tags
             if (tags.isNotEmpty()) {
                 Row(
@@ -2270,7 +2464,7 @@ private fun CelebrationContent(
 ) {
     val celebration = CelebrationType.entries.find { it.name == celebrationType }
         ?: CelebrationType.NEW_JOB
-    
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -2334,7 +2528,7 @@ private fun DocumentContent(
                 style = TextStyle(fontSize = 24.sp)
             )
         }
-        
+
         Column {
             BasicText(
                 text = documentName ?: "Document",
@@ -2346,7 +2540,7 @@ private fun DocumentContent(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 documentType?.let {
                     BasicText(
@@ -2404,7 +2598,7 @@ private fun EngagementStats(
                 BasicText(text = "👍", style = TextStyle(fontSize = 14.sp))
                 Spacer(Modifier.width(4.dp))
             }
-            
+
             if (post.likesCount > 0) {
                 BasicText(
                     text = "${post.likesCount}",
@@ -2415,7 +2609,7 @@ private fun EngagementStats(
                 )
             }
         }
-        
+
         // Comments and shares
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             if (post.commentsCount > 0) {
@@ -2450,7 +2644,11 @@ private fun PostActions(
     onShare: () -> Unit,
     onSave: () -> Unit
 ) {
-    Row(
+    var likeEffectTrigger by remember(post.id) { mutableIntStateOf(0) }
+    var saveEffectTrigger by remember(post.id) { mutableIntStateOf(0) }
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly
     ) {
@@ -2461,9 +2659,12 @@ private fun PostActions(
             isActive = post.isLiked,
             contentColor = contentColor,
             accentColor = accentColor,
-            onClick = onLike
+            onClick = {
+                if (!post.isLiked) likeEffectTrigger++
+                onLike()
+            }
         )
-        
+
         // Comment button
         ActionButton(
             icon = "💬",
@@ -2473,7 +2674,7 @@ private fun PostActions(
             accentColor = accentColor,
             onClick = onComment
         )
-        
+
         // Share button
         ActionButton(
             icon = "📤",
@@ -2483,7 +2684,7 @@ private fun PostActions(
             accentColor = accentColor,
             onClick = onShare
         )
-        
+
         // Save button
         ActionButton(
             icon = if (post.isSaved) "🔖" else "📑",
@@ -2491,7 +2692,19 @@ private fun PostActions(
             isActive = post.isSaved,
             contentColor = contentColor,
             accentColor = accentColor,
-            onClick = onSave
+            saveEffectTrigger = saveEffectTrigger,
+            onClick = {
+                if (!post.isSaved) saveEffectTrigger++
+                onSave()
+            }
+        )
+    }
+
+        LikeHeartsEffect(
+            trigger = likeEffectTrigger,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .requiredSize(180.dp)
         )
     }
 }
@@ -2503,19 +2716,33 @@ private fun ActionButton(
     isActive: Boolean,
     contentColor: Color,
     accentColor: Color,
+    saveEffectTrigger: Int = 0,
     onClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        BasicText(
-            text = icon,
-            style = TextStyle(fontSize = 16.sp)
-        )
+        Box(
+            modifier = Modifier.size(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            BasicText(
+                text = icon,
+                style = TextStyle(fontSize = 16.sp)
+            )
+            SaveLottieEffect(
+                trigger = saveEffectTrigger,
+                modifier = Modifier.requiredSize(64.dp)
+            )
+        }
         Spacer(Modifier.width(4.dp))
         BasicText(
             text = label,
@@ -2548,7 +2775,7 @@ fun PostCardSkeleton(
             Color.DarkGray.copy(alpha = 0.3f)
         )
     }
-    
+
     val transition = rememberInfiniteTransition(label = "shimmer")
     val translateAnimation = transition.animateFloat(
         initialValue = 0f,
@@ -2559,28 +2786,16 @@ fun PostCardSkeleton(
         ),
         label = "shimmer_translate"
     )
-    
+
     val shimmer = Brush.linearGradient(
         colors = shimmerColors,
         start = Offset(translateAnimation.value - 300f, translateAnimation.value - 300f),
         end = Offset(translateAnimation.value, translateAnimation.value)
     )
-    
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = { RoundedRectangle(24f.dp) },
-                effects = {
-                    vibrancy()
-                    blur(16f.dp.toPx())
-                    lens(8f.dp.toPx(), 16f.dp.toPx())
-                },
-                onDrawSurface = {
-                    drawRect(Color.White.copy(alpha = 0.12f))
-                }
-            )
             .padding(16.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -2619,7 +2834,7 @@ fun PostCardSkeleton(
                     )
                 }
             }
-            
+
             // Content skeleton
             repeat(3) {
                 Box(
@@ -2630,7 +2845,7 @@ fun PostCardSkeleton(
                         .background(shimmer)
                 )
             }
-            
+
             // Image skeleton
             Box(
                 modifier = Modifier
@@ -2639,7 +2854,7 @@ fun PostCardSkeleton(
                     .clip(RoundedCornerShape(12.dp))
                     .background(shimmer)
             )
-            
+
             // Stats skeleton
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -2660,7 +2875,7 @@ fun PostCardSkeleton(
                         .background(shimmer)
                 )
             }
-            
+
             // Divider
             Box(
                 modifier = Modifier
@@ -2668,7 +2883,7 @@ fun PostCardSkeleton(
                     .height(1.dp)
                     .background(if (isLightTheme) Color.LightGray.copy(alpha = 0.2f) else Color.DarkGray.copy(alpha = 0.2f))
             )
-            
+
             // Actions skeleton
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -2692,34 +2907,35 @@ fun PostCardSkeleton(
 
 fun formatTimeAgo(dateString: String): String {
     return try {
+        val normalizedDateString = dateString.replace(Regex("([+-]\\d{2}):(\\d{2})$"), "$1$2")
         val formats = listOf(
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US),
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US),
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US)
         )
-        
+
         var date: Date? = null
         for (format in formats) {
             format.timeZone = TimeZone.getTimeZone("UTC")
             try {
-                date = format.parse(dateString)
+                date = format.parse(normalizedDateString)
                 if (date != null) break
             } catch (e: Exception) {
                 continue
             }
         }
-        
+
         if (date == null) return dateString
-        
+
         val now = Date()
         val diff = now.time - date.time
-        
+
         val seconds = diff / 1000
         val minutes = seconds / 60
         val hours = minutes / 60
         val days = hours / 24
         val weeks = days / 7
-        
+
         when {
             seconds < 60 -> "Just now"
             minutes < 60 -> "${minutes}m"
@@ -2749,15 +2965,15 @@ fun formatPollEndTime(endsAt: String): String {
         val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
         format.timeZone = TimeZone.getTimeZone("UTC")
         val endDate = format.parse(endsAt) ?: return endsAt
-        
+
         val now = Date()
         val diff = endDate.time - now.time
-        
+
         if (diff <= 0) return "now"
-        
+
         val hours = diff / (1000 * 60 * 60)
         val days = hours / 24
-        
+
         when {
             hours < 1 -> "in ${diff / (1000 * 60)}m"
             hours < 24 -> "in ${hours}h"
@@ -2795,7 +3011,7 @@ fun MentionProfilePreviewPopup(
     var profile by remember { mutableStateOf<FullProfileResponse?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    
+
     // Animation states
     var isVisible by remember { mutableStateOf(false) }
     val animatedScale by animateFloatAsState(
@@ -2816,17 +3032,17 @@ fun MentionProfilePreviewPopup(
             }
         }
     )
-    
+
     // Trigger enter animation on launch
     LaunchedEffect(Unit) {
         isVisible = true
     }
-    
+
     // Handle dismiss with exit animation
     val dismissWithAnimation = {
         isVisible = false
     }
-    
+
     // Fetch profile by username
     LaunchedEffect(username) {
         isLoading = true
@@ -2841,7 +3057,7 @@ fun MentionProfilePreviewPopup(
                 isLoading = false
             }
     }
-    
+
     androidx.compose.ui.window.Dialog(
         onDismissRequest = dismissWithAnimation,
         properties = androidx.compose.ui.window.DialogProperties(
@@ -2895,7 +3111,7 @@ fun MentionProfilePreviewPopup(
                     )
                 )
             }
-            
+
             when {
                 isLoading -> {
                     Column(
@@ -2917,7 +3133,7 @@ fun MentionProfilePreviewPopup(
                         )
                     }
                 }
-                
+
                 error != null -> {
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
@@ -2945,7 +3161,7 @@ fun MentionProfilePreviewPopup(
                         )
                     }
                 }
-                
+
                 profile != null -> {
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
@@ -2963,7 +3179,7 @@ fun MentionProfilePreviewPopup(
                                 .take(2)
                                 .joinToString("")
                                 .ifEmpty { "U" }
-                            
+
                             Box(
                                 modifier = Modifier
                                     .size(56.dp)
@@ -2996,9 +3212,9 @@ fun MentionProfilePreviewPopup(
                                     )
                                 }
                             }
-                            
+
                             Spacer(modifier = Modifier.width(16.dp))
-                            
+
                             Column(modifier = Modifier.weight(1f)) {
                                 // Name
                                 BasicText(
@@ -3011,7 +3227,7 @@ fun MentionProfilePreviewPopup(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                
+
                                 // Username
                                 BasicText(
                                     text = "@${user.username}",
@@ -3021,7 +3237,7 @@ fun MentionProfilePreviewPopup(
                                         fontWeight = FontWeight.Medium
                                     )
                                 )
-                                
+
                                 // Headline
                                 user.headline?.let { headline ->
                                     BasicText(
@@ -3036,9 +3252,9 @@ fun MentionProfilePreviewPopup(
                                 }
                             }
                         }
-                        
+
                         Spacer(modifier = Modifier.height(16.dp))
-                        
+
                         // Stats row
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -3060,16 +3276,16 @@ fun MentionProfilePreviewPopup(
                                 contentColor = contentColor
                             )
                         }
-                        
+
                         Spacer(modifier = Modifier.height(16.dp))
-                        
+
                         // View Profile button
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(accentColor)
-                                .clickable { 
+                                .clickable {
                                     dismissWithAnimation()
                                     // Small delay to let animation start, then navigate
                                     kotlinx.coroutines.MainScope().launch {

@@ -25,7 +25,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.PeopleAlt
@@ -396,7 +396,9 @@ private fun AvatarProofRow(
                     MiniAvatar(
                         imageUrl = person.profileImage,
                         fallback = person.name ?: person.username ?: "V",
-                        accentColor = accentColor
+                        accentColor = accentColor,
+                        verified = person.hasVerificationBadge(),
+                        badgeStyle = person.verificationBadgeStyle()
                     )
                 }
             }
@@ -413,7 +415,9 @@ private fun AvatarProofRow(
 private fun MiniAvatar(
     imageUrl: String?,
     fallback: String,
-    accentColor: Color
+    accentColor: Color,
+    verified: Boolean = false,
+    badgeStyle: String? = null
 ) {
     Box(
         modifier = Modifier
@@ -444,6 +448,12 @@ private fun MiniAvatar(
                 style = TextStyle(accentColor, 11.sp, FontWeight.Bold)
             )
         }
+        VerificationBadge(
+            verified = verified,
+            badgeStyle = badgeStyle,
+            modifier = Modifier.align(Alignment.BottomEnd),
+            size = VerificationBadgeSize.Micro
+        )
     }
 }
 

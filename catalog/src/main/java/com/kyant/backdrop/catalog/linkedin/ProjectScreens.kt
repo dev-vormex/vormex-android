@@ -28,8 +28,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -88,6 +88,13 @@ import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
 
+private val RetroProjectCream = Color(0xFFF3EFE3)
+private val RetroProjectInk = Color(0xFF111111)
+private val RetroProjectYellow = Color(0xFFFFD414)
+private val RetroProjectRed = Color(0xFFFF3B30)
+private val RetroProjectBlue = Color(0xFF3F6FFF)
+private val RetroProjectGreen = Color(0xFF28D17C)
+
 // ==================== Add/Edit Project Screen ====================
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -97,6 +104,7 @@ fun AddEditProjectScreen(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
+    isGameProfileTheme: Boolean = false,
     onSave: (Project) -> Unit,
     onDelete: (() -> Unit)? = null,
     onCancel: () -> Unit
@@ -108,25 +116,31 @@ fun AddEditProjectScreen(
 
     // Theme preference: "glass", "light", "dark"
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
-    val isGlassTheme = themeMode == "glass"
-    val isDarkTheme = themeMode == "dark"
+    val appearance = currentVormexAppearance(themeMode)
+    val isGlassTheme = appearance.isGlassTheme
+    val isDarkTheme = appearance.isDarkTheme
     val modalBackground = when {
+        isGameProfileTheme -> RetroProjectCream
         isDarkTheme -> Color(0xFF0E1014)
         isGlassTheme -> Color(0xFFF2F6FA)
         else -> Color(0xFFF8FAFC)
     }
     val sectionBorderColor = when {
+        isGameProfileTheme -> RetroProjectInk
         isGlassTheme -> Color.White.copy(alpha = 0.18f)
         isDarkTheme -> Color.White.copy(alpha = 0.08f)
         else -> Color.Black.copy(alpha = 0.06f)
     }
     val sectionSurfaceColor = when {
+        isGameProfileTheme -> Color.White.copy(alpha = 0.72f)
         isGlassTheme -> Color(0xFFF8FAFC)
         isDarkTheme -> Color(0xFF151922)
         else -> Color.White
     }
-    val subduedTextColor = contentColor.copy(alpha = 0.62f)
-    val featuredAccent = Color(0xFFFFD66B)
+    val editorContentColor = if (isGameProfileTheme) RetroProjectInk else contentColor
+    val editorAccentColor = if (isGameProfileTheme) RetroProjectRed else accentColor
+    val subduedTextColor = editorContentColor.copy(alpha = 0.62f)
+    val featuredAccent = if (isGameProfileTheme) RetroProjectYellow else Color(0xFFFFD66B)
     
     // Form state
     var name by remember { mutableStateOf(project?.name ?: "") }
@@ -228,12 +242,12 @@ fun AddEditProjectScreen(
                     }
                     showStartDatePicker = false
                 }) {
-                    BasicText("OK", style = TextStyle(accentColor, 14.sp))
+                    BasicText("OK", style = TextStyle(editorAccentColor, 14.sp))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showStartDatePicker = false }) {
-                    BasicText("Cancel", style = TextStyle(contentColor, 14.sp))
+                    BasicText("Cancel", style = TextStyle(editorContentColor, 14.sp))
                 }
             }
         ) {
@@ -254,12 +268,12 @@ fun AddEditProjectScreen(
                     }
                     showEndDatePicker = false
                 }) {
-                    BasicText("OK", style = TextStyle(accentColor, 14.sp))
+                    BasicText("OK", style = TextStyle(editorAccentColor, 14.sp))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showEndDatePicker = false }) {
-                    BasicText("Cancel", style = TextStyle(contentColor, 14.sp))
+                    BasicText("Cancel", style = TextStyle(editorContentColor, 14.sp))
                 }
             }
         ) {
@@ -271,8 +285,8 @@ fun AddEditProjectScreen(
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
-            title = { BasicText("Delete Project", style = TextStyle(contentColor, 18.sp, FontWeight.Bold)) },
-            text = { BasicText("Are you sure you want to delete this project?", style = TextStyle(contentColor.copy(alpha = 0.7f), 14.sp)) },
+            title = { BasicText("Delete Project", style = TextStyle(editorContentColor, 18.sp, FontWeight.Bold)) },
+            text = { BasicText("Are you sure you want to delete this project?", style = TextStyle(editorContentColor.copy(alpha = 0.7f), 14.sp)) },
             confirmButton = {
                 TextButton(onClick = {
                     showDeleteDialog = false
@@ -283,7 +297,7 @@ fun AddEditProjectScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) {
-                    BasicText("Cancel", style = TextStyle(contentColor, 14.sp))
+                    BasicText("Cancel", style = TextStyle(editorContentColor, 14.sp))
                 }
             },
             containerColor = modalBackground
@@ -321,8 +335,8 @@ fun AddEditProjectScreen(
                 },
                 iconRes = if (isEditMode) R.drawable.ic_edit else R.drawable.ic_sparkles,
                 backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
+                contentColor = editorContentColor,
+                accentColor = editorAccentColor,
                 borderColor = sectionBorderColor,
                 surfaceColor = sectionSurfaceColor
             ) {
@@ -333,27 +347,27 @@ fun AddEditProjectScreen(
                     ProjectEditorMetricChip(
                         iconRes = R.drawable.ic_work,
                         label = name.takeIf { it.isNotBlank() } ?: "Untitled draft",
-                        tint = accentColor,
-                        contentColor = contentColor
+                        tint = editorAccentColor,
+                        contentColor = editorContentColor
                     )
                     ProjectEditorMetricChip(
                         iconRes = R.drawable.ic_image,
                         label = "${images.size} visual${if (images.size == 1) "" else "s"}",
-                        tint = contentColor.copy(alpha = 0.74f),
-                        contentColor = contentColor
+                        tint = editorContentColor.copy(alpha = 0.74f),
+                        contentColor = editorContentColor
                     )
                     ProjectEditorMetricChip(
                         iconRes = R.drawable.ic_code,
                         label = "${techStack.size} tag${if (techStack.size == 1) "" else "s"}",
-                        tint = contentColor.copy(alpha = 0.74f),
-                        contentColor = contentColor
+                        tint = editorContentColor.copy(alpha = 0.74f),
+                        contentColor = editorContentColor
                     )
                     if (featured) {
                         ProjectEditorMetricChip(
                             iconRes = R.drawable.ic_sparkles,
                             label = "Featured",
                             tint = featuredAccent,
-                            contentColor = contentColor
+                            contentColor = editorContentColor
                         )
                     }
                 }
@@ -368,8 +382,8 @@ fun AddEditProjectScreen(
                         iconRes = R.drawable.ic_close,
                         filled = false,
                         enabled = !isLoading,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
+                        contentColor = editorContentColor,
+                        accentColor = editorAccentColor,
                         onClick = onCancel
                     )
                     ProjectEditorActionButton(
@@ -379,8 +393,8 @@ fun AddEditProjectScreen(
                         filled = true,
                         enabled = isValid && !isLoading,
                         loading = isLoading,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
+                        contentColor = editorContentColor,
+                        accentColor = editorAccentColor,
                         onClick = { submitProject() }
                     )
                 }
@@ -418,8 +432,8 @@ fun AddEditProjectScreen(
                 subtitle = "Give this work a clear identity and explain why it matters.",
                 iconRes = R.drawable.ic_work,
                 backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
+                contentColor = editorContentColor,
+                accentColor = editorAccentColor,
                 borderColor = sectionBorderColor,
                 surfaceColor = sectionSurfaceColor
             ) {
@@ -428,8 +442,8 @@ fun AddEditProjectScreen(
                     value = name,
                     onValueChange = { name = it },
                     placeholder = "e.g. Campus placement prep platform",
-                    contentColor = contentColor,
-                    accentColor = accentColor,
+                    contentColor = editorContentColor,
+                    accentColor = editorAccentColor,
                     singleLine = true,
                     iconRes = R.drawable.ic_work,
                     helperText = "Use the name people should remember."
@@ -440,8 +454,8 @@ fun AddEditProjectScreen(
                     value = description,
                     onValueChange = { description = it },
                     placeholder = "What did you build, solve, launch, or improve?",
-                    contentColor = contentColor,
-                    accentColor = accentColor,
+                    contentColor = editorContentColor,
+                    accentColor = editorAccentColor,
                     singleLine = false,
                     minLines = 5,
                     iconRes = R.drawable.ic_file_text,
@@ -453,8 +467,8 @@ fun AddEditProjectScreen(
                     value = role,
                     onValueChange = { role = it },
                     placeholder = "e.g. Product designer, Android developer, Founder",
-                    contentColor = contentColor,
-                    accentColor = accentColor,
+                    contentColor = editorContentColor,
+                    accentColor = editorAccentColor,
                     singleLine = true,
                     iconRes = R.drawable.ic_profile,
                     helperText = "Say how you contributed to this work."
@@ -466,8 +480,8 @@ fun AddEditProjectScreen(
                 subtitle = "Add a strong cover image, screenshots, or proof of execution.",
                 iconRes = R.drawable.ic_image,
                 backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
+                contentColor = editorContentColor,
+                accentColor = editorAccentColor,
                 borderColor = sectionBorderColor,
                 surfaceColor = sectionSurfaceColor
             ) {
@@ -478,7 +492,7 @@ fun AddEditProjectScreen(
                                 .fillMaxWidth()
                                 .aspectRatio(1f)
                                 .clip(RoundedCornerShape(22.dp))
-                                .border(1.dp, contentColor.copy(alpha = 0.08f), RoundedCornerShape(22.dp))
+                                .border(1.dp, editorContentColor.copy(alpha = 0.08f), RoundedCornerShape(22.dp))
                         ) {
                             AsyncImage(
                                 model = ImageRequest.Builder(context)
@@ -526,8 +540,8 @@ fun AddEditProjectScreen(
                             .fillMaxWidth()
                             .aspectRatio(1f)
                             .clip(RoundedCornerShape(22.dp))
-                            .background(contentColor.copy(alpha = 0.04f))
-                            .border(1.dp, contentColor.copy(alpha = 0.08f), RoundedCornerShape(22.dp))
+                            .background(editorContentColor.copy(alpha = 0.04f))
+                            .border(1.dp, editorContentColor.copy(alpha = 0.08f), RoundedCornerShape(22.dp))
                             .clickable(enabled = !isUploadingImage) {
                                 imagePicker.launch("image/*")
                             },
@@ -536,7 +550,7 @@ fun AddEditProjectScreen(
                         if (isUploadingImage) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(28.dp),
-                                color = accentColor,
+                                color = editorAccentColor,
                                 strokeWidth = 2.5.dp
                             )
                         } else {
@@ -547,7 +561,7 @@ fun AddEditProjectScreen(
                                 Box(
                                     modifier = Modifier
                                         .clip(CircleShape)
-                                        .background(contentColor.copy(alpha = 0.06f))
+                                        .background(editorContentColor.copy(alpha = 0.06f))
                                         .padding(12.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -555,12 +569,12 @@ fun AddEditProjectScreen(
                                         painter = painterResource(R.drawable.ic_upload),
                                         contentDescription = null,
                                         modifier = Modifier.size(18.dp),
-                                        colorFilter = ColorFilter.tint(contentColor)
+                                        colorFilter = ColorFilter.tint(editorContentColor)
                                     )
                                 }
                                 BasicText(
                                     text = "Upload visual",
-                                    style = TextStyle(contentColor, 15.sp, FontWeight.SemiBold)
+                                    style = TextStyle(editorContentColor, 15.sp, FontWeight.SemiBold)
                                 )
                                 BasicText(
                                     text = "Cover, screenshot, poster, or proof",
@@ -579,8 +593,8 @@ fun AddEditProjectScreen(
                 subtitle = "Show the tools you used and when this work happened.",
                 iconRes = R.drawable.ic_code,
                 backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
+                contentColor = editorContentColor,
+                accentColor = editorAccentColor,
                 borderColor = sectionBorderColor,
                 surfaceColor = sectionSurfaceColor
             ) {
@@ -593,20 +607,20 @@ fun AddEditProjectScreen(
                             Row(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(999.dp))
-                                    .background(accentColor.copy(alpha = 0.12f))
-                                    .border(1.dp, accentColor.copy(alpha = 0.18f), RoundedCornerShape(999.dp))
+                                    .background(editorAccentColor.copy(alpha = 0.12f))
+                                    .border(1.dp, editorAccentColor.copy(alpha = 0.18f), RoundedCornerShape(999.dp))
                                     .padding(start = 12.dp, top = 8.dp, end = 8.dp, bottom = 8.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 BasicText(
                                     text = tech,
-                                    style = TextStyle(contentColor, 12.sp, FontWeight.SemiBold)
+                                    style = TextStyle(editorContentColor, 12.sp, FontWeight.SemiBold)
                                 )
                                 Box(
                                     modifier = Modifier
                                         .clip(CircleShape)
-                                        .background(accentColor.copy(alpha = 0.14f))
+                                        .background(editorAccentColor.copy(alpha = 0.14f))
                                         .clickable { techStack.remove(tech) }
                                         .padding(4.dp),
                                     contentAlignment = Alignment.Center
@@ -615,7 +629,7 @@ fun AddEditProjectScreen(
                                         painter = painterResource(R.drawable.ic_close),
                                         contentDescription = "Remove tag",
                                         modifier = Modifier.size(10.dp),
-                                        colorFilter = ColorFilter.tint(accentColor)
+                                        colorFilter = ColorFilter.tint(editorAccentColor)
                                     )
                                 }
                             }
@@ -627,8 +641,8 @@ fun AddEditProjectScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(20.dp))
-                        .background(contentColor.copy(alpha = 0.04f))
-                        .border(1.dp, accentColor.copy(alpha = 0.12f), RoundedCornerShape(20.dp))
+                        .background(editorContentColor.copy(alpha = 0.04f))
+                        .border(1.dp, editorAccentColor.copy(alpha = 0.12f), RoundedCornerShape(20.dp))
                         .padding(14.dp)
                 ) {
                     Row(
@@ -639,7 +653,7 @@ fun AddEditProjectScreen(
                         Box(
                             modifier = Modifier
                                 .clip(CircleShape)
-                                .background(accentColor.copy(alpha = 0.14f))
+                                .background(editorAccentColor.copy(alpha = 0.14f))
                                 .padding(10.dp),
                             contentAlignment = Alignment.Center
                         ) {
@@ -647,7 +661,7 @@ fun AddEditProjectScreen(
                                 painter = painterResource(R.drawable.ic_tag),
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp),
-                                colorFilter = ColorFilter.tint(accentColor)
+                                colorFilter = ColorFilter.tint(editorAccentColor)
                             )
                         }
 
@@ -659,8 +673,8 @@ fun AddEditProjectScreen(
                             BasicTextField(
                                 value = techInput,
                                 onValueChange = { techInput = it },
-                                textStyle = TextStyle(contentColor, 14.sp),
-                                cursorBrush = SolidColor(accentColor),
+                                textStyle = TextStyle(editorContentColor, 14.sp),
+                                cursorBrush = SolidColor(editorAccentColor),
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                                 decorationBox = { innerTextField ->
@@ -680,8 +694,8 @@ fun AddEditProjectScreen(
                             iconRes = R.drawable.ic_plus,
                             filled = true,
                             enabled = techInput.isNotBlank(),
-                            contentColor = contentColor,
-                            accentColor = accentColor,
+                            contentColor = editorContentColor,
+                            accentColor = editorAccentColor,
                             onClick = {
                                 val newTag = techInput.trim()
                                 if (newTag.isNotBlank()) {
@@ -702,8 +716,8 @@ fun AddEditProjectScreen(
                         label = "Start date",
                         value = startDate.takeIf { it.isNotBlank() }?.let(::formatDateDisplay) ?: "Pick month",
                         enabled = true,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
+                        contentColor = editorContentColor,
+                        accentColor = editorAccentColor,
                         onClick = { showStartDatePicker = true }
                     )
                     ProjectDateField(
@@ -715,8 +729,8 @@ fun AddEditProjectScreen(
                             else -> "Pick month"
                         },
                         enabled = !isCurrent,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
+                        contentColor = editorContentColor,
+                        accentColor = editorAccentColor,
                         onClick = { showEndDatePicker = true }
                     )
                 }
@@ -726,8 +740,8 @@ fun AddEditProjectScreen(
                     description = "Use this if you are still building or maintaining the project.",
                     iconRes = R.drawable.ic_check,
                     checked = isCurrent,
-                    accentColor = accentColor,
-                    contentColor = contentColor,
+                    accentColor = editorAccentColor,
+                    contentColor = editorContentColor,
                     onToggle = { isCurrent = !isCurrent }
                 )
 
@@ -737,7 +751,7 @@ fun AddEditProjectScreen(
                     iconRes = R.drawable.ic_sparkles,
                     checked = featured,
                     accentColor = featuredAccent,
-                    contentColor = contentColor,
+                    contentColor = editorContentColor,
                     trailingNote = "Max 3",
                     onToggle = { featured = !featured }
                 )
@@ -748,8 +762,8 @@ fun AddEditProjectScreen(
                 subtitle = "Send people to the live version, source, or portfolio page.",
                 iconRes = R.drawable.ic_link,
                 backdrop = backdrop,
-                contentColor = contentColor,
-                accentColor = accentColor,
+                contentColor = editorContentColor,
+                accentColor = editorAccentColor,
                 borderColor = sectionBorderColor,
                 surfaceColor = sectionSurfaceColor
             ) {
@@ -758,8 +772,8 @@ fun AddEditProjectScreen(
                     value = projectUrl,
                     onValueChange = { projectUrl = it },
                     placeholder = "https://your-project.com",
-                    contentColor = contentColor,
-                    accentColor = accentColor,
+                    contentColor = editorContentColor,
+                    accentColor = editorAccentColor,
                     singleLine = true,
                     keyboardType = KeyboardType.Uri,
                     iconRes = R.drawable.ic_open_in_browser,
@@ -771,8 +785,8 @@ fun AddEditProjectScreen(
                     value = githubUrl,
                     onValueChange = { githubUrl = it },
                     placeholder = "https://github.com/username/repo",
-                    contentColor = contentColor,
-                    accentColor = accentColor,
+                    contentColor = editorContentColor,
+                    accentColor = editorAccentColor,
                     singleLine = true,
                     keyboardType = KeyboardType.Uri,
                     iconRes = R.drawable.ic_github,
@@ -786,7 +800,7 @@ fun AddEditProjectScreen(
                     subtitle = "Remove this project permanently from your profile.",
                     iconRes = R.drawable.ic_delete,
                     backdrop = backdrop,
-                    contentColor = contentColor,
+                    contentColor = editorContentColor,
                     accentColor = Color(0xFFFF6B6B),
                     borderColor = Color(0xFFFF6B6B).copy(alpha = 0.18f),
                     surfaceColor = sectionSurfaceColor
@@ -839,40 +853,32 @@ fun ProjectDetailScreen(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
+    isGameProfileTheme: Boolean = false,
     isOwner: Boolean,
     onEdit: () -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    if (isGameProfileTheme) {
+        RetroProjectDetailScreen(
+            project = project,
+            isOwner = isOwner,
+            onEdit = onEdit,
+            onBack = onBack
+        )
+        return
+    }
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
-    val isGlassTheme = themeMode == "glass"
-    val isDarkTheme = themeMode == "dark"
-    val heroAccent = if (project.featured) Color(0xFFFFD66B) else accentColor
-    val surfaceBorder = if (project.featured) heroAccent.copy(alpha = 0.26f) else contentColor.copy(alpha = 0.1f)
+    val appearance = currentVormexAppearance(themeMode)
+    val isGlassTheme = appearance.isGlassTheme
+    val isDarkTheme = appearance.isDarkTheme
     val baseBackground = when {
         isDarkTheme -> Color(0xFF101318)
         isGlassTheme -> Color(0xFFF2F6FA)
         else -> Color(0xFFF9FAFC)
     }
-    val backgroundBrush = Brush.verticalGradient(
-        colors = when {
-            isDarkTheme -> listOf(
-                accentColor.copy(alpha = 0.22f),
-                Color(0xFF161C25),
-                baseBackground
-            )
-            isGlassTheme -> listOf(
-                accentColor.copy(alpha = 0.14f),
-                Color.White.copy(alpha = 0.34f),
-                baseBackground
-            )
-            else -> listOf(
-                accentColor.copy(alpha = 0.12f),
-                Color.White.copy(alpha = 0.72f),
-                baseBackground
-            )
-        }
-    )
+    val subtleLineColor = contentColor.copy(alpha = if (isDarkTheme) 0.12f else 0.09f)
+    val mutedTextColor = contentColor.copy(alpha = 0.58f)
     val timelineLabel = projectDetailTimeline(project)
     val detailLinks = buildList {
         project.projectUrl?.takeIf { it.isNotBlank() }?.let { url ->
@@ -881,7 +887,7 @@ fun ProjectDetailScreen(
                     title = "Live experience",
                     subtitle = projectLinkHost(url),
                     iconRes = R.drawable.ic_open_in_browser,
-                    tint = heroAccent,
+                    tint = contentColor,
                     url = url,
                     isPrimary = true
                 )
@@ -912,77 +918,50 @@ fun ProjectDetailScreen(
                 )
             }
     }
-    val overviewItems = buildList {
-        project.role?.takeIf { it.isNotBlank() }?.let { role ->
-            add(
-                ProjectDetailOverviewItem(
-                    label = "Role",
-                    value = role,
-                    iconRes = R.drawable.ic_work,
-                    tint = heroAccent
-                )
-            )
-        }
-        add(
-            ProjectDetailOverviewItem(
-                label = "Timeline",
-                value = timelineLabel,
-                iconRes = R.drawable.ic_calendar,
-                tint = contentColor.copy(alpha = 0.72f)
-            )
-        )
-        add(
-            ProjectDetailOverviewItem(
-                label = "Status",
-                value = if (project.isCurrent) "Active now" else "Completed",
-                iconRes = if (project.isCurrent) R.drawable.ic_check else R.drawable.ic_sparkles,
-                tint = if (project.isCurrent) heroAccent else contentColor.copy(alpha = 0.72f)
-            )
-        )
-        if (project.images.isNotEmpty()) {
-            add(
-                ProjectDetailOverviewItem(
-                    label = "Media",
-                    value = "${project.images.size} visual${if (project.images.size > 1) "s" else ""}",
-                    iconRes = R.drawable.ic_image,
-                    tint = contentColor.copy(alpha = 0.72f)
-                )
-            )
-        }
-        if (detailLinks.isNotEmpty()) {
-            add(
-                ProjectDetailOverviewItem(
-                    label = "Links",
-                    value = "${detailLinks.size} destination${if (detailLinks.size > 1) "s" else ""}",
-                    iconRes = R.drawable.ic_link,
-                    tint = contentColor.copy(alpha = 0.72f)
-                )
-            )
-        }
-    }
-
     Box(
         Modifier
             .fillMaxSize()
             .background(baseBackground)
-            .background(backgroundBrush)
     ) {
         Column(
             Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
         ) {
-            ProjectDetailSurface(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, top = 16.dp),
-                backdrop = backdrop,
-                borderColor = surfaceBorder
+                    .padding(horizontal = 18.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(22.dp)
             ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ProjectDetailPlainAction(
+                        iconRes = R.drawable.ic_back,
+                        label = "Back",
+                        contentColor = contentColor,
+                        onClick = onBack
+                    )
+
+                    if (isOwner) {
+                        ProjectDetailPlainAction(
+                            iconRes = R.drawable.ic_edit,
+                            label = "Edit",
+                            contentColor = contentColor,
+                            onClick = onEdit
+                        )
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .aspectRatio(16f / 10f)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(contentColor.copy(alpha = 0.045f))
+                        .aspectRatio(16f / 9f)
                 ) {
                     if (project.images.isNotEmpty()) {
                         AsyncImage(
@@ -995,187 +974,125 @@ fun ProjectDetailScreen(
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(
-                                    Brush.linearGradient(
-                                        colors = listOf(
-                                            heroAccent.copy(alpha = 0.42f),
-                                            accentColor.copy(alpha = 0.2f),
-                                            contentColor.copy(alpha = 0.08f)
-                                        )
-                                    )
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Image(
-                                painter = painterResource(
-                                    when {
-                                        !project.githubUrl.isNullOrBlank() -> R.drawable.ic_code
-                                        !project.projectUrl.isNullOrBlank() -> R.drawable.ic_globe
-                                        else -> R.drawable.ic_work
-                                    }
-                                ),
-                                contentDescription = null,
-                                modifier = Modifier.size(48.dp),
-                                colorFilter = ColorFilter.tint(heroAccent)
-                            )
-                        }
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color.Black.copy(alpha = 0.14f),
-                                        Color.Transparent,
-                                        Color.Black.copy(alpha = 0.46f)
-                                    )
-                                )
-                            )
-                    )
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        ProjectDetailHeroButton(
-                            label = "Back",
-                            onClick = onBack
-                        )
-
-                        if (isOwner) {
-                            ProjectDetailHeroButton(
-                                iconRes = R.drawable.ic_edit,
-                                label = "Edit",
-                                onClick = onEdit
-                            )
-                        }
-                    }
-
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            if (project.featured) {
-                                ProjectDetailBadge(
-                                    iconRes = R.drawable.ic_sparkles,
-                                    label = "Featured",
-                                    tint = heroAccent,
-                                    background = Color.Black.copy(alpha = 0.28f)
-                                )
-                            }
-                            if (project.isCurrent) {
-                                ProjectDetailBadge(
-                                    iconRes = R.drawable.ic_check,
-                                    label = "Active",
-                                    tint = Color.White,
-                                    background = Color.White.copy(alpha = 0.14f)
-                                )
-                            }
-                        }
-
-                        BasicText(
-                            text = project.name,
-                            style = TextStyle(Color.White, 28.sp, FontWeight.Bold),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-
-                        project.role?.takeIf { it.isNotBlank() }?.let { role ->
-                            BasicText(
-                                text = role,
-                                style = TextStyle(
-                                    color = Color.White.copy(alpha = 0.88f),
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium
-                                ),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        BasicText(
-                            text = timelineLabel,
-                            style = TextStyle(
-                                color = Color.White.copy(alpha = 0.7f),
-                                fontSize = 12.sp
+                        Image(
+                            painter = painterResource(
+                                when {
+                                    !project.githubUrl.isNullOrBlank() -> R.drawable.ic_code
+                                    !project.projectUrl.isNullOrBlank() -> R.drawable.ic_globe
+                                    else -> R.drawable.ic_work
+                                }
                             ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            contentDescription = null,
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .size(42.dp),
+                            colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.42f))
                         )
                     }
                 }
-            }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                ProjectDetailSectionSurface(
-                    title = "Overview",
-                    backdrop = backdrop,
-                    contentColor = contentColor,
-                    borderColor = surfaceBorder
-                ) {
-                    ProjectDetailOverviewBlock(
-                        project = project,
-                        overviewItems = overviewItems,
-                        contentColor = contentColor,
-                        accentColor = heroAccent
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BasicText(
+                            text = if (project.isCurrent) "Active" else "Completed",
+                            style = TextStyle(
+                                color = mutedTextColor,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        )
+                        if (project.featured) {
+                            Box(
+                                Modifier
+                                    .width(4.dp)
+                                    .height(4.dp)
+                                    .clip(CircleShape)
+                                    .background(mutedTextColor)
+                            )
+                            BasicText(
+                                text = "Featured",
+                                style = TextStyle(
+                                    color = mutedTextColor,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+                    }
+
+                    BasicText(
+                        text = project.name,
+                        style = TextStyle(
+                            color = contentColor,
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold,
+                            lineHeight = 34.sp
+                        ),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
                     )
+                }
+
+                Column {
+                    project.role?.takeIf { it.isNotBlank() }?.let { role ->
+                        ProjectDetailPlainInfoRow(
+                            iconRes = R.drawable.ic_work,
+                            label = "Role",
+                            value = role,
+                            contentColor = contentColor,
+                            lineColor = subtleLineColor
+                        )
+                    }
+                    ProjectDetailPlainInfoRow(
+                        iconRes = R.drawable.ic_calendar,
+                        label = "Timeline",
+                        value = timelineLabel.ifBlank { "Timeline not set" },
+                        contentColor = contentColor,
+                        lineColor = subtleLineColor
+                    )
+                    if (project.images.isNotEmpty()) {
+                        ProjectDetailPlainInfoRow(
+                            iconRes = R.drawable.ic_image,
+                            label = "Media",
+                            value = "${project.images.size} visual${if (project.images.size > 1) "s" else ""}",
+                            contentColor = contentColor,
+                            lineColor = subtleLineColor
+                        )
+                    }
                 }
 
                 if (project.description.isNotBlank()) {
-                    ProjectDetailSectionSurface(
-                        title = "About this project",
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        borderColor = surfaceBorder
+                    ProjectDetailPlainSection(
+                        title = "About",
+                        contentColor = contentColor
                     ) {
                         BasicText(
                             text = project.description,
                             style = TextStyle(
-                                color = contentColor.copy(alpha = 0.84f),
-                                fontSize = 14.sp,
-                                lineHeight = 21.sp
+                                color = contentColor.copy(alpha = 0.82f),
+                                fontSize = 15.sp,
+                                lineHeight = 23.sp
                             )
                         )
                     }
                 }
 
                 if (project.techStack.isNotEmpty()) {
-                    ProjectDetailSectionSurface(
+                    ProjectDetailPlainSection(
                         title = "Stack",
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        borderColor = surfaceBorder
+                        contentColor = contentColor
                     ) {
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             project.techStack.forEach { tech ->
-                                ProjectDetailBadge(
-                                    iconRes = R.drawable.ic_code,
-                                    label = tech,
-                                    tint = heroAccent,
-                                    background = heroAccent.copy(alpha = 0.12f),
-                                    textColor = contentColor
+                                ProjectDetailPlainTag(
+                                    text = tech,
+                                    contentColor = contentColor
                                 )
                             }
                         }
@@ -1183,36 +1100,36 @@ fun ProjectDetailScreen(
                 }
 
                 if (detailLinks.isNotEmpty()) {
-                    ProjectDetailSectionSurface(
-                        title = "Explore",
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        borderColor = surfaceBorder
+                    ProjectDetailPlainSection(
+                        title = "Links",
+                        contentColor = contentColor
                     ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            detailLinks.forEach { link ->
-                                ProjectDetailLinkRow(
+                        Column {
+                            detailLinks.forEachIndexed { index, link ->
+                                ProjectDetailPlainLinkRow(
                                     link = link,
                                     contentColor = contentColor,
+                                    lineColor = subtleLineColor,
                                     onClick = {
                                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link.url)))
                                     }
                                 )
+                                if (index != detailLinks.lastIndex) {
+                                    ProjectDetailPlainDivider(subtleLineColor)
+                                }
                             }
                         }
                     }
                 }
 
                 if (project.images.size > 1) {
-                    ProjectDetailSectionSurface(
+                    ProjectDetailPlainSection(
                         title = "Gallery",
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        borderColor = surfaceBorder
+                        contentColor = contentColor
                     ) {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             items(project.images.drop(1)) { imageUrl ->
-                                ProjectDetailGalleryCard(
+                                ProjectDetailPlainGalleryImage(
                                     imageUrl = imageUrl,
                                     projectName = project.name
                                 )
@@ -1221,10 +1138,511 @@ fun ProjectDetailScreen(
                     }
                 }
 
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(20.dp))
             }
         }
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RetroProjectDetailScreen(
+    project: Project,
+    isOwner: Boolean,
+    onEdit: () -> Unit,
+    onBack: () -> Unit
+) {
+    val context = LocalContext.current
+    val detailLinks = buildList {
+        project.projectUrl?.takeIf { it.isNotBlank() }?.let { url ->
+            add("LIVE" to url)
+        }
+        project.githubUrl?.takeIf { it.isNotBlank() }?.let { url ->
+            add("GITHUB" to url)
+        }
+        project.otherLinks.orEmpty()
+            .filter { it.url.isNotBlank() }
+            .forEach { add(it.name.ifBlank { "LINK" }.uppercase(Locale.US) to it.url) }
+    }
+
+    fun openUrl(url: String) {
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(RetroProjectCream)
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 14.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RetroProjectButton("BACK", Color.White, RetroProjectInk, onBack)
+                BasicText(
+                    "PROJECT / VIEW",
+                    style = TextStyle(RetroProjectInk, 11.sp, FontWeight.Black, letterSpacing = 1.2.sp),
+                    modifier = Modifier
+                        .border(2.dp, RetroProjectInk, RoundedCornerShape(0.dp))
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                )
+                if (isOwner) {
+                    RetroProjectButton("EDIT", RetroProjectYellow, RetroProjectInk, onEdit)
+                } else {
+                    Spacer(Modifier.width(58.dp))
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .background(Color.White.copy(alpha = 0.72f))
+                    .border(2.dp, RetroProjectInk, RoundedCornerShape(0.dp))
+            ) {
+                if (project.images.isNotEmpty()) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(project.images.first())
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = project.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Image(
+                        painter = painterResource(
+                            when {
+                                !project.githubUrl.isNullOrBlank() -> R.drawable.ic_code
+                                !project.projectUrl.isNullOrBlank() -> R.drawable.ic_globe
+                                else -> R.drawable.ic_work
+                            }
+                        ),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .size(44.dp),
+                        colorFilter = ColorFilter.tint(RetroProjectInk.copy(alpha = 0.48f))
+                    )
+                }
+                if (project.featured) {
+                    BasicText(
+                        "FEATURED",
+                        style = TextStyle(RetroProjectInk, 10.sp, FontWeight.Black),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp)
+                            .background(RetroProjectYellow)
+                            .border(2.dp, RetroProjectInk, RoundedCornerShape(0.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.White.copy(alpha = 0.72f))
+                    .border(2.dp, RetroProjectInk, RoundedCornerShape(0.dp))
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                BasicText(
+                    "// QUEST FILE",
+                    style = TextStyle(RetroProjectInk.copy(alpha = 0.66f), 10.sp, FontWeight.Black, letterSpacing = 1.sp)
+                )
+                BasicText(
+                    project.name.uppercase(Locale.US),
+                    style = TextStyle(RetroProjectInk, 24.sp, FontWeight.Black, lineHeight = 26.sp),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    RetroProjectTag(if (project.isCurrent) "ACTIVE" else "COMPLETED", RetroProjectGreen)
+                    if (project.featured) RetroProjectTag("PINNED", RetroProjectYellow)
+                    project.role?.takeIf { it.isNotBlank() }?.let { RetroProjectTag(it, Color.White) }
+                    RetroProjectTag(projectDetailTimeline(project).ifBlank { "TIMELINE TBD" }, Color.White)
+                }
+            }
+
+            if (project.description.isNotBlank()) {
+                RetroProjectSection("About") {
+                    BasicText(
+                        project.description,
+                        style = TextStyle(RetroProjectInk.copy(alpha = 0.84f), 14.sp, FontWeight.Medium, lineHeight = 20.sp)
+                    )
+                }
+            }
+
+            if (project.techStack.isNotEmpty()) {
+                RetroProjectSection("Stack") {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        project.techStack.forEach { tech ->
+                            RetroProjectTag(tech, RetroProjectYellow.copy(alpha = 0.72f))
+                        }
+                    }
+                }
+            }
+
+            if (detailLinks.isNotEmpty()) {
+                RetroProjectSection("Links") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        detailLinks.forEach { (label, url) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color.White)
+                                    .border(2.dp, RetroProjectInk, RoundedCornerShape(0.dp))
+                                    .clickable { openUrl(url) }
+                                    .padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    BasicText(label, style = TextStyle(RetroProjectInk, 12.sp, FontWeight.Black))
+                                    BasicText(
+                                        projectLinkHost(url),
+                                        style = TextStyle(RetroProjectInk.copy(alpha = 0.58f), 10.sp, FontWeight.Black),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                BasicText("OPEN ->", style = TextStyle(RetroProjectRed, 11.sp, FontWeight.Black))
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (project.images.size > 1) {
+                RetroProjectSection("Gallery") {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(project.images.drop(1)) { imageUrl ->
+                            AsyncImage(
+                                model = ImageRequest.Builder(context)
+                                    .data(imageUrl)
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = project.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .height(132.dp)
+                                    .aspectRatio(16f / 10f)
+                                    .background(Color.White)
+                                    .border(2.dp, RetroProjectInk, RoundedCornerShape(0.dp))
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetroProjectSection(
+    title: String,
+    content: @Composable () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.72f))
+            .border(2.dp, RetroProjectInk, RoundedCornerShape(0.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        BasicText(
+            "// ${title.uppercase(Locale.US)}",
+            style = TextStyle(RetroProjectInk, 12.sp, FontWeight.Black, letterSpacing = 1.2.sp)
+        )
+        content()
+    }
+}
+
+@Composable
+private fun RetroProjectTag(
+    text: String,
+    background: Color
+) {
+    BasicText(
+        text.uppercase(Locale.US),
+        style = TextStyle(RetroProjectInk, 10.sp, FontWeight.Black),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .background(background)
+            .border(2.dp, RetroProjectInk, RoundedCornerShape(0.dp))
+            .padding(horizontal = 8.dp, vertical = 5.dp)
+    )
+}
+
+@Composable
+private fun RetroProjectButton(
+    label: String,
+    background: Color,
+    contentColor: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .background(background)
+            .border(2.dp, RetroProjectInk, RoundedCornerShape(0.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            label,
+            style = TextStyle(contentColor, 11.sp, FontWeight.Black),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun ProjectDetailPlainAction(
+    iconRes: Int,
+    label: String,
+    contentColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .background(contentColor.copy(alpha = 0.055f))
+            .padding(horizontal = 11.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Image(
+            painter = painterResource(iconRes),
+            contentDescription = label,
+            modifier = Modifier.size(14.dp),
+            colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.82f))
+        )
+        BasicText(
+            text = label,
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.86f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+    }
+}
+
+@Composable
+private fun ProjectDetailPlainSection(
+    title: String,
+    contentColor: Color,
+    content: @Composable () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        BasicText(
+            text = title,
+            style = TextStyle(
+                color = contentColor,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+        content()
+    }
+}
+
+@Composable
+private fun ProjectDetailPlainInfoRow(
+    iconRes: Int,
+    label: String,
+    value: String,
+    contentColor: Color,
+    lineColor: Color
+) {
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 13.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Image(
+                painter = painterResource(iconRes),
+                contentDescription = label,
+                modifier = Modifier.size(18.dp),
+                colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.55f))
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                BasicText(
+                    text = label,
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.5f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+                BasicText(
+                    text = value,
+                    style = TextStyle(
+                        color = contentColor.copy(alpha = 0.9f),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        ProjectDetailPlainDivider(lineColor)
+    }
+}
+
+@Composable
+private fun ProjectDetailPlainTag(
+    text: String,
+    contentColor: Color
+) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(9.dp))
+            .background(contentColor.copy(alpha = 0.055f))
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .width(2.dp)
+                .height(12.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(contentColor.copy(alpha = 0.44f))
+        )
+        BasicText(
+            text = text,
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.82f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun ProjectDetailPlainLinkRow(
+    link: ProjectDetailLinkEntry,
+    contentColor: Color,
+    lineColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Image(
+            painter = painterResource(link.iconRes),
+            contentDescription = link.title,
+            modifier = Modifier.size(18.dp),
+            colorFilter = ColorFilter.tint(contentColor.copy(alpha = 0.58f))
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            BasicText(
+                text = link.title,
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.9f),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            BasicText(
+                text = link.subtitle,
+                style = TextStyle(
+                    color = contentColor.copy(alpha = 0.5f),
+                    fontSize = 12.sp
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        BasicText(
+            text = "Open",
+            style = TextStyle(
+                color = contentColor.copy(alpha = 0.62f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+    }
+}
+
+@Composable
+private fun ProjectDetailPlainDivider(color: Color) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(color)
+    )
+}
+
+@Composable
+private fun ProjectDetailPlainGalleryImage(
+    imageUrl: String,
+    projectName: String
+) {
+    val context = LocalContext.current
+
+    AsyncImage(
+        model = ImageRequest.Builder(context)
+            .data(imageUrl)
+            .crossfade(true)
+            .build(),
+        contentDescription = projectName,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier
+            .height(132.dp)
+            .aspectRatio(16f / 10f)
+            .clip(RoundedCornerShape(14.dp))
+    )
 }
 
 private data class ProjectDetailOverviewItem(
@@ -1673,12 +2091,14 @@ private fun ProjectEditorSection(
     surfaceColor: Color,
     content: @Composable () -> Unit
 ) {
+    val isRetro = borderColor == RetroProjectInk
+    val shape = if (isRetro) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .background(surfaceColor)
-            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
-            .clip(RoundedCornerShape(12.dp))
+            .border(if (isRetro) 2.dp else 1.dp, borderColor, shape)
+            .clip(shape)
     ) {
         Column(
             modifier = Modifier
@@ -1692,9 +2112,13 @@ private fun ProjectEditorSection(
             ) {
                 Box(
                     modifier = Modifier
-                        .clip(CircleShape)
-                        .background(accentColor.copy(alpha = 0.14f))
-                        .border(1.dp, accentColor.copy(alpha = 0.18f), CircleShape)
+                        .clip(if (isRetro) RoundedCornerShape(0.dp) else CircleShape)
+                        .background(if (isRetro) RetroProjectYellow else accentColor.copy(alpha = 0.14f))
+                        .border(
+                            if (isRetro) 2.dp else 1.dp,
+                            if (isRetro) RetroProjectInk else accentColor.copy(alpha = 0.18f),
+                            if (isRetro) RoundedCornerShape(0.dp) else CircleShape
+                        )
                         .padding(10.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -1702,7 +2126,7 @@ private fun ProjectEditorSection(
                         painter = painterResource(iconRes),
                         contentDescription = title,
                         modifier = Modifier.size(18.dp),
-                        colorFilter = ColorFilter.tint(accentColor)
+                        colorFilter = ColorFilter.tint(if (isRetro) RetroProjectInk else accentColor)
                     )
                 }
 
@@ -1712,7 +2136,8 @@ private fun ProjectEditorSection(
                         style = TextStyle(
                             color = contentColor,
                             fontSize = 18.sp,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = if (isRetro) FontWeight.Black else FontWeight.SemiBold,
+                            letterSpacing = if (isRetro) 0.6.sp else 0.sp
                         )
                     )
                     BasicText(
@@ -1738,11 +2163,16 @@ private fun ProjectEditorMetricChip(
     tint: Color,
     contentColor: Color
 ) {
+    val isRetro = contentColor == RetroProjectInk
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(Color.White.copy(alpha = 0.12f))
-            .border(1.dp, tint.copy(alpha = 0.18f), RoundedCornerShape(999.dp))
+            .clip(if (isRetro) RoundedCornerShape(0.dp) else RoundedCornerShape(999.dp))
+            .background(if (isRetro) Color.White.copy(alpha = 0.76f) else Color.White.copy(alpha = 0.12f))
+            .border(
+                if (isRetro) 2.dp else 1.dp,
+                if (isRetro) RetroProjectInk else tint.copy(alpha = 0.18f),
+                if (isRetro) RoundedCornerShape(0.dp) else RoundedCornerShape(999.dp)
+            )
             .padding(horizontal = 10.dp, vertical = 7.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -1755,7 +2185,7 @@ private fun ProjectEditorMetricChip(
         )
         BasicText(
             text = label,
-            style = TextStyle(contentColor, 11.sp, FontWeight.SemiBold),
+            style = TextStyle(contentColor, 11.sp, if (isRetro) FontWeight.Black else FontWeight.SemiBold),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -1774,19 +2204,24 @@ private fun ProjectEditorActionButton(
     accentColor: Color,
     onClick: () -> Unit
 ) {
+    val isRetro = contentColor == RetroProjectInk
     val background = when {
+        isRetro && filled && enabled -> accentColor
+        isRetro && filled -> accentColor.copy(alpha = 0.55f)
+        isRetro -> Color.White.copy(alpha = 0.78f)
         filled && enabled -> accentColor
         filled -> accentColor.copy(alpha = 0.3f)
         else -> contentColor.copy(alpha = 0.05f)
     }
-    val border = if (filled) Color.Transparent else contentColor.copy(alpha = 0.08f)
+    val border = if (isRetro) RetroProjectInk else if (filled) Color.Transparent else contentColor.copy(alpha = 0.08f)
     val textColor = if (filled) Color.White else contentColor
+    val shape = if (isRetro) RoundedCornerShape(0.dp) else RoundedCornerShape(18.dp)
 
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(18.dp))
+            .clip(shape)
             .background(background)
-            .border(1.dp, border, RoundedCornerShape(18.dp))
+            .border(if (isRetro) 2.dp else 1.dp, border, shape)
             .clickable(enabled = enabled && !loading, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.Center,
@@ -1813,7 +2248,7 @@ private fun ProjectEditorActionButton(
                 }
                 BasicText(
                     text = label,
-                    style = TextStyle(textColor, 14.sp, FontWeight.SemiBold)
+                    style = TextStyle(textColor, 14.sp, if (isRetro) FontWeight.Black else FontWeight.SemiBold)
                 )
             }
         }
@@ -1830,6 +2265,7 @@ private fun ProjectDateField(
     accentColor: Color,
     onClick: () -> Unit
 ) {
+    val isRetro = contentColor == RetroProjectInk
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -1842,15 +2278,16 @@ private fun ProjectDateField(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
+                .clip(if (isRetro) RoundedCornerShape(0.dp) else RoundedCornerShape(18.dp))
                 .background(
-                    if (enabled) contentColor.copy(alpha = 0.04f)
+                    if (isRetro) Color.White.copy(alpha = if (enabled) 0.74f else 0.46f)
+                    else if (enabled) contentColor.copy(alpha = 0.04f)
                     else contentColor.copy(alpha = 0.025f)
                 )
                 .border(
-                    1.dp,
-                    if (enabled) accentColor.copy(alpha = 0.12f) else contentColor.copy(alpha = 0.06f),
-                    RoundedCornerShape(18.dp)
+                    if (isRetro) 2.dp else 1.dp,
+                    if (isRetro) RetroProjectInk else if (enabled) accentColor.copy(alpha = 0.12f) else contentColor.copy(alpha = 0.06f),
+                    if (isRetro) RoundedCornerShape(0.dp) else RoundedCornerShape(18.dp)
                 )
                 .clickable(enabled = enabled, onClick = onClick)
                 .padding(horizontal = 14.dp, vertical = 14.dp),
@@ -1859,8 +2296,8 @@ private fun ProjectDateField(
         ) {
             Box(
                 modifier = Modifier
-                    .clip(CircleShape)
-                    .background(accentColor.copy(alpha = if (enabled) 0.14f else 0.08f))
+                    .clip(if (isRetro) RoundedCornerShape(0.dp) else CircleShape)
+                    .background(if (isRetro) RetroProjectYellow else accentColor.copy(alpha = if (enabled) 0.14f else 0.08f))
                     .padding(8.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -1868,7 +2305,7 @@ private fun ProjectDateField(
                     painter = painterResource(R.drawable.ic_calendar),
                     contentDescription = label,
                     modifier = Modifier.size(14.dp),
-                    colorFilter = ColorFilter.tint(if (enabled) accentColor else contentColor.copy(alpha = 0.4f))
+                    colorFilter = ColorFilter.tint(if (isRetro) RetroProjectInk else if (enabled) accentColor else contentColor.copy(alpha = 0.4f))
                 )
             }
             BasicText(
@@ -1896,19 +2333,23 @@ private fun ProjectToggleCard(
     trailingNote: String? = null,
     onToggle: () -> Unit
 ) {
+    val isRetro = contentColor == RetroProjectInk
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .clip(if (isRetro) RoundedCornerShape(0.dp) else RoundedCornerShape(20.dp))
             .background(
-                if (checked) accentColor.copy(alpha = 0.10f)
+                if (isRetro && checked) accentColor.copy(alpha = 0.88f)
+                else if (isRetro) Color.White.copy(alpha = 0.74f)
+                else if (checked) accentColor.copy(alpha = 0.10f)
                 else contentColor.copy(alpha = 0.04f)
             )
             .border(
-                1.dp,
-                if (checked) accentColor.copy(alpha = 0.2f)
+                if (isRetro) 2.dp else 1.dp,
+                if (isRetro) RetroProjectInk
+                else if (checked) accentColor.copy(alpha = 0.2f)
                 else contentColor.copy(alpha = 0.08f),
-                RoundedCornerShape(20.dp)
+                if (isRetro) RoundedCornerShape(0.dp) else RoundedCornerShape(20.dp)
             )
             .clickable(onClick = onToggle)
             .padding(14.dp),
@@ -1917,8 +2358,8 @@ private fun ProjectToggleCard(
     ) {
         Box(
             modifier = Modifier
-                .clip(CircleShape)
-                .background(accentColor.copy(alpha = if (checked) 0.18f else 0.1f))
+                .clip(if (isRetro) RoundedCornerShape(0.dp) else CircleShape)
+                .background(if (isRetro) Color.White.copy(alpha = 0.82f) else accentColor.copy(alpha = if (checked) 0.18f else 0.1f))
                 .padding(10.dp),
             contentAlignment = Alignment.Center
         ) {
@@ -1926,7 +2367,7 @@ private fun ProjectToggleCard(
                 painter = painterResource(iconRes),
                 contentDescription = label,
                 modifier = Modifier.size(16.dp),
-                colorFilter = ColorFilter.tint(accentColor)
+                colorFilter = ColorFilter.tint(if (isRetro) RetroProjectInk else accentColor)
             )
         }
 
@@ -1940,7 +2381,7 @@ private fun ProjectToggleCard(
             ) {
                 BasicText(
                     text = label,
-                    style = TextStyle(contentColor, 14.sp, FontWeight.SemiBold)
+                    style = TextStyle(contentColor, 14.sp, if (isRetro) FontWeight.Black else FontWeight.SemiBold)
                 )
                 trailingNote?.let { note ->
                     BasicText(
@@ -1958,12 +2399,12 @@ private fun ProjectToggleCard(
         Box(
             modifier = Modifier
                 .size(24.dp)
-                .clip(CircleShape)
-                .background(if (checked) accentColor else Color.Transparent)
+                .clip(if (isRetro) RoundedCornerShape(0.dp) else CircleShape)
+                .background(if (checked) (if (isRetro) RetroProjectInk else accentColor) else Color.Transparent)
                 .border(
-                    1.dp,
-                    if (checked) accentColor else contentColor.copy(alpha = 0.2f),
-                    CircleShape
+                    if (isRetro) 2.dp else 1.dp,
+                    if (checked) (if (isRetro) RetroProjectInk else accentColor) else contentColor.copy(alpha = 0.2f),
+                    if (isRetro) RoundedCornerShape(0.dp) else CircleShape
                 ),
             contentAlignment = Alignment.Center
         ) {
@@ -1993,6 +2434,7 @@ private fun FormField(
     iconRes: Int? = null,
     helperText: String? = null
 ) {
+    val isRetro = contentColor == RetroProjectInk
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -2001,8 +2443,13 @@ private fun FormField(
             iconRes?.let { res ->
                 Box(
                     modifier = Modifier
-                        .clip(CircleShape)
-                        .background(accentColor.copy(alpha = 0.14f))
+                        .clip(if (isRetro) RoundedCornerShape(0.dp) else CircleShape)
+                        .background(if (isRetro) RetroProjectYellow else accentColor.copy(alpha = 0.14f))
+                        .border(
+                            if (isRetro) 2.dp else 0.dp,
+                            if (isRetro) RetroProjectInk else Color.Transparent,
+                            RoundedCornerShape(0.dp)
+                        )
                         .padding(8.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -2010,7 +2457,7 @@ private fun FormField(
                         painter = painterResource(res),
                         contentDescription = label,
                         modifier = Modifier.size(14.dp),
-                        colorFilter = ColorFilter.tint(accentColor)
+                        colorFilter = ColorFilter.tint(if (isRetro) RetroProjectInk else accentColor)
                     )
                 }
             }
@@ -2032,13 +2479,14 @@ private fun FormField(
         Box(
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(contentColor.copy(alpha = 0.04f))
+                .clip(if (isRetro) RoundedCornerShape(0.dp) else RoundedCornerShape(20.dp))
+                .background(if (isRetro) Color.White.copy(alpha = 0.74f) else contentColor.copy(alpha = 0.04f))
                 .border(
-                    1.dp,
-                    if (value.isNotBlank()) accentColor.copy(alpha = 0.18f)
+                    if (isRetro) 2.dp else 1.dp,
+                    if (isRetro) RetroProjectInk
+                    else if (value.isNotBlank()) accentColor.copy(alpha = 0.18f)
                     else contentColor.copy(alpha = 0.08f),
-                    RoundedCornerShape(20.dp)
+                    if (isRetro) RoundedCornerShape(0.dp) else RoundedCornerShape(20.dp)
                 )
                 .padding(horizontal = 14.dp, vertical = 14.dp)
         ) {

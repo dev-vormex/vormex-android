@@ -17,7 +17,22 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.kyant.backdrop.catalog.MainActivity
 import com.kyant.backdrop.catalog.R
+import com.kyant.backdrop.catalog.chat.cache.ChatCacheRepository
 import com.kyant.backdrop.catalog.data.ChatMutePreferences
+import com.kyant.backdrop.catalog.data.SettingsPreferences
+import com.kyant.backdrop.catalog.network.ApiClient
+import com.kyant.backdrop.catalog.network.ChatSocketManager
+import com.kyant.backdrop.catalog.network.GroupSocketManager
+import com.kyant.backdrop.catalog.network.models.ChatUser
+import com.kyant.backdrop.catalog.network.models.Message
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 /**
  * Firebase Cloud Messaging Service for Vormex
@@ -34,6 +49,11 @@ import com.kyant.backdrop.catalog.data.ChatMutePreferences
  */
 class VormexMessagingService : FirebaseMessagingService() {
 
+    private val json = Json {
+        encodeDefaults = true
+        ignoreUnknownKeys = true
+    }
+
     companion object {
         private const val TAG = "VormexMessaging"
         
@@ -47,8 +67,10 @@ class VormexMessagingService : FirebaseMessagingService() {
         // Deep link actions
         const val ACTION_CHAT = "chat"
         const val ACTION_POST = "post"
+        const val ACTION_POST_COMMENTS = "post_comments"
         const val ACTION_REEL = "reel"
         const val ACTION_PROFILE = "profile"
+        const val ACTION_PROFILE_VIEWS = "profile_views"
         const val ACTION_CONNECTIONS = "connections"
         const val ACTION_STREAK = "streak"
         const val ACTION_ENGAGEMENT = "engagement"
@@ -58,14 +80,22 @@ class VormexMessagingService : FirebaseMessagingService() {
         const val ACTION_LEADERBOARD = "leaderboard"
         const val ACTION_CONNECTION_CELEBRATION = "connection_celebration"
         const val ACTION_SESSION_SUMMARY = "session_summary"
+        const val ACTION_GROUP_CHAT = "group_chat"
+        const val ACTION_HACKATHONS = "hackathons"
+        const val ACTION_SKILL_SWAP = "skill_swap"
+        const val ACTION_CROSSED_PATHS = "crossed_paths"
         
         // Intent extras
         const val EXTRA_ACTION = "notification_action"
         const val EXTRA_USER_ID = "user_id"
         const val EXTRA_POST_ID = "post_id"
         const val EXTRA_REEL_ID = "reel_id"
+        const val EXTRA_COMMENT_ID = "comment_id"
+        const val EXTRA_PARENT_COMMENT_ID = "parent_comment_id"
         const val EXTRA_CONVERSATION_ID = "conversation_id"
+        const val EXTRA_GROUP_ID = "group_id"
         const val EXTRA_CONNECTION_ID = "connection_id"
+        const val EXTRA_TAB = "tab"
 
         /**
          * Get current FCM token
@@ -231,6 +261,7 @@ class VormexMessagingService : FirebaseMessagingService() {
                 .setSound(soundUri)
                 .setContentIntent(pendingIntent)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setLargeIcon(NotificationBranding.getAppLogoBitmap(context))
             
             if (body.length > 50) {
                 notificationBuilder.setStyle(NotificationCompat.BigTextStyle().bigText(body))
@@ -245,8 +276,22 @@ class VormexMessagingService : FirebaseMessagingService() {
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 
                 val type = data["type"] ?: data["screen"] ?: ""
+                if (isIdentityVerificationNotification(type)) {
+                    return@apply
+                }
                 
                 when {
+                    type.equals("crossed_paths_summary", ignoreCase = true) ||
+                    data["screen"].equals("crossed_paths", ignoreCase = true) -> {
+                        putExtra(EXTRA_ACTION, ACTION_CROSSED_PATHS)
+                    }
+                    type.contains("group_message", ignoreCase = true) ||
+                        (type.contains("group", ignoreCase = true) && type.contains("message", ignoreCase = true)) -> {
+                        putExtra(EXTRA_ACTION, ACTION_GROUP_CHAT)
+                        data["groupId"]?.let { putExtra(EXTRA_GROUP_ID, it) }
+                        data["senderId"]?.let { putExtra(EXTRA_USER_ID, it) }
+                            ?: data["user_id"]?.let { putExtra(EXTRA_USER_ID, it) }
+                    }
                     type.contains("message", ignoreCase = true) || type == "chat" -> {
                         putExtra(EXTRA_ACTION, ACTION_CHAT)
                         data["conversationId"]?.let { putExtra(EXTRA_CONVERSATION_ID, it) }
@@ -256,14 +301,22 @@ class VormexMessagingService : FirebaseMessagingService() {
                     type.contains("like", ignoreCase = true) || 
                     type.contains("comment", ignoreCase = true) ||
                     type.contains("mention", ignoreCase = true) -> {
+                        val shouldOpenPostComments =
+                            type.contains("comment", ignoreCase = true) ||
+                                !data["commentId"].isNullOrBlank()
                         data["postId"]?.let {
-                            putExtra(EXTRA_ACTION, ACTION_POST)
+                            putExtra(
+                                EXTRA_ACTION,
+                                if (shouldOpenPostComments) ACTION_POST_COMMENTS else ACTION_POST
+                            )
                             putExtra(EXTRA_POST_ID, it)
                         }
                         data["reelId"]?.let {
                             putExtra(EXTRA_ACTION, ACTION_REEL)
                             putExtra(EXTRA_REEL_ID, it)
                         }
+                        data["commentId"]?.let { putExtra(EXTRA_COMMENT_ID, it) }
+                        data["parentCommentId"]?.let { putExtra(EXTRA_PARENT_COMMENT_ID, it) }
                     }
                     type.equals("connection_accepted", ignoreCase = true) ||
                     type.equals("new_connection", ignoreCase = true) ||
@@ -289,18 +342,40 @@ class VormexMessagingService : FirebaseMessagingService() {
                     type.contains("streak", ignoreCase = true) -> {
                         putExtra(EXTRA_ACTION, ACTION_STREAK)
                     }
+                    type.contains("hackathon", ignoreCase = true) ||
+                    data["screen"].equals("hackathons", ignoreCase = true) -> {
+                        putExtra(EXTRA_ACTION, ACTION_HACKATHONS)
+                    }
+                    type.contains("skill_swap", ignoreCase = true) ||
+                    data["screen"].equals("skill_swap", ignoreCase = true) -> {
+                        putExtra(EXTRA_ACTION, ACTION_SKILL_SWAP)
+                        data["tab"]?.let { putExtra(EXTRA_TAB, it) }
+                        data["actorId"]?.let { putExtra(EXTRA_USER_ID, it) }
+                    }
                     type.contains("match", ignoreCase = true) || type == "find_people" -> {
                         putExtra(EXTRA_ACTION, ACTION_FIND_PEOPLE)
+                        data["matchUserId"]?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_USER_ID, it) }
+                            ?: data["actorId"]?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_USER_ID, it) }
+                    }
+                    type.equals("profile_view", ignoreCase = true) ||
+                    data["screen"].equals("profile_views", ignoreCase = true) -> {
+                        putExtra(EXTRA_ACTION, ACTION_PROFILE_VIEWS)
                     }
                     type.contains("profile", ignoreCase = true) -> {
                         putExtra(EXTRA_ACTION, ACTION_PROFILE)
                         data["viewerId"]?.let { putExtra(EXTRA_USER_ID, it) }
+                            ?: data["actorId"]?.let { putExtra(EXTRA_USER_ID, it) }
                     }
                     else -> {
                         putExtra(EXTRA_ACTION, ACTION_ENGAGEMENT)
                     }
                 }
             }
+        }
+
+        private fun isIdentityVerificationNotification(type: String): Boolean {
+            return type.equals("identity_verification_approved", ignoreCase = true) ||
+                type.equals("identity_verification_resubmit_requested", ignoreCase = true)
         }
 
         /**
@@ -311,11 +386,43 @@ class VormexMessagingService : FirebaseMessagingService() {
                 type.contains("message", ignoreCase = true) -> CHANNEL_ID_MESSAGES
                 type.contains("connection", ignoreCase = true) -> CHANNEL_ID_CONNECTIONS
                 type.contains("streak", ignoreCase = true) -> CHANNEL_ID_STREAKS
+                type.contains("hackathon", ignoreCase = true) -> CHANNEL_ID_ENGAGEMENT
+                type.contains("skill_swap", ignoreCase = true) -> CHANNEL_ID_ENGAGEMENT
                 type.contains("like", ignoreCase = true) ||
                 type.contains("comment", ignoreCase = true) ||
                 type.contains("mention", ignoreCase = true) ||
-                type.contains("follow", ignoreCase = true) -> CHANNEL_ID_SOCIAL
+                type.contains("follow", ignoreCase = true) ||
+                type.contains("profile", ignoreCase = true) -> CHANNEL_ID_SOCIAL
                 else -> CHANNEL_ID_ENGAGEMENT
+            }
+        }
+
+        private fun isMatchNotificationType(type: String): Boolean {
+            return type.contains("match", ignoreCase = true) ||
+                type.equals("daily_match", ignoreCase = true) ||
+                type.equals("recommended_match", ignoreCase = true)
+        }
+
+        private fun resolveNotificationId(type: String, data: Map<String, String>): Int {
+            val batchKey = data["notificationBatchKey"]
+                ?.takeIf { it.isNotBlank() }
+                ?: data["batchKey"]?.takeIf { it.isNotBlank() }
+
+            return when {
+                !batchKey.isNullOrBlank() -> batchKey.hashCode()
+                else -> System.currentTimeMillis().toInt()
+            }
+        }
+
+        private fun resolveNotificationGroup(type: String, data: Map<String, String>): String {
+            val batchKey = data["notificationBatchKey"]
+                ?.takeIf { it.isNotBlank() }
+                ?: data["batchKey"]?.takeIf { it.isNotBlank() }
+
+            return when {
+                !batchKey.isNullOrBlank() && type.contains("profile", ignoreCase = true) ->
+                    "vormex_profile_view"
+                else -> "vormex_$type"
             }
         }
     }
@@ -352,9 +459,25 @@ class VormexMessagingService : FirebaseMessagingService() {
             val body = data["body"] ?: notification?.body ?: ""
             
             Log.d(TAG, "Processing notification - Title: $title, Body: $body, Type: $type")
+
+            if (isMatchNotificationType(type)) {
+                val matchAlertsEnabled = runBlocking(Dispatchers.IO) {
+                    SettingsPreferences.isMatchNotificationDeliveryEnabled(this@VormexMessagingService)
+                }
+                if (!matchAlertsEnabled) {
+                    Log.d(TAG, "Skipping match notification because match alerts are disabled")
+                    return
+                }
+            }
             
             if (body.isNotEmpty()) {
-                if (type.contains("message", ignoreCase = true)) {
+                if (
+                    type.contains("group_message", ignoreCase = true) ||
+                    (type.contains("group", ignoreCase = true) && type.contains("message", ignoreCase = true))
+                ) {
+                    showGroupMessageNotification(title, body, data)
+                    Log.d(TAG, "Group chat notification displayed successfully")
+                } else if (type.contains("message", ignoreCase = true)) {
                     showChatMessageNotification(title, body, data)
                     Log.d(TAG, "Chat notification displayed successfully")
                 } else {
@@ -382,11 +505,12 @@ class VormexMessagingService : FirebaseMessagingService() {
         data: Map<String, String>
     ) {
         createNotificationChannels(this)
+        val type = data["type"] ?: "general"
         
         val intent = createDeepLinkIntent(this, data)
         val pendingIntent = PendingIntent.getActivity(
             this,
-            System.currentTimeMillis().toInt(),
+            resolveNotificationId(type, data),
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
@@ -402,25 +526,32 @@ class VormexMessagingService : FirebaseMessagingService() {
             .setSound(soundUri)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setCategory(
+                if (type.contains("message", ignoreCase = true)) {
+                    NotificationCompat.CATEGORY_MESSAGE
+                } else {
+                    NotificationCompat.CATEGORY_SOCIAL
+                }
+            )
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setVibrate(longArrayOf(0, 250, 250, 250))
             .setDefaults(NotificationCompat.DEFAULT_LIGHTS)
             // Full screen intent for heads-up notification on locked screen
             .setFullScreenIntent(pendingIntent, true)
+            .setLargeIcon(NotificationBranding.getAppLogoBitmap(this))
 
         if (body.length > 50) {
             notificationBuilder.setStyle(NotificationCompat.BigTextStyle().bigText(body))
         }
 
         // Add notification group for same type
-        val type = data["type"] ?: "general"
-        notificationBuilder.setGroup("vormex_$type")
+        notificationBuilder.setGroup(resolveNotificationGroup(type, data))
 
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(System.currentTimeMillis().toInt(), notificationBuilder.build())
+        val notificationId = resolveNotificationId(type, data)
+        notificationManager.notify(notificationId, notificationBuilder.build())
         
-        Log.d(TAG, "Notification posted with ID: ${System.currentTimeMillis().toInt()}")
+        Log.d(TAG, "Notification posted with ID: $notificationId")
     }
 
     private fun showChatMessageNotification(
@@ -428,11 +559,6 @@ class VormexMessagingService : FirebaseMessagingService() {
         body: String,
         data: Map<String, String>
     ) {
-        if (MainActivity.isInForeground) {
-            Log.d(TAG, "Skipping FCM chat notification because app is in foreground")
-            return
-        }
-
         val conversationId = data["conversationId"].orEmpty()
         if (conversationId.isBlank()) {
             showNotification(title, body, CHANNEL_ID_MESSAGES, data)
@@ -449,6 +575,28 @@ class VormexMessagingService : FirebaseMessagingService() {
         val senderId = data["user_id"] ?: data["senderId"].orEmpty()
         val senderImage = data["senderImage"]?.takeIf { it.isNotBlank() }
 
+        val cachedMessage = cacheDirectPushMessage(
+            data = data,
+            notificationBody = body,
+            conversationId = conversationId,
+            senderName = senderName,
+            senderId = senderId,
+            senderImage = senderImage,
+            incrementUnread = ChatSocketManager.activeConversationId != conversationId
+        )
+
+        if (MainActivity.isInForeground) {
+            cachedMessage?.let { message ->
+                ChatSocketManager.emitExternalIncomingMessage(
+                    conversationId = conversationId,
+                    messageJson = json.encodeToString(Message.serializer(), message),
+                    source = "foreground-push"
+                )
+            }
+            Log.d(TAG, "Skipping FCM chat notification because app is in foreground")
+            return
+        }
+
         MessageNotificationManager.showMessageNotification(
             context = this,
             senderName = senderName,
@@ -456,6 +604,133 @@ class VormexMessagingService : FirebaseMessagingService() {
             senderImageUrl = senderImage,
             conversationId = conversationId,
             senderId = senderId
+        )
+
+        warmDirectChatCache(conversationId)
+    }
+
+    private fun cacheDirectPushMessage(
+        data: Map<String, String>,
+        notificationBody: String,
+        conversationId: String,
+        senderName: String,
+        senderId: String,
+        senderImage: String?,
+        incrementUnread: Boolean
+    ): Message? {
+        val messageId = data["messageId"]?.takeIf { it.isNotBlank() } ?: return null
+        if (senderId.isBlank()) return null
+
+        return runCatching {
+            runBlocking(Dispatchers.IO) {
+                withTimeoutOrNull(1_000L) {
+                    val currentUserId = ApiClient.getCurrentUserId(applicationContext)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: return@withTimeoutOrNull null
+                    val nowIso = formatNotificationNowIso()
+                    val createdAt = data["messageCreatedAt"]?.takeIf { it.isNotBlank() } ?: nowIso
+                    val updatedAt = data["messageUpdatedAt"]?.takeIf { it.isNotBlank() } ?: createdAt
+                    val content = data["messageContent"]?.takeIf { it.isNotBlank() } ?: notificationBody
+                    val sender = ChatUser(
+                        id = senderId,
+                        name = senderName.takeIf { it.isNotBlank() },
+                        profileImage = senderImage
+                    )
+                    val message = Message(
+                        id = messageId,
+                        clientMessageId = data["clientMessageId"]?.takeIf { it.isNotBlank() },
+                        conversationId = conversationId,
+                        senderId = senderId,
+                        receiverId = currentUserId,
+                        content = content,
+                        contentType = data["contentType"]?.takeIf { it.isNotBlank() } ?: "text",
+                        mediaUrl = data["mediaUrl"]?.takeIf { it.isNotBlank() },
+                        mediaType = data["mediaType"]?.takeIf { it.isNotBlank() },
+                        fileName = data["fileName"]?.takeIf { it.isNotBlank() },
+                        fileSize = data["fileSize"]?.toIntOrNull(),
+                        status = "SENT",
+                        sender = sender,
+                        createdAt = createdAt,
+                        updatedAt = updatedAt
+                    )
+
+                    ChatCacheRepository(applicationContext).upsertIncomingMessage(
+                        cacheOwnerId = currentUserId,
+                        conversationId = conversationId,
+                        message = message,
+                        currentUserId = currentUserId,
+                        incrementUnread = incrementUnread
+                    )
+                    message
+                }
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "Could not cache push message $messageId for $conversationId", error)
+        }.getOrNull()
+    }
+
+    private fun formatNotificationNowIso(): String {
+        return SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(Date())
+    }
+
+    private fun warmDirectChatCache(conversationId: String) {
+        if (conversationId.isBlank()) return
+
+        runCatching {
+            runBlocking(Dispatchers.IO) {
+                withTimeoutOrNull(3_500L) {
+                    val cacheOwnerId = ApiClient.getCurrentUserId(applicationContext)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: return@withTimeoutOrNull
+                    val repository = ChatCacheRepository(applicationContext)
+
+                    ApiClient.getConversation(applicationContext, conversationId)
+                        .onSuccess { conversation ->
+                            repository.upsertConversation(cacheOwnerId, conversation)
+                            repository.refreshMessages(
+                                cacheOwnerId = cacheOwnerId,
+                                conversationId = conversationId,
+                                limit = 80
+                            )
+                        }
+                }
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "Could not warm chat cache for notification tap: $conversationId", error)
+        }
+    }
+
+    private fun showGroupMessageNotification(
+        title: String,
+        body: String,
+        data: Map<String, String>
+    ) {
+        val groupId = data["groupId"].orEmpty()
+        if (groupId.isBlank()) {
+            showNotification(title, body, CHANNEL_ID_MESSAGES, data)
+            return
+        }
+
+        if (MainActivity.isInForeground && GroupSocketManager.activeGroupId == groupId) {
+            Log.d(TAG, "Skipping FCM group notification because user is viewing group $groupId")
+            return
+        }
+
+        val senderName = data["senderName"]?.takeIf { it.isNotBlank() } ?: "Someone"
+        val messagePreview = data["messagePreview"]?.takeIf { it.isNotBlank() }
+            ?: body.removePrefix("$senderName:").trim().ifBlank { body }
+
+        MessageNotificationManager.showGroupMessageNotification(
+            context = this,
+            groupName = data["groupName"]?.takeIf { it.isNotBlank() } ?: title,
+            groupImageUrl = data["groupImage"]?.takeIf { it.isNotBlank() } ?: data["imageUrl"],
+            senderName = senderName,
+            messageContent = messagePreview,
+            senderImageUrl = data["senderImage"]?.takeIf { it.isNotBlank() },
+            groupId = groupId,
+            senderId = data["senderId"] ?: data["user_id"].orEmpty()
         )
     }
 

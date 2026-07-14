@@ -1,6 +1,7 @@
 package com.kyant.backdrop.catalog.components
 
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -25,6 +26,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceIn
@@ -34,6 +36,8 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberBackdrop
 import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.catalog.linkedin.VormexSurfaceTone
+import com.kyant.backdrop.catalog.linkedin.currentVormexAppearance
 import com.kyant.backdrop.catalog.utils.DampedDragAnimation
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -49,19 +53,38 @@ fun LiquidToggle(
     selected: () -> Boolean,
     onSelect: (Boolean) -> Unit,
     backdrop: Backdrop,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    useGlassEffects: Boolean? = null,
+    lightTheme: Boolean? = null,
+    accentColor: Color? = null,
+    trackColor: Color? = null,
+    thumbColor: Color? = null,
+    thumbBorderColor: Color? = null,
+    trackWidth: Dp = 64.dp,
+    trackHeight: Dp = 28.dp,
+    thumbWidth: Dp = 40.dp,
+    thumbHeight: Dp = 24.dp,
+    trackPadding: Dp = 2.dp
 ) {
-    val isLightTheme = !isSystemInDarkTheme()
-    val accentColor =
-        if (isLightTheme) Color(0xFF34C759)
-        else Color(0xFF30D158)
-    val trackColor =
-        if (isLightTheme) Color(0xFF787878).copy(0.2f)
-        else Color(0xFF787880).copy(0.36f)
+    val appearance = currentVormexAppearance()
+    val shouldUseGlass = useGlassEffects ?: appearance.isGlassTheme
+    val isLightTheme = lightTheme ?: !appearance.isDarkTheme
+    val thumbHighlightColor = if (isLightTheme) Color.White else Color(0xFFD5DEE9)
+    val resolvedAccentColor = accentColor ?: if (isLightTheme) Color(0xFF34C759) else Color(0xFF30D158)
+    val resolvedTrackColor = trackColor ?: if (isLightTheme) {
+        Color(0xFF787878).copy(0.2f)
+    } else {
+        Color(0xFF787880).copy(0.36f)
+    }
+    val resolvedThumbColor = thumbColor ?: appearance.surfaceColor(VormexSurfaceTone.Control)
+    val resolvedThumbBorderColor =
+        thumbBorderColor ?: appearance.borderColor(VormexSurfaceTone.Control)
 
     val density = LocalDensity.current
     val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
-    val dragWidth = with(density) { 20f.dp.toPx() }
+    val dragWidth = with(density) {
+        (trackWidth.toPx() - thumbWidth.toPx() - (trackPadding.toPx() * 2f)).coerceAtLeast(0f)
+    }
     val animationScope = rememberCoroutineScope()
     var didDrag by remember { mutableStateOf(false) }
     var fraction by remember { mutableFloatStateOf(if (selected()) 1f else 0f) }
@@ -124,16 +147,80 @@ fun LiquidToggle(
                 .clip(Capsule())
                 .drawBehind {
                     val fraction = dampedDragAnimation.value
-                    drawRect(lerp(trackColor, accentColor, fraction))
+                    drawRect(lerp(resolvedTrackColor, resolvedAccentColor, fraction))
                 }
-                .size(64f.dp, 28f.dp)
+                .size(trackWidth, trackHeight)
         )
+
+        val thumbSurfaceModifier = if (shouldUseGlass) {
+            Modifier.drawBackdrop(
+                backdrop = rememberCombinedBackdrop(
+                    backdrop,
+                    rememberBackdrop(trackBackdrop) { drawBackdrop ->
+                        val progress = dampedDragAnimation.pressProgress
+                        val scaleX = lerp(2f / 3f, 0.75f, progress)
+                        val scaleY = lerp(0f, 0.75f, progress)
+                        scale(scaleX, scaleY) {
+                            drawBackdrop()
+                        }
+                    }
+                ),
+                shape = { Capsule() },
+                effects = {
+                    val progress = dampedDragAnimation.pressProgress
+                    blur(8f.dp.toPx() * (1f - progress))
+                    lens(
+                        5f.dp.toPx() * progress,
+                        10f.dp.toPx() * progress,
+                        chromaticAberration = true
+                    )
+                },
+                highlight = {
+                    val progress = dampedDragAnimation.pressProgress
+                    Highlight.Ambient.copy(
+                        width = Highlight.Ambient.width / 1.5f,
+                        blurRadius = Highlight.Ambient.blurRadius / 1.5f,
+                        alpha = progress
+                    )
+                },
+                shadow = {
+                    Shadow(
+                        radius = 4f.dp,
+                        color = Color.Black.copy(alpha = 0.05f)
+                    )
+                },
+                innerShadow = {
+                    val progress = dampedDragAnimation.pressProgress
+                    InnerShadow(
+                        radius = 4f.dp * progress,
+                        alpha = progress
+                    )
+                },
+                layerBlock = {
+                    scaleX = dampedDragAnimation.scaleX
+                    scaleY = dampedDragAnimation.scaleY
+                    val velocity = dampedDragAnimation.velocity / 50f
+                    scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
+                    scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
+                },
+                onDrawSurface = {
+                    val progress = dampedDragAnimation.pressProgress
+                    val alpha = if (isLightTheme) 1f - progress else 0.86f * (1f - progress)
+                    drawRect(thumbHighlightColor.copy(alpha = alpha))
+                }
+            )
+        } else {
+            Modifier
+                .clip(Capsule())
+                .background(resolvedThumbColor)
+                .border(1.dp, resolvedThumbBorderColor, Capsule())
+        }
 
         Box(
             Modifier
                 .graphicsLayer {
                     val fraction = dampedDragAnimation.value
-                    val padding = 2f.dp.toPx()
+                    val padding = trackPadding.toPx()
                     translationX =
                         if (isLtr) lerp(padding, padding + dragWidth, fraction)
                         else lerp(-padding, -(padding + dragWidth), fraction)
@@ -142,62 +229,8 @@ fun LiquidToggle(
                     role = Role.Switch
                 }
                 .then(dampedDragAnimation.modifier)
-                .drawBackdrop(
-                    backdrop = rememberCombinedBackdrop(
-                        backdrop,
-                        rememberBackdrop(trackBackdrop) { drawBackdrop ->
-                            val progress = dampedDragAnimation.pressProgress
-                            val scaleX = lerp(2f / 3f, 0.75f, progress)
-                            val scaleY = lerp(0f, 0.75f, progress)
-                            scale(scaleX, scaleY) {
-                                drawBackdrop()
-                            }
-                        }
-                    ),
-                    shape = { Capsule() },
-                    effects = {
-                        val progress = dampedDragAnimation.pressProgress
-                        blur(8f.dp.toPx() * (1f - progress))
-                        lens(
-                            5f.dp.toPx() * progress,
-                            10f.dp.toPx() * progress,
-                            chromaticAberration = true
-                        )
-                    },
-                    highlight = {
-                        val progress = dampedDragAnimation.pressProgress
-                        Highlight.Ambient.copy(
-                            width = Highlight.Ambient.width / 1.5f,
-                            blurRadius = Highlight.Ambient.blurRadius / 1.5f,
-                            alpha = progress
-                        )
-                    },
-                    shadow = {
-                        Shadow(
-                            radius = 4f.dp,
-                            color = Color.Black.copy(alpha = 0.05f)
-                        )
-                    },
-                    innerShadow = {
-                        val progress = dampedDragAnimation.pressProgress
-                        InnerShadow(
-                            radius = 4f.dp * progress,
-                            alpha = progress
-                        )
-                    },
-                    layerBlock = {
-                        scaleX = dampedDragAnimation.scaleX
-                        scaleY = dampedDragAnimation.scaleY
-                        val velocity = dampedDragAnimation.velocity / 50f
-                        scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
-                        scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
-                    },
-                    onDrawSurface = {
-                        val progress = dampedDragAnimation.pressProgress
-                        drawRect(Color.White.copy(alpha = 1f - progress))
-                    }
-                )
-                .size(40f.dp, 24f.dp)
+                .then(thumbSurfaceModifier)
+                .size(thumbWidth, thumbHeight)
         )
     }
 }

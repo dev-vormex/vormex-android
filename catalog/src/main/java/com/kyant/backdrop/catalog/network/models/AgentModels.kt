@@ -8,7 +8,8 @@ data class AgentSessionRequest(
     val sessionId: String? = null,
     val mode: String = "text",
     val surface: String = "global",
-    val allowAutonomousActions: Boolean = true,
+    val allowAutonomousActions: Boolean = false,
+    val autonomyMode: String = "approval",
     val metadata: Map<String, String> = emptyMap()
 )
 
@@ -19,7 +20,11 @@ data class AgentSessionState(
     val mode: String = "text",
     val currentSurface: String? = null,
     val memorySummary: String? = null,
-    val allowAutonomousActions: Boolean = true,
+    val allowAutonomousActions: Boolean = false,
+    val requestedAutonomyMode: String = "approval",
+    val effectiveAutonomyMode: String = "approval",
+    val powerModeEligible: Boolean = false,
+    val isPremium: Boolean = false,
     val lastResponseId: String? = null
 )
 
@@ -27,6 +32,10 @@ data class AgentSessionState(
 data class AgentSessionBootstrapResponse(
     val sessionId: String = "",
     val mode: String = "text",
+    val requestedAutonomyMode: String = "approval",
+    val effectiveAutonomyMode: String = "approval",
+    val powerModeEligible: Boolean = false,
+    val isPremium: Boolean = false,
     val sessionState: AgentSessionState = AgentSessionState()
 )
 
@@ -35,7 +44,8 @@ data class AgentTurnRequest(
     val inputText: String,
     val surface: String = "global",
     val surfaceContext: Map<String, String> = emptyMap(),
-    val allowAutonomousActions: Boolean = true
+    val allowAutonomousActions: Boolean = false,
+    val autonomyMode: String = "approval"
 )
 
 @Serializable
@@ -62,7 +72,9 @@ data class AgentAction(
     val entityId: String? = null,
     val entityType: String? = null,
     val uiIntents: List<AgentUiIntent> = emptyList(),
-    val payload: JsonElement? = null
+    val payload: JsonElement? = null,
+    val riskLevel: String? = null,
+    val autonomyMode: String? = null
 )
 
 @Serializable
@@ -77,6 +89,8 @@ data class AgentPendingAction(
     val input: JsonElement? = null,
     val status: String = "pending",
     val context: JsonElement? = null,
+    val riskLevel: String? = null,
+    val autonomyMode: String? = null,
     val createdAt: String = "",
     val expiresAt: String = "",
     val resolvedAt: String? = null
@@ -103,6 +117,45 @@ data class AgentTurnResponse(
     val goals: List<AgentGoal> = emptyList(),
     val memorySummary: String? = null,
     val sessionState: AgentSessionState = AgentSessionState()
+)
+
+@Serializable
+data class AiEntitlementsResponse(
+    val tier: String = "free",
+    val isPremium: Boolean = false,
+    val isCreatorPro: Boolean = false,
+    val isAdmin: Boolean = false,
+    val canUseAgent: Boolean = false,
+    val canAccessProfileCustomization: Boolean = false,
+    val balance: Int = 0,
+    val creditsUsed: Int = 0,
+    val agentPromptLimit: Int = 0,
+    val agentLimitReached: Boolean = false,
+    val premiumDisplayAmount: String? = null,
+    val premiumEndsAt: String? = null
+)
+
+@Serializable
+data class AssistantChatHistoryItem(
+    val role: String = "user",
+    val content: String = ""
+)
+
+@Serializable
+data class AssistantChatRequest(
+    val message: String,
+    val conversationHistory: List<AssistantChatHistoryItem> = emptyList(),
+    val intent: String? = null,
+    val surface: String = "global"
+)
+
+@Serializable
+data class AssistantChatResponse(
+    val reply: String = "",
+    val tier: String = "free",
+    val canUseAgent: Boolean = false,
+    val assistantDailyLimit: Int? = null,
+    val assistantDailyRemaining: Int? = null
 )
 
 @Serializable
@@ -175,4 +228,16 @@ data class SmartRepliesRequest(
 @Serializable
 data class SmartRepliesResponse(
     val replies: List<String> = emptyList()
+)
+
+@Serializable
+data class ConversationStartersRequest(
+    val context: String? = null,
+    val goal: String? = null,
+    val otherUserId: String? = null
+)
+
+@Serializable
+data class ConversationStartersResponse(
+    val starters: List<String> = emptyList()
 )

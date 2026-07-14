@@ -36,8 +36,38 @@ data class Group(
     val createdById: String? = null,
     val isMember: Boolean = false,
     val memberRole: String? = null, // owner, admin, moderator, member
+    val isAddedToMessages: Boolean = false,
     val allowMemberPosts: Boolean = true,
     val requirePostApproval: Boolean = false
+)
+
+@Serializable
+data class GroupShortcutLatestMessage(
+    val id: String,
+    val content: String = "",
+    val contentType: String = "text",
+    val preview: String = "",
+    val senderId: String,
+    val senderName: String = "Someone",
+    val createdAt: String
+)
+
+@Serializable
+data class GroupMessageShortcut(
+    val id: String,
+    val groupId: String,
+    val name: String,
+    val slug: String? = null,
+    val description: String? = null,
+    val coverImage: String? = null,
+    val iconImage: String? = null,
+    val privacy: String = "PUBLIC",
+    val memberCount: Int = 0,
+    val memberRole: String? = null,
+    val addedAt: String,
+    val lastActivityAt: String,
+    val latestMessage: GroupShortcutLatestMessage? = null,
+    val isAddedToMessages: Boolean = true
 )
 
 @Serializable
@@ -46,7 +76,11 @@ data class GroupUser(
     val username: String? = null,
     val name: String? = null,
     val profileImage: String? = null,
-    val headline: String? = null
+    val headline: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -125,8 +159,31 @@ data class GroupInvite(
     val status: String = "pending", // pending, accepted, declined, expired
     val message: String? = null,
     val createdAt: String? = null,
+    val expiresAt: String? = null,
     val respondedAt: String? = null,
     val group: Group? = null
+)
+
+@Serializable
+data class GroupInviteLinkResponse(
+    val inviteCode: String,
+    val inviteUrl: String? = null,
+    val visibility: String = "ADMINS",
+    val canShare: Boolean = false,
+    val requiresApproval: Boolean = false,
+    val group: Group
+)
+
+@Serializable
+data class GroupJoinRequest(
+    val id: String,
+    val groupId: String,
+    val requesterId: String,
+    val inviteCode: String,
+    val status: String = "pending",
+    val requestedAt: String? = null,
+    val respondedAt: String? = null,
+    val requester: GroupUser
 )
 
 @Serializable
@@ -162,6 +219,33 @@ data class UpdateGroupRequest(
 )
 
 @Serializable
+data class GroupMessageShortcutRequest(
+    val enabled: Boolean
+)
+
+@Serializable
+data class GroupMessageShortcutsResponse(
+    val shortcuts: List<GroupMessageShortcut> = emptyList()
+)
+
+@Serializable
+data class GroupMessageShortcutResponse(
+    val groupId: String,
+    val enabled: Boolean,
+    val shortcut: GroupMessageShortcut? = null
+)
+
+@Serializable
+data class GroupIconUploadResponse(
+    val iconUrl: String
+)
+
+@Serializable
+data class GroupCoverUploadResponse(
+    val coverUrl: String
+)
+
+@Serializable
 data class GroupsResponse(
     val groups: List<Group>,
     val pagination: PaginationMeta? = null
@@ -184,7 +268,9 @@ data class GroupMembersResponse(
 @Serializable
 data class JoinGroupResponse(
     val status: String, // "joined" or "pending"
-    val message: String
+    val message: String,
+    val groupId: String? = null,
+    val requestId: String? = null
 )
 
 @Serializable
@@ -231,6 +317,40 @@ data class UpdateMemberRoleRequest(
     val role: String
 )
 
+@Serializable
+data class GroupInviteLinkSettingsRequest(
+    val visibility: String
+)
+
+@Serializable
+data class CreateGroupInviteRequest(
+    val userId: String,
+    val message: String? = null
+)
+
+@Serializable
+data class GroupInviteResponse(
+    val invite: GroupInvite
+)
+
+@Serializable
+data class RespondToGroupInviteRequest(
+    val action: String
+)
+
+@Serializable
+data class GroupInviteActionResponse(
+    val status: String,
+    val message: String,
+    val groupId: String,
+    val requestId: String? = null
+)
+
+@Serializable
+data class GroupJoinRequestsResponse(
+    val requests: List<GroupJoinRequest>
+)
+
 // ==================== Circle Models ====================
 
 @Serializable
@@ -247,6 +367,8 @@ data class Circle(
     val tags: List<String> = emptyList(),
     val type: String? = null,
     val isPrivate: Boolean = false,
+    val requiresApproval: Boolean = false,
+    val maxMembers: Int = 500,
     val memberCount: Int = 0,
     val activeMembers: Int = 0,
     val postsCount: Int = 0,
@@ -266,7 +388,11 @@ data class CircleMember(
     val college: String? = null,
     val role: String? = null,
     val xpInCircle: Int = 0,
-    val joinedAt: String? = null
+    val joinedAt: String? = null,
+    val verified: Boolean = false,
+    val isVerified: Boolean = false,
+    val profileBadgeStyle: String? = null,
+    val isPremium: Boolean = false
 )
 
 @Serializable
@@ -311,6 +437,18 @@ data class CreateCircleRequest(
     val tags: List<String> = emptyList(),
     val emoji: String? = null,
     val isPrivate: Boolean = false
+)
+
+@Serializable
+data class UpdateCircleRequest(
+    val name: String,
+    val description: String? = null,
+    val category: String? = null,
+    val tags: List<String> = emptyList(),
+    val emoji: String? = null,
+    val isPrivate: Boolean = false,
+    val requiresApproval: Boolean = false,
+    val maxMembers: Int
 )
 
 @Serializable

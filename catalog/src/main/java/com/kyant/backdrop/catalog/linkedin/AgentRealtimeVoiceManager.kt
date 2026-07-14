@@ -127,13 +127,17 @@ class AgentRealtimeVoiceManager {
             AudioFormat.ENCODING_PCM_16BIT
         )
         val bufferSize = max(minBufferSize, ChunkSizeBytes * 4)
-        val recorder = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-            SampleRateHz,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize
-        )
+        val recorder = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                SampleRateHz,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize
+            )
+        } catch (securityException: SecurityException) {
+            throw IllegalStateException("Microphone permission is required for realtime voice capture.", securityException)
+        }
 
         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
             recorder.release()
@@ -152,7 +156,12 @@ class AgentRealtimeVoiceManager {
         }
 
         val readBuffer = ByteArray(ChunkSizeBytes)
-        recorder.startRecording()
+        try {
+            recorder.startRecording()
+        } catch (securityException: SecurityException) {
+            recorder.release()
+            throw IllegalStateException("Microphone permission is required for realtime voice capture.", securityException)
+        }
         audioRecord = recorder
         isCapturingAudio = true
 

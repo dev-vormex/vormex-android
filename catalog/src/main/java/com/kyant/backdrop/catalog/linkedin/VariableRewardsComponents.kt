@@ -9,12 +9,11 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -51,154 +50,87 @@ fun DailyMatchesBanner(
     modifier: Modifier = Modifier
 ) {
     if (matches.isEmpty()) return
-    
-    // Entrance animation
-    var visible by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        delay(300) // Slight delay for dramatic effect
-        visible = true
-    }
-    
-    // Pulse animation for the count badge
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val scale by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(800, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "scale"
-    )
-    
-    AnimatedVisibility(
-        visible = visible,
-        enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-        exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut()
-    ) {
-        Box(
-            modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .drawBackdrop(
-                    backdrop = backdrop,
-                    shape = { RoundedRectangle(16f.dp) },
-                    effects = {
-                        vibrancy()
-                        blur(24f.dp.toPx())
-                    }
-                )
-                .background(accentColor.copy(alpha = 0.15f))
-                .padding(16.dp)
-        ) {
-            Column {
-                // Header with count badge
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    // Animated count badge
-                    Box(
-                        Modifier
-                            .scale(scale)
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(
-                                Brush.linearGradient(
-                                    colors = listOf(
-                                        Color(0xFFFF6B6B),
-                                        Color(0xFFFFE66D)
-                                    )
-                                )
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        BasicText(
-                            text = "$matchCount",
-                            style = TextStyle(
-                                color = Color.White,
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                    }
-                    
-                    Spacer(Modifier.width(12.dp))
-                    
-                    Column(Modifier.weight(1f)) {
-                        BasicText(
-                            text = if (matchCount == 1) "🎯 New Match Today!" else "🎯 $matchCount New Matches!",
-                            style = TextStyle(
-                                color = contentColor,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                        BasicText(
-                            text = surpriseMessage,
-                            style = TextStyle(
-                                color = contentColor.copy(alpha = 0.7f),
-                                fontSize = 13.sp
-                            )
-                        )
-                    }
-                    
-                    // Dismiss button
-                    Box(
-                        Modifier
-                            .size(28.dp)
-                            .clip(CircleShape)
-                            .background(contentColor.copy(alpha = 0.1f))
-                            .clickable { onDismiss() },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        BasicText(
-                            text = "✕",
-                            style = TextStyle(
-                                color = contentColor.copy(alpha = 0.6f),
-                                fontSize = 14.sp
-                            )
-                        )
-                    }
+
+    Box(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .drawBackdrop(
+                backdrop = backdrop,
+                shape = { RoundedRectangle(18.dp) },
+                effects = {
+                    vibrancy()
+                    blur(18f.dp.toPx())
                 }
-                
-                Spacer(Modifier.height(12.dp))
-                
-                // Match avatars row
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy((-12).dp),
-                    contentPadding = PaddingValues(horizontal = 4.dp)
+            )
+            .background(Color.White.copy(alpha = 0.08f))
+            .padding(16.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(
+                    Modifier
+                        .width(4.dp)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(accentColor.copy(alpha = 0.85f))
+                )
+
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    BasicText(
+                        text = if (matchCount == 1) "New match today" else "$matchCount new matches",
+                        style = TextStyle(
+                            color = contentColor,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    BasicText(
+                        text = surpriseMessage,
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.68f),
+                            fontSize = 13.sp
+                        ),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Box(
+                    Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(contentColor.copy(alpha = 0.1f))
+                        .clickable { onDismiss() },
+                    contentAlignment = Alignment.Center
                 ) {
-                    items(matches.take(5)) { match ->
-                        DailyMatchAvatar(
-                            user = match,
-                            contentColor = contentColor,
-                            onClick = { onMatchClick(match.id) }
+                    BasicText(
+                        text = "x",
+                        style = TextStyle(
+                            color = contentColor.copy(alpha = 0.62f),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
-                    }
-                    
-                    // "View All" if more than shown
-                    if (matchCount > 5) {
-                        item {
-                            Box(
-                                Modifier
-                                    .size(48.dp)
-                                    .clip(CircleShape)
-                                    .background(accentColor.copy(alpha = 0.3f))
-                                    .clickable { /* Expand view */ },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                BasicText(
-                                    text = "+${matchCount - 5}",
-                                    style = TextStyle(
-                                        color = contentColor,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                )
-                            }
-                        }
-                    }
+                    )
+                }
+            }
+
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy((-10).dp),
+                contentPadding = PaddingValues(horizontal = 2.dp)
+            ) {
+                items(matches.take(5)) { match ->
+                    DailyMatchAvatar(
+                        user = match,
+                        contentColor = contentColor,
+                        onClick = { onMatchClick(match.id) }
+                    )
                 }
             }
         }

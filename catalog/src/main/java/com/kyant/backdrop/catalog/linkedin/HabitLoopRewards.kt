@@ -11,11 +11,11 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -546,135 +546,158 @@ fun StreakReminderCard(
     modifier: Modifier = Modifier
 ) {
     var isVisible by remember { mutableStateOf(true) }
-    
-    val shakeAnimation = remember { Animatable(0f) }
-    
-    // Shake animation for urgency
-    LaunchedEffect(Unit) {
-        delay(500)
-        repeat(2) {
-            shakeAnimation.animateTo(-6f, tween(50))
-            shakeAnimation.animateTo(6f, tween(50))
-        }
-        shakeAnimation.animateTo(0f, tween(50))
-    }
-    
-    val pulseTransition = rememberInfiniteTransition(label = "reminderPulse")
-    val pulseAlpha by pulseTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.7f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseAlpha"
+    var hasDismissed by remember { mutableStateOf(false) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    val scope = rememberCoroutineScope()
+    val animatedDragOffsetY by animateFloatAsState(
+        targetValue = dragOffsetY,
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = 420f),
+        label = "streakReminderDragY"
     )
+    val titleText = if (isAtRisk) {
+        "${connectionStreak}-day streak at risk"
+    } else {
+        "${connectionStreak}-day streak active"
+    }
+    val supportingText = if (isAtRisk) {
+        "Connect with someone today to keep it alive."
+    } else {
+        "Nice momentum. Keep building it today."
+    }
+
+    fun dismissWithSlideUp() {
+        if (hasDismissed) return
+        hasDismissed = true
+        dragOffsetY = 0f
+        isVisible = false
+        scope.launch {
+            delay(260)
+            onDismiss()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        delay(5000)
+        dismissWithSlideUp()
+    }
     
     AnimatedVisibility(
         visible = isVisible,
-        enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-        exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut()
+        enter = fadeIn(animationSpec = tween(120)),
+        exit = slideOutVertically(
+            targetOffsetY = { -it },
+            animationSpec = tween(240, easing = FastOutSlowInEasing)
+        ) + fadeOut(animationSpec = tween(180))
     ) {
         Box(
             modifier = modifier
                 .fillMaxWidth()
-                .offset(x = shakeAnimation.value.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .graphicsLayer { translationY = animatedDragOffsetY }
+                .pointerInput(Unit) {
+                    var totalDragY = 0f
+                    detectVerticalDragGestures(
+                        onDragStart = { totalDragY = 0f },
+                        onVerticalDrag = { _, dragAmount ->
+                            totalDragY += dragAmount
+                            dragOffsetY = totalDragY.coerceAtMost(0f)
+                        },
+                        onDragCancel = { dragOffsetY = 0f },
+                        onDragEnd = {
+                            if (totalDragY <= -48f) {
+                                dismissWithSlideUp()
+                            } else {
+                                dragOffsetY = 0f
+                            }
+                        }
+                    )
+                }
+                .clip(RoundedCornerShape(22.dp))
                 .drawBackdrop(
                     backdrop = backdrop,
-                    shape = { RoundedRectangle(16f.dp) },
+                    shape = { RoundedRectangle(22.dp) },
                     effects = {
                         vibrancy()
-                        blur(12f.dp.toPx())
-                        lens(6f.dp.toPx(), 12f.dp.toPx())
+                        blur(16f.dp.toPx())
+                        lens(8f.dp.toPx(), 16f.dp.toPx())
                     },
                     onDrawSurface = {
-                        drawRect(Color(0xFFFF6B6B).copy(alpha = pulseAlpha * 0.95f))
+                        drawRect(Color(0xFF111318).copy(alpha = 0.88f))
                     }
                 )
-                .padding(16.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        colors = listOf(
+                            Color(0xFF171A20).copy(alpha = 0.96f),
+                            Color(0xFF251811).copy(alpha = 0.95f),
+                            Color(0xFF171A20).copy(alpha = 0.96f)
+                        )
+                    )
+                )
+                .padding(start = 12.dp, top = 12.dp, end = 10.dp, bottom = 12.dp)
         ) {
             Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Streak warning content
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
+                StreakFireLottie(modifier = Modifier.size(46.dp))
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
-                    // Fire icon with animation
-                    val fireRotation = rememberInfiniteTransition(label = "fireRotate")
-                    val angle by fireRotation.animateFloat(
-                        initialValue = -8f,
-                        targetValue = 8f,
-                        animationSpec = infiniteRepeatable(
-                            animation = tween(150),
-                            repeatMode = RepeatMode.Reverse
-                        ),
-                        label = "angle"
-                    )
-                    
                     BasicText(
-                        "⚠️🔥",
-                        style = TextStyle(fontSize = 24.sp),
-                        modifier = Modifier.rotate(angle)
+                        titleText,
+                        style = TextStyle(
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        maxLines = 1
                     )
-                    
-                    Column {
-                        BasicText(
-                            "${connectionStreak}-day streak at risk!",
-                            style = TextStyle(
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                        BasicText(
-                            "Connect with someone to keep it going",
-                            style = TextStyle(
-                                color = Color.White.copy(alpha = 0.9f),
-                                fontSize = 12.sp
-                            )
-                        )
-                    }
+                    BasicText(
+                        supportingText,
+                        style = TextStyle(
+                            color = Color.White.copy(alpha = 0.72f),
+                            fontSize = 12.sp
+                        ),
+                        maxLines = 2
+                    )
                 }
                 
-                // Action button
                 Box(
                     Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color.White)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color.White.copy(alpha = 0.94f))
                         .clickable(onClick = onAction)
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
                     BasicText(
-                        "Find →",
+                        "Find",
                         style = TextStyle(
-                            color = Color(0xFFFF6B6B),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold
+                            color = Color(0xFF1C1F25),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
                     )
                 }
-            }
-            
-            // Dismiss button
-            Box(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .offset(x = 8.dp, y = (-8).dp)
-                    .size(20.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.3f))
-                    .clickable { 
-                        isVisible = false
-                        onDismiss()
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                BasicText("×", style = TextStyle(Color.White, 14.sp, FontWeight.Bold))
+
+                Box(
+                    Modifier
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.12f))
+                        .clickable {
+                            dismissWithSlideUp()
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        "x",
+                        style = TextStyle(Color.White.copy(alpha = 0.86f), 12.sp, FontWeight.Bold)
+                    )
+                }
             }
         }
     }
@@ -927,153 +950,147 @@ fun StreakStatusBanner(
 ) {
     if (connectionStreak == 0) return
     
-    // Local visibility state for swipe-to-dismiss
     var isVisible by remember { mutableStateOf(true) }
-    val shakeAnimation = remember { Animatable(0f) }
+    var hasDismissed by remember { mutableStateOf(false) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
     val scope = rememberCoroutineScope()
-    
-    // Swipe offset for dismissal
-    var swipeOffset by remember { mutableFloatStateOf(0f) }
-    val dismissThreshold = 150f
-    
-    // Shake animation when at risk
-    LaunchedEffect(isAtRisk) {
-        if (isAtRisk) {
-            repeat(3) {
-                shakeAnimation.animateTo(-8f, tween(50))
-                shakeAnimation.animateTo(8f, tween(50))
-            }
-            shakeAnimation.animateTo(0f, tween(50))
+    val animatedDragOffsetY by animateFloatAsState(
+        targetValue = dragOffsetY,
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = 420f),
+        label = "findStreakReminderDragY"
+    )
+    val titleText = if (isAtRisk) {
+        "${connectionStreak}-day streak at risk"
+    } else {
+        "${connectionStreak}-day streak active"
+    }
+    val supportingText = if (isAtRisk) {
+        "Send a connection today to keep it alive."
+    } else {
+        "Keep the momentum going with one more connection."
+    }
+
+    fun dismissWithSlideUp() {
+        if (hasDismissed) return
+        hasDismissed = true
+        dragOffsetY = 0f
+        isVisible = false
+        scope.launch {
+            delay(260)
+            onDismiss()
         }
     }
-    
-    val pulseTransition = rememberInfiniteTransition(label = "streakPulse")
-    val pulseAlpha by pulseTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = if (isAtRisk) 0.6f else 0.9f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(if (isAtRisk) 500 else 1500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseAlpha"
-    )
-    
-    val (backgroundColor, accentColor, message) = when {
-        isAtRisk -> Triple(
-            Color(0xFFFF6B6B),
-            Color(0xFFFF4757),
-            "⚠️ ${connectionStreak}-day streak at risk! Connect now!"
-        )
-        connectionStreak >= 30 -> Triple(
-            Color(0xFFFFD700),
-            Color(0xFFFFA500),
-            "🏆 ${connectionStreak}-day streak! You're unstoppable!"
-        )
-        connectionStreak >= 14 -> Triple(
-            Color(0xFF9B59B6),
-            Color(0xFF8E44AD),
-            "💎 ${connectionStreak}-day streak! Incredible dedication!"
-        )
-        connectionStreak >= 7 -> Triple(
-            Color(0xFF00C851),
-            Color(0xFF28A745),
-            "🔥 ${connectionStreak}-day streak! You're on fire!"
-        )
-        connectionStreak >= 3 -> Triple(
-            Color(0xFFFF9F43),
-            Color(0xFFFF7F50),
-            "🔥 ${connectionStreak}-day streak—don't break it!"
-        )
-        else -> Triple(
-            Color(0xFF4ECDC4),
-            Color(0xFF26C6DA),
-            "🔥 ${connectionStreak}-day streak started!"
-        )
+
+    LaunchedEffect(Unit) {
+        delay(5000)
+        dismissWithSlideUp()
     }
     
     AnimatedVisibility(
         visible = isVisible,
-        enter = fadeIn() + slideInVertically(initialOffsetY = { -it }),
-        exit = fadeOut() + slideOutVertically(targetOffsetY = { -it })
+        enter = fadeIn(animationSpec = tween(120)),
+        exit = slideOutVertically(
+            targetOffsetY = { -it },
+            animationSpec = tween(240, easing = FastOutSlowInEasing)
+        ) + fadeOut(animationSpec = tween(180))
     ) {
         Box(
             modifier = modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
-                .offset(x = (shakeAnimation.value + swipeOffset).dp)
+                .graphicsLayer { translationY = animatedDragOffsetY }
                 .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragEnd = {
-                            if (kotlin.math.abs(swipeOffset) > dismissThreshold) {
-                                // Dismiss - swipe far enough
-                                isVisible = false
-                                onDismiss()
-                            } else {
-                                // Snap back
-                                scope.launch {
-                                    swipeOffset = 0f
-                                }
-                            }
+                    var totalDragY = 0f
+                    detectVerticalDragGestures(
+                        onDragStart = { totalDragY = 0f },
+                        onVerticalDrag = { _, dragAmount ->
+                            totalDragY += dragAmount
+                            dragOffsetY = totalDragY.coerceAtMost(0f)
                         },
-                        onHorizontalDrag = { _, dragAmount ->
-                            swipeOffset += dragAmount
+                        onDragCancel = { dragOffsetY = 0f },
+                        onDragEnd = {
+                            if (totalDragY <= -48f) {
+                                dismissWithSlideUp()
+                            } else {
+                                dragOffsetY = 0f
+                            }
                         }
                     )
                 }
-                .graphicsLayer {
-                    alpha = (1f - kotlin.math.abs(swipeOffset) / (dismissThreshold * 2)).coerceIn(0f, 1f)
-                }
+                .clip(RoundedCornerShape(22.dp))
                 .drawBackdrop(
                     backdrop = backdrop,
-                    shape = { RoundedRectangle(16f.dp) },
+                    shape = { RoundedRectangle(22.dp) },
                     effects = {
                         vibrancy()
-                        blur(12f.dp.toPx())
-                        lens(6f.dp.toPx(), 12f.dp.toPx())
+                        blur(16f.dp.toPx())
+                        lens(8f.dp.toPx(), 16f.dp.toPx())
                     },
                     onDrawSurface = {
-                        drawRect(backgroundColor.copy(alpha = pulseAlpha * 0.95f))
+                        drawRect(Color(0xFF111318).copy(alpha = 0.88f))
                     }
                 )
-                .clickable(onClick = onTap)
-                .padding(16.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                // Streak info
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    BasicText(
-                        message,
-                        style = TextStyle(
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold
+                .background(
+                    Brush.horizontalGradient(
+                        colors = listOf(
+                            Color(0xFF171A20).copy(alpha = 0.96f),
+                            Color(0xFF251811).copy(alpha = 0.95f),
+                            Color(0xFF171A20).copy(alpha = 0.96f)
                         )
                     )
-                    
-                    if (isAtRisk) {
-                        BasicText(
-                            "Don't lose your progress!",
-                            style = TextStyle(
-                                color = Color.White.copy(alpha = 0.85f),
-                                fontSize = 12.sp
-                            )
-                        )
-                    }
-                }
-                
-                // Streak badge with fire
-                StreakBadge(
-                    count = connectionStreak,
-                    isAtRisk = isAtRisk,
-                    accentColor = accentColor
                 )
+                .clickable(onClick = onTap)
+                .padding(start = 12.dp, top = 12.dp, end = 10.dp, bottom = 12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                StreakFireLottie(modifier = Modifier.size(46.dp))
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    BasicText(
+                        titleText,
+                        style = TextStyle(
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        maxLines = 1
+                    )
+                    BasicText(
+                        supportingText,
+                        style = TextStyle(
+                            color = Color.White.copy(alpha = 0.72f),
+                            fontSize = 12.sp
+                        ),
+                        maxLines = 2
+                    )
+                }
+
+                Box(
+                    Modifier
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.12f))
+                        .clickable {
+                            dismissWithSlideUp()
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        "x",
+                        style = TextStyle(
+                            Color.White.copy(alpha = 0.86f),
+                            12.sp,
+                            FontWeight.Bold
+                        )
+                    )
+                }
             }
         }
     }

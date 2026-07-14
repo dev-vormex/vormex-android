@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.settingsDataStore by preferencesDataStore(name = "app_settings")
@@ -12,6 +13,16 @@ private val Context.settingsDataStore by preferencesDataStore(name = "app_settin
  * App Settings Preferences - Stores user preferences for notifications, privacy, and appearance
  */
 object SettingsPreferences {
+    const val PROFILE_BADGE_STYLE_NONE = "none"
+    const val PROFILE_BADGE_STYLE_STUDENT = "student"
+    const val PROFILE_BADGE_STYLE_PROFESSIONAL = "professional"
+    const val PROFILE_BADGE_STYLE_PREMIUM = "premium"
+    const val FONT_FAMILY_SYSTEM = "system"
+    const val FONT_FAMILY_SANS = "sans"
+    const val FONT_FAMILY_SERIF = "serif"
+    const val FONT_FAMILY_MONO = "mono"
+    const val FONT_FAMILY_CURSIVE = "cursive"
+    const val FONT_FAMILY_KAUSHAN = "kaushan"
     
     // ==================== NOTIFICATION SETTINGS ====================
     private val PUSH_NOTIFICATIONS_ENABLED = booleanPreferencesKey("push_notifications_enabled")
@@ -31,21 +42,27 @@ object SettingsPreferences {
     private val SHOW_ONLINE_STATUS = booleanPreferencesKey("show_online_status")
     private val SHOW_ACTIVITY_STATUS = booleanPreferencesKey("show_activity_status")
     private val SHOW_PROFILE_VIEWS = booleanPreferencesKey("show_profile_views")
+    private val SHOW_PROFILE_LOCATION = booleanPreferencesKey("show_profile_location")
     private val DISCOVERABLE_BY_EMAIL = booleanPreferencesKey("discoverable_by_email")
     private val DISCOVERABLE_BY_PHONE = booleanPreferencesKey("discoverable_by_phone")
     
     // ==================== APPEARANCE SETTINGS ====================
-    private val THEME_MODE = stringPreferencesKey("theme_mode") // "glass", "light", "dark"
+    private val THEME_MODE = stringPreferencesKey("theme_mode") // "glass", "warm_paper", "black_green", "light", "dark"
     private val GLASS_BACKGROUND_PRESET = stringPreferencesKey("glass_background_preset")
     private val ACCENT_PALETTE = stringPreferencesKey("accent_palette")
     private val GLASS_MOTION_STYLE = stringPreferencesKey("glass_motion_style")
     private val DYNAMIC_COLORS = booleanPreferencesKey("dynamic_colors")
     private val FONT_SIZE = stringPreferencesKey("font_size") // "small", "medium", "large"
+    private val FONT_FAMILY = stringPreferencesKey("font_family")
     private val REDUCE_ANIMATIONS = booleanPreferencesKey("reduce_animations")
+    private val SHOW_REELS_ON_HOME = booleanPreferencesKey("show_reels_on_home")
     private val PROFILE_FRAME_ENABLED = booleanPreferencesKey("profile_frame_enabled")
+    private val PROFILE_BADGE_STYLE = stringPreferencesKey("profile_badge_style")
+    private val PROFILE_THEME = stringPreferencesKey("profile_theme")
     private val STAY_ACTIVE_BANNER_DISMISSED_AT = longPreferencesKey("stay_active_banner_dismissed_at")
     /** Equipped profile visit loader gift id (e.g. `big_bad_wolfie`). */
     private val EQUIPPED_PROFILE_LOADER_GIFT = stringPreferencesKey("equipped_profile_loader_gift")
+    private val TALK_WITH_VORMEX_THEME_MODE = stringPreferencesKey("talk_with_vormex_theme_mode")
     
     // ==================== NOTIFICATION GETTERS ====================
     
@@ -78,6 +95,23 @@ object SettingsPreferences {
     
     fun weeklySummaryEnabled(context: Context): Flow<Boolean> =
         context.settingsDataStore.data.map { it[WEEKLY_SUMMARY_ENABLED] ?: true }
+
+    suspend fun isPushNotificationDeliveryEnabled(context: Context): Boolean {
+        val settings = context.settingsDataStore.data.first()
+        return settings[PUSH_NOTIFICATIONS_ENABLED] ?: true
+    }
+
+    suspend fun isMessageNotificationDeliveryEnabled(context: Context): Boolean {
+        val settings = context.settingsDataStore.data.first()
+        return (settings[PUSH_NOTIFICATIONS_ENABLED] ?: true) &&
+            (settings[MESSAGE_NOTIFICATIONS_ENABLED] ?: true)
+    }
+
+    suspend fun isMatchNotificationDeliveryEnabled(context: Context): Boolean {
+        val settings = context.settingsDataStore.data.first()
+        return (settings[PUSH_NOTIFICATIONS_ENABLED] ?: true) &&
+            (settings[MATCH_ALERTS_ENABLED] ?: true)
+    }
     
     // ==================== PRIVACY GETTERS ====================
     
@@ -95,6 +129,9 @@ object SettingsPreferences {
     
     fun showProfileViews(context: Context): Flow<Boolean> =
         context.settingsDataStore.data.map { it[SHOW_PROFILE_VIEWS] ?: true }
+
+    fun showProfileLocation(context: Context): Flow<Boolean> =
+        context.settingsDataStore.data.map { it[SHOW_PROFILE_LOCATION] ?: true }
     
     fun discoverableByEmail(context: Context): Flow<Boolean> =
         context.settingsDataStore.data.map { it[DISCOVERABLE_BY_EMAIL] ?: true }
@@ -105,10 +142,14 @@ object SettingsPreferences {
     // ==================== APPEARANCE GETTERS ====================
     
     fun themeMode(context: Context): Flow<String> =
-        context.settingsDataStore.data.map { it[THEME_MODE] ?: com.kyant.backdrop.catalog.linkedin.DefaultThemeModeKey }
+        context.settingsDataStore.data.map {
+            com.kyant.backdrop.catalog.linkedin.normalizeThemeModeKey(it[THEME_MODE])
+        }
 
     fun glassBackgroundPreset(context: Context): Flow<String> =
-        context.settingsDataStore.data.map { it[GLASS_BACKGROUND_PRESET] ?: "wallpaper" }
+        context.settingsDataStore.data.map {
+            com.kyant.backdrop.catalog.linkedin.normalizeGlassBackgroundPresetKey(it[GLASS_BACKGROUND_PRESET])
+        }
 
     fun accentPalette(context: Context): Flow<String> =
         context.settingsDataStore.data.map { it[ACCENT_PALETTE] ?: "linkedin" }
@@ -121,18 +162,35 @@ object SettingsPreferences {
     
     fun fontSize(context: Context): Flow<String> =
         context.settingsDataStore.data.map { it[FONT_SIZE] ?: "medium" }
+
+    fun fontFamily(context: Context): Flow<String> =
+        context.settingsDataStore.data.map { normalizeFontFamily(it[FONT_FAMILY]) }
     
     fun reduceAnimations(context: Context): Flow<Boolean> =
         context.settingsDataStore.data.map { it[REDUCE_ANIMATIONS] ?: false }
 
+    fun showReelsOnHome(context: Context): Flow<Boolean> =
+        context.settingsDataStore.data.map { it[SHOW_REELS_ON_HOME] ?: false }
+
     fun profileFrameEnabled(context: Context): Flow<Boolean> =
         context.settingsDataStore.data.map { it[PROFILE_FRAME_ENABLED] ?: false }
+
+    fun profileBadgeStyle(context: Context): Flow<String> =
+        context.settingsDataStore.data.map { it[PROFILE_BADGE_STYLE] ?: PROFILE_BADGE_STYLE_NONE }
+
+    fun profileTheme(context: Context): Flow<String> =
+        context.settingsDataStore.data.map {
+            com.kyant.backdrop.catalog.linkedin.normalizeProfileThemeKey(it[PROFILE_THEME])
+        }
 
     fun stayActiveBannerDismissedAt(context: Context): Flow<Long> =
         context.settingsDataStore.data.map { it[STAY_ACTIVE_BANNER_DISMISSED_AT] ?: 0L }
 
     fun equippedProfileLoaderGiftId(context: Context): Flow<String?> =
         context.settingsDataStore.data.map { it[EQUIPPED_PROFILE_LOADER_GIFT] }
+
+    fun talkWithVormexThemeMode(context: Context): Flow<String> =
+        context.settingsDataStore.data.map { it[TALK_WITH_VORMEX_THEME_MODE] ?: "light" }
     
     // ==================== NOTIFICATION SETTERS ====================
     
@@ -197,6 +255,10 @@ object SettingsPreferences {
     suspend fun setShowProfileViews(context: Context, value: Boolean) {
         context.settingsDataStore.edit { it[SHOW_PROFILE_VIEWS] = value }
     }
+
+    suspend fun setShowProfileLocation(context: Context, value: Boolean) {
+        context.settingsDataStore.edit { it[SHOW_PROFILE_LOCATION] = value }
+    }
     
     suspend fun setDiscoverableByEmail(context: Context, value: Boolean) {
         context.settingsDataStore.edit { it[DISCOVERABLE_BY_EMAIL] = value }
@@ -209,11 +271,13 @@ object SettingsPreferences {
     // ==================== APPEARANCE SETTERS ====================
     
     suspend fun setThemeMode(context: Context, value: String) {
-        context.settingsDataStore.edit { it[THEME_MODE] = value }
+        val normalized = com.kyant.backdrop.catalog.linkedin.normalizeThemeModeKey(value)
+        context.settingsDataStore.edit { it[THEME_MODE] = normalized }
     }
 
     suspend fun setGlassBackgroundPreset(context: Context, value: String) {
-        context.settingsDataStore.edit { it[GLASS_BACKGROUND_PRESET] = value }
+        val normalized = com.kyant.backdrop.catalog.linkedin.normalizeGlassBackgroundPresetKey(value)
+        context.settingsDataStore.edit { it[GLASS_BACKGROUND_PRESET] = normalized }
     }
 
     suspend fun setAccentPalette(context: Context, value: String) {
@@ -231,13 +295,37 @@ object SettingsPreferences {
     suspend fun setFontSize(context: Context, value: String) {
         context.settingsDataStore.edit { it[FONT_SIZE] = value }
     }
+
+    suspend fun setFontFamily(context: Context, value: String) {
+        val normalized = normalizeFontFamily(value)
+        context.settingsDataStore.edit { it[FONT_FAMILY] = normalized }
+    }
     
     suspend fun setReduceAnimations(context: Context, value: Boolean) {
         context.settingsDataStore.edit { it[REDUCE_ANIMATIONS] = value }
     }
 
+    suspend fun setShowReelsOnHome(context: Context, value: Boolean) {
+        context.settingsDataStore.edit { it[SHOW_REELS_ON_HOME] = value }
+    }
+
     suspend fun setProfileFrameEnabled(context: Context, value: Boolean) {
         context.settingsDataStore.edit { it[PROFILE_FRAME_ENABLED] = value }
+    }
+
+    suspend fun setProfileBadgeStyle(context: Context, value: String) {
+        val normalized = when (value) {
+            PROFILE_BADGE_STYLE_NONE,
+            PROFILE_BADGE_STYLE_STUDENT,
+            PROFILE_BADGE_STYLE_PROFESSIONAL -> value
+            else -> PROFILE_BADGE_STYLE_NONE
+        }
+        context.settingsDataStore.edit { it[PROFILE_BADGE_STYLE] = normalized }
+    }
+
+    suspend fun setProfileTheme(context: Context, value: String) {
+        val normalized = com.kyant.backdrop.catalog.linkedin.normalizeProfileThemeKey(value)
+        context.settingsDataStore.edit { it[PROFILE_THEME] = normalized }
     }
 
     suspend fun setStayActiveBannerDismissedAt(context: Context, value: Long) {
@@ -250,10 +338,25 @@ object SettingsPreferences {
             else it[EQUIPPED_PROFILE_LOADER_GIFT] = giftId
         }
     }
+
+    suspend fun setTalkWithVormexThemeMode(context: Context, value: String) {
+        context.settingsDataStore.edit { it[TALK_WITH_VORMEX_THEME_MODE] = value }
+    }
     
     // ==================== CLEAR ALL ====================
     
     suspend fun clearAll(context: Context) {
         context.settingsDataStore.edit { it.clear() }
     }
+
+    private fun normalizeFontFamily(value: String?): String =
+        when (value) {
+            FONT_FAMILY_SYSTEM,
+            FONT_FAMILY_SANS,
+            FONT_FAMILY_SERIF,
+            FONT_FAMILY_MONO,
+            FONT_FAMILY_CURSIVE,
+            FONT_FAMILY_KAUSHAN -> value
+            else -> FONT_FAMILY_SYSTEM
+        }
 }

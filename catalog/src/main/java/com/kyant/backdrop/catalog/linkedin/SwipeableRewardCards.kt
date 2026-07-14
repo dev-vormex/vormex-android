@@ -13,6 +13,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -36,10 +37,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.blockTouchPassthrough
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -107,23 +110,23 @@ fun TrendingBannerAutoHide(
         }
     }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "bounce")
-    val bounce by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 6f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "bounce"
-    )
-
     AnimatedVisibility(
         visible = visible,
         enter = slideInVertically(initialOffsetY = { -it }) + fadeIn() + scaleIn(initialScale = 0.8f),
         exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut() + scaleOut(targetScale = 0.8f),
         modifier = modifier
     ) {
+        val infiniteTransition = rememberInfiniteTransition(label = "bounce")
+        val bounce by infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 6f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(500, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "bounce"
+        )
+
         Box(
             Modifier
                 .fillMaxWidth()
@@ -218,6 +221,7 @@ fun SwipeableRewardCardsOverlay(
     contentColor: Color,
     accentColor: Color,
     currentTheme: String = "light",
+    reduceAnimations: Boolean = false,
     onCardShown: (RewardCard) -> Unit,
     onSkip: (RewardCard) -> Unit,
     onOpenProfile: (RewardCard) -> Unit,
@@ -239,7 +243,7 @@ fun SwipeableRewardCardsOverlay(
 
     var currentIndex by remember(sessionId) { mutableStateOf(0) }
     var showOverlay by remember(sessionId, cards) { mutableStateOf(cards.isNotEmpty()) }
-    var swipePreviewProgress by remember(sessionId) { mutableStateOf(0f) }
+    var swipePreviewProgress by remember(sessionId) { mutableFloatStateOf(0f) }
     var swipePreviewDirection by remember(sessionId) { mutableStateOf(SwipeDirection.NONE) }
     val remainingCards = (cards.size - currentIndex).coerceAtLeast(0)
 
@@ -268,7 +272,7 @@ fun SwipeableRewardCardsOverlay(
             Modifier
                 .fillMaxSize()
                 .background(overlayColor)
-                .clickable(enabled = false) { },
+                .blockTouchPassthrough(),
             contentAlignment = Alignment.Center
         ) {
             Column(
@@ -329,11 +333,18 @@ fun SwipeableRewardCardsOverlay(
                             contentColor = textColor,
                             accentColor = accentColor,
                             currentTheme = currentTheme,
+                            reduceAnimations = reduceAnimations,
                             stackRevealProgress = swipePreviewProgress,
                             stackRevealDirection = swipePreviewDirection,
                             onSwipeStateChange = { direction, progress ->
-                                swipePreviewDirection = direction
-                                swipePreviewProgress = progress
+                                val previewProgress = ((progress.coerceIn(0f, 1f) * 40f).roundToInt() / 40f)
+                                if (
+                                    swipePreviewDirection != direction ||
+                                    (swipePreviewProgress - previewProgress).absoluteValue >= 0.025f
+                                ) {
+                                    swipePreviewDirection = direction
+                                    swipePreviewProgress = previewProgress
+                                }
                             },
                             onSwipe = { swipedCard, direction ->
                                 when (direction) {
@@ -402,6 +413,7 @@ private fun SwipeableStackedCard(
     contentColor: Color,
     accentColor: Color,
     currentTheme: String,
+    reduceAnimations: Boolean,
     stackRevealProgress: Float,
     stackRevealDirection: SwipeDirection,
     onSwipeStateChange: (SwipeDirection, Float) -> Unit,
@@ -410,8 +422,9 @@ private fun SwipeableStackedCard(
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
-    var offsetX by remember(card.id) { mutableStateOf(0f) }
-    var offsetY by remember(card.id) { mutableStateOf(0f) }
+    var offsetX by remember(card.id) { mutableFloatStateOf(0f) }
+    var offsetY by remember(card.id) { mutableFloatStateOf(0f) }
+    var isDragging by remember(card.id) { mutableStateOf(false) }
     var isDismissing by remember(card.id) { mutableStateOf(false) }
     var dismissDirection by remember(card.id) { mutableStateOf(SwipeDirection.NONE) }
     val swipeThreshold = with(density) { 120.dp.toPx() }
@@ -423,10 +436,10 @@ private fun SwipeableStackedCard(
             isDismissing && dismissDirection == SwipeDirection.RIGHT -> 1000f
             else -> offsetX
         },
-        animationSpec = if (isDismissing) {
-            tween(280, easing = FastOutSlowInEasing)
-        } else {
-            spring(stiffness = Spring.StiffnessMedium)
+        animationSpec = when {
+            isDismissing -> tween(280, easing = FastOutSlowInEasing)
+            isDragging -> snap()
+            else -> spring(stiffness = Spring.StiffnessMedium)
         },
         finishedListener = {
             if (isDismissing && dismissDirection != SwipeDirection.UP) {
@@ -438,10 +451,10 @@ private fun SwipeableStackedCard(
 
     val animatedOffsetY by animateFloatAsState(
         targetValue = if (isDismissing && dismissDirection == SwipeDirection.UP) -800f else offsetY,
-        animationSpec = if (isDismissing) {
-            tween(280, easing = FastOutSlowInEasing)
-        } else {
-            spring(stiffness = Spring.StiffnessMedium)
+        animationSpec = when {
+            isDismissing -> tween(280, easing = FastOutSlowInEasing)
+            isDragging -> snap()
+            else -> spring(stiffness = Spring.StiffnessMedium)
         },
         finishedListener = {
             if (isDismissing && dismissDirection == SwipeDirection.UP) {
@@ -458,6 +471,7 @@ private fun SwipeableStackedCard(
     val horizontalSwipeProgress = (animatedOffsetX.absoluteValue / swipeThreshold).coerceIn(0f, 1f)
     val verticalSwipeProgress = ((-animatedOffsetY) / swipeThreshold).coerceIn(0f, 1f)
     val swipeProgress = maxOf(horizontalSwipeProgress, verticalSwipeProgress)
+    val previewSwipeProgress = ((swipeProgress.coerceIn(0f, 1f) * 40f).roundToInt() / 40f)
     val liveSwipeDirection = when {
         animatedOffsetY < -26f && (-animatedOffsetY) > animatedOffsetX.absoluteValue -> SwipeDirection.UP
         animatedOffsetX > 26f -> SwipeDirection.RIGHT
@@ -510,22 +524,27 @@ private fun SwipeableStackedCard(
         )
     )
 
-    val infiniteTransition = rememberInfiniteTransition(label = "reward_card_shimmer")
-    val shimmerOffset by infiniteTransition.animateFloat(
-        initialValue = -400f,
-        targetValue = 400f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2500, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "reward_card_shimmer_offset"
-    )
+    val shimmerOffset = if (reduceAnimations || isDragging) {
+        0f
+    } else {
+        val infiniteTransition = rememberInfiniteTransition(label = "reward_card_shimmer")
+        val animatedShimmerOffset by infiniteTransition.animateFloat(
+            initialValue = -400f,
+            targetValue = 400f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(2500, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "reward_card_shimmer_offset"
+        )
+        animatedShimmerOffset
+    }
 
-    LaunchedEffect(isTopCard, liveSwipeDirection, swipeProgress, isDismissing, dismissDirection) {
+    LaunchedEffect(isTopCard, liveSwipeDirection, previewSwipeProgress, isDismissing, dismissDirection) {
         if (isTopCard) {
             onSwipeStateChange(
                 if (isDismissing) dismissDirection else liveSwipeDirection,
-                if (isDismissing) 1f else swipeProgress
+                if (isDismissing) 1f else previewSwipeProgress
             )
         }
     }
@@ -561,7 +580,11 @@ private fun SwipeableStackedCard(
                 if (isTopCard) {
                     Modifier.pointerInput(card.id) {
                         detectDragGestures(
+                            onDragStart = {
+                                isDragging = true
+                            },
                             onDragEnd = {
+                                isDragging = false
                                 when {
                                     offsetX > swipeThreshold -> {
                                         isDismissing = true
@@ -580,6 +603,11 @@ private fun SwipeableStackedCard(
                                         offsetY = 0f
                                     }
                                 }
+                            },
+                            onDragCancel = {
+                                isDragging = false
+                                offsetX = 0f
+                                offsetY = 0f
                             },
                             onDrag = { change, dragAmount ->
                                 change.consume()

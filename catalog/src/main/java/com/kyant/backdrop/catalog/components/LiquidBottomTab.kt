@@ -1,6 +1,8 @@
 package com.kyant.backdrop.catalog.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -19,22 +21,39 @@ import com.kyant.shapes.Capsule
 internal val LocalLiquidBottomTabScale =
     staticCompositionLocalOf { { 1f } }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RowScope.LiquidBottomTab(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    onDoubleClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val scale = LocalLiquidBottomTabScale.current
-    Column(
-        modifier
-            .clip(Capsule())
-            .clickable(
+    val clickModifier =
+        if (onLongClick != null || onDoubleClick != null) {
+            Modifier.combinedClickable(
+                interactionSource = null,
+                indication = null,
+                role = Role.Tab,
+                onLongClick = onLongClick,
+                onDoubleClick = onDoubleClick,
+                onClick = onClick
+            )
+        } else {
+            Modifier.clickable(
                 interactionSource = null,
                 indication = null,
                 role = Role.Tab,
                 onClick = onClick
             )
+        }
+
+    Column(
+        modifier
+            .clip(Capsule())
+            .then(clickModifier)
             .fillMaxHeight()
             .weight(1f)
             .graphicsLayer {

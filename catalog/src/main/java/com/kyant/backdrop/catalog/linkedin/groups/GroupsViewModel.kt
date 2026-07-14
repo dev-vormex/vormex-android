@@ -1,18 +1,23 @@
 package com.kyant.backdrop.catalog.linkedin.groups
 
 import android.content.Context
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.kyant.backdrop.catalog.network.ApiClient
-import com.kyant.backdrop.catalog.network.GroupsApiService
 import com.kyant.backdrop.catalog.network.GroupSocketManager
+import com.kyant.backdrop.catalog.network.GroupsApiService
+import com.kyant.backdrop.catalog.network.PostsApiService
 import com.kyant.backdrop.catalog.network.models.*
+import com.kyant.backdrop.catalog.notifications.MessageNotificationManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.util.UUID
 
@@ -51,16 +56,36 @@ data class GroupsUiState(
     // Create group modal
     val showCreateModal: Boolean = false,
     val isCreatingGroup: Boolean = false,
+    val messageShortcutPromptGroup: Group? = null,
     
     // Detail page state
     val selectedGroup: Group? = null,
     val detailTab: GroupDetailTab = GroupDetailTab.POSTS,
     val groupPosts: List<GroupPost> = emptyList(),
     val groupMembers: List<GroupMember> = emptyList(),
+    val currentInviteLink: GroupInviteLinkResponse? = null,
+    val inviteLinkPreview: GroupInviteLinkResponse? = null,
+    val groupJoinRequests: List<GroupJoinRequest> = emptyList(),
+    val inviteUserResults: List<MentionUser> = emptyList(),
     
     // Actions in progress
     val joiningGroupIds: Set<String> = emptySet(),
     val leavingGroupIds: Set<String> = emptySet(),
+    val isUpdatingGroupAppearance: Boolean = false,
+    val groupAppearanceError: String? = null,
+    val isSavingGroupSettings: Boolean = false,
+    val groupSettingsError: String? = null,
+    val deletingGroupIds: Set<String> = emptySet(),
+    val updatingMemberIds: Set<String> = emptySet(),
+    val removingMemberIds: Set<String> = emptySet(),
+    val isLoadingInviteLink: Boolean = false,
+    val isLoadingInvitePreview: Boolean = false,
+    val isSearchingInviteUsers: Boolean = false,
+    val invitingUserIds: Set<String> = emptySet(),
+    val respondingInviteIds: Set<String> = emptySet(),
+    val respondingJoinRequestIds: Set<String> = emptySet(),
+    val updatingMessageShortcutIds: Set<String> = emptySet(),
+    val inviteLinkError: String? = null,
     
     // Pagination
     val currentPage: Int = 1,
@@ -106,6 +131,15 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     private fun loadCurrentUser() {
         viewModelScope.launch {
             currentUserId = ApiClient.getCurrentUserId(context)
+            GroupSocketManager.currentUserId = currentUserId
+        }
+    }
+
+    private suspend fun cacheOwnerId(): String? {
+        currentUserId?.let { return it }
+        return ApiClient.getCurrentUserId(context).also { userId ->
+            currentUserId = userId
+            GroupSocketManager.currentUserId = userId
         }
     }
     
@@ -121,17 +155,30 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     }
     
     fun loadMyGroups(refresh: Boolean = false) {
-        if (_uiState.value.isLoading && !refresh) return
+        if (_uiState.value.isLoading && !refresh && _uiState.value.myGroups.isNotEmpty()) return
         
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(
-                isLoading = true,
-                error = null,
-                currentPage = if (refresh) 1 else _uiState.value.currentPage
-            )
+            val ownerId = cacheOwnerId()
+            val cached = if (!refresh) GroupsLocalCache.readMyGroups(context, ownerId) else null
+            if (cached != null) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = null,
+                    myGroups = cached.groups,
+                    hasMoreGroups = cached.pagination?.let { it.page < it.totalPages } ?: false,
+                    currentPage = 1
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = true,
+                    error = null,
+                    currentPage = if (refresh) 1 else _uiState.value.currentPage
+                )
+            }
             
             GroupsApiService.getMyGroups(context, page = 1).fold(
                 onSuccess = { response ->
+                    GroupsLocalCache.writeMyGroups(context, ownerId, response)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         myGroups = response.groups,
@@ -143,7 +190,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                 onFailure = { e ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = e.message
+                        error = if (cached != null) null else e.message
                     )
                 }
             )
@@ -151,18 +198,37 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     }
     
     fun loadDiscoverGroups(refresh: Boolean = false) {
-        if (_uiState.value.isLoading && !refresh) return
+        if (_uiState.value.isLoading && !refresh && _uiState.value.discoverGroups.isNotEmpty()) return
         
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            val ownerId = cacheOwnerId()
+            val search = _uiState.value.searchQuery.takeIf { it.isNotBlank() }
+            val category = _uiState.value.selectedCategory
+            val cached = if (!refresh) {
+                GroupsLocalCache.readDiscoverGroups(context, ownerId, search, category)
+            } else {
+                null
+            }
+            if (cached != null) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = null,
+                    discoverGroups = cached.groups,
+                    hasMoreGroups = cached.pagination?.let { it.page < it.totalPages } ?: false,
+                    currentPage = 1
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            }
             
             GroupsApiService.discoverGroups(
                 context = context,
-                search = _uiState.value.searchQuery.takeIf { it.isNotBlank() },
-                category = _uiState.value.selectedCategory,
+                search = search,
+                category = category,
                 page = 1
             ).fold(
                 onSuccess = { response ->
+                    GroupsLocalCache.writeDiscoverGroups(context, ownerId, search, category, response)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         discoverGroups = response.groups,
@@ -174,7 +240,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                 onFailure = { e ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = e.message
+                        error = if (cached != null) null else e.message
                     )
                 }
             )
@@ -183,10 +249,21 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     
     fun loadPendingInvites() {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            val ownerId = cacheOwnerId()
+            val cached = GroupsLocalCache.readPendingInvites(context, ownerId)
+            if (cached != null) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = null,
+                    pendingInvites = cached.invites
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            }
             
             GroupsApiService.getPendingInvites(context).fold(
                 onSuccess = { response ->
+                    GroupsLocalCache.writePendingInvites(context, ownerId, response)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         pendingInvites = response.invites
@@ -195,7 +272,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                 onFailure = { e ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = e.message
+                        error = if (cached != null) null else e.message
                     )
                 }
             )
@@ -204,8 +281,12 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     
     fun loadCategories() {
         viewModelScope.launch {
+            GroupsLocalCache.readCategories(context)?.let { cached ->
+                _uiState.value = _uiState.value.copy(categories = cached.categories)
+            }
             GroupsApiService.getCategories(context).fold(
                 onSuccess = { response ->
+                    GroupsLocalCache.writeCategories(context, response)
                     _uiState.value = _uiState.value.copy(categories = response.categories)
                 },
                 onFailure = { /* ignore */ }
@@ -258,6 +339,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                     _uiState.value = _uiState.value.copy(
                         joiningGroupIds = _uiState.value.joiningGroupIds - groupId
                     )
+                    showMessageShortcutPromptForGroup(groupId)
                 },
                 onFailure = { e ->
                     _uiState.value = _uiState.value.copy(
@@ -286,6 +368,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                                 selectedGroup = group.copy(
                                     isMember = false,
                                     memberRole = null,
+                                    isAddedToMessages = false,
                                     memberCount = (group.memberCount - 1).coerceAtLeast(0)
                                 )
                             )
@@ -293,7 +376,9 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                     }
                     
                     _uiState.value = _uiState.value.copy(
-                        leavingGroupIds = _uiState.value.leavingGroupIds - groupId
+                        leavingGroupIds = _uiState.value.leavingGroupIds - groupId,
+                        messageShortcutPromptGroup = _uiState.value.messageShortcutPromptGroup
+                            ?.takeUnless { it.id == groupId }
                     )
                 },
                 onFailure = { e ->
@@ -308,6 +393,86 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     
     fun showCreateModal(show: Boolean) {
         _uiState.value = _uiState.value.copy(showCreateModal = show)
+    }
+
+    fun dismissMessageShortcutPrompt() {
+        _uiState.value = _uiState.value.copy(messageShortcutPromptGroup = null)
+    }
+
+    private fun knownGroupForPrompt(groupId: String, fallback: Group? = null): Group? {
+        val state = _uiState.value
+        return fallback
+            ?: state.selectedGroup?.takeIf { it.id == groupId }
+            ?: state.myGroups.firstOrNull { it.id == groupId }
+            ?: state.discoverGroups.firstOrNull { it.id == groupId }
+            ?: state.pendingInvites.firstOrNull { it.group?.id == groupId }?.group
+            ?: _chatState.value.group?.takeIf { it.id == groupId }
+    }
+
+    private fun showMessageShortcutPromptForGroup(groupId: String, fallback: Group? = null) {
+        val knownGroup = knownGroupForPrompt(groupId, fallback)
+        if (knownGroup != null) {
+            val promptGroup = knownGroup.copy(
+                isMember = true,
+                memberRole = knownGroup.memberRole ?: "member"
+            )
+            if (!promptGroup.isAddedToMessages) {
+                _uiState.value = _uiState.value.copy(messageShortcutPromptGroup = promptGroup)
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            GroupsApiService.getGroup(context, groupId).fold(
+                onSuccess = { group ->
+                    if (group.isMember && !group.isAddedToMessages) {
+                        _uiState.value = _uiState.value.copy(messageShortcutPromptGroup = group)
+                    }
+                },
+                onFailure = { /* Prompt is optional; leave the joined flow untouched. */ }
+            )
+        }
+    }
+
+    fun setGroupMessageShortcut(
+        group: Group,
+        enabled: Boolean,
+        onUpdated: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                updatingMessageShortcutIds = _uiState.value.updatingMessageShortcutIds + group.id,
+                error = null
+            )
+
+            GroupsApiService.setMessageShortcut(context, group.id, enabled).fold(
+                onSuccess = {
+                    val updateGroup: (Group) -> Group = { candidate ->
+                        if (candidate.id == group.id) candidate.copy(isAddedToMessages = enabled) else candidate
+                    }
+                    _uiState.value = _uiState.value.let { state ->
+                        state.copy(
+                            myGroups = state.myGroups.map(updateGroup),
+                            discoverGroups = state.discoverGroups.map(updateGroup),
+                            selectedGroup = state.selectedGroup?.let(updateGroup),
+                            messageShortcutPromptGroup = state.messageShortcutPromptGroup
+                                ?.takeUnless { prompt -> prompt.id == group.id },
+                            updatingMessageShortcutIds = state.updatingMessageShortcutIds - group.id
+                        )
+                    }
+                    _chatState.value = _chatState.value.copy(
+                        group = _chatState.value.group?.let(updateGroup)
+                    )
+                    onUpdated()
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        updatingMessageShortcutIds = _uiState.value.updatingMessageShortcutIds - group.id,
+                        error = e.message
+                    )
+                }
+            )
+        }
     }
     
     fun createGroup(
@@ -331,7 +496,8 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                 onSuccess = { group ->
                     _uiState.value = _uiState.value.copy(
                         isCreatingGroup = false,
-                        showCreateModal = false
+                        showCreateModal = false,
+                        messageShortcutPromptGroup = group
                     )
                     loadMyGroups(refresh = true)
                 },
@@ -403,12 +569,507 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
             )
         }
     }
+
+    fun loadGroupInviteLink(groupId: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoadingInviteLink = true, inviteLinkError = null)
+            GroupsApiService.getGroupInviteLink(context, groupId).fold(
+                onSuccess = { response ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingInviteLink = false,
+                        currentInviteLink = response,
+                        inviteLinkError = null
+                    )
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingInviteLink = false,
+                        currentInviteLink = null,
+                        inviteLinkError = e.message
+                    )
+                }
+            )
+        }
+    }
+
+    fun loadGroupInvitePreview(inviteCode: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isLoadingInvitePreview = true,
+                inviteLinkError = null,
+                inviteLinkPreview = null
+            )
+            GroupsApiService.previewGroupInviteLink(context, inviteCode).fold(
+                onSuccess = { response ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingInvitePreview = false,
+                        inviteLinkPreview = response,
+                        inviteLinkError = null
+                    )
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingInvitePreview = false,
+                        inviteLinkError = e.message ?: "Invite link is not available"
+                    )
+                }
+            )
+        }
+    }
+
+    fun joinGroupInviteLink(inviteCode: String, onFinished: (GroupInviteActionResponse) -> Unit = {}) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoadingInvitePreview = true, inviteLinkError = null)
+            GroupsApiService.joinGroupByInviteLink(context, inviteCode).fold(
+                onSuccess = { response ->
+                    _uiState.value = _uiState.value.copy(isLoadingInvitePreview = false, inviteLinkError = null)
+                    loadMyGroups(refresh = true)
+                    loadDiscoverGroups(refresh = true)
+                    response.groupId.takeIf { it.isNotBlank() }?.let { loadGroupDetail(it) }
+                    if (response.status == "joined" || response.status == "already_member") {
+                        response.groupId.takeIf { it.isNotBlank() }?.let { showMessageShortcutPromptForGroup(it) }
+                    }
+                    onFinished(response)
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingInvitePreview = false,
+                        inviteLinkError = e.message ?: "Could not join from this invite link"
+                    )
+                }
+            )
+        }
+    }
+
+    fun updateInviteLinkVisibility(groupId: String, visibility: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoadingInviteLink = true, groupSettingsError = null)
+            GroupsApiService.updateGroupInviteLinkVisibility(context, groupId, visibility).fold(
+                onSuccess = { response ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingInviteLink = false,
+                        currentInviteLink = response,
+                        groupSettingsError = null
+                    )
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingInviteLink = false,
+                        groupSettingsError = e.message ?: "Failed to update invite link"
+                    )
+                }
+            )
+        }
+    }
+
+    fun resetInviteLink(groupId: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoadingInviteLink = true, groupSettingsError = null)
+            GroupsApiService.resetGroupInviteLink(context, groupId).fold(
+                onSuccess = { response ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingInviteLink = false,
+                        currentInviteLink = response,
+                        groupSettingsError = null
+                    )
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingInviteLink = false,
+                        groupSettingsError = e.message ?: "Failed to reset invite link"
+                    )
+                }
+            )
+        }
+    }
+
+    fun searchInviteUsers(query: String) {
+        val normalized = query.trim()
+        if (normalized.length < 2) {
+            _uiState.value = _uiState.value.copy(inviteUserResults = emptyList(), isSearchingInviteUsers = false)
+            return
+        }
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isSearchingInviteUsers = true)
+            PostsApiService.searchMentions(context, normalized, limit = 8).fold(
+                onSuccess = { response ->
+                    val memberIds = _uiState.value.groupMembers.map { it.userId }.toSet()
+                    _uiState.value = _uiState.value.copy(
+                        isSearchingInviteUsers = false,
+                        inviteUserResults = response.users.filterNot { it.id in memberIds }
+                    )
+                },
+                onFailure = {
+                    _uiState.value = _uiState.value.copy(isSearchingInviteUsers = false)
+                }
+            )
+        }
+    }
+
+    fun createGroupInvite(groupId: String, userId: String, message: String? = null) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                invitingUserIds = _uiState.value.invitingUserIds + userId,
+                groupSettingsError = null
+            )
+            GroupsApiService.createGroupInvite(context, groupId, userId, message).fold(
+                onSuccess = {
+                    _uiState.value = _uiState.value.copy(
+                        invitingUserIds = _uiState.value.invitingUserIds - userId,
+                        inviteUserResults = _uiState.value.inviteUserResults.filterNot { it.id == userId },
+                        groupSettingsError = null
+                    )
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        invitingUserIds = _uiState.value.invitingUserIds - userId,
+                        groupSettingsError = e.message ?: "Failed to send invite"
+                    )
+                }
+            )
+        }
+    }
+
+    fun respondToGroupInvite(inviteId: String, action: String) {
+        viewModelScope.launch {
+            val invitedGroup = _uiState.value.pendingInvites.firstOrNull { it.id == inviteId }?.group
+            _uiState.value = _uiState.value.copy(
+                respondingInviteIds = _uiState.value.respondingInviteIds + inviteId,
+                error = null
+            )
+            GroupsApiService.respondToGroupInvite(context, inviteId, action).fold(
+                onSuccess = { response ->
+                    _uiState.value = _uiState.value.copy(
+                        respondingInviteIds = _uiState.value.respondingInviteIds - inviteId,
+                        pendingInvites = _uiState.value.pendingInvites.filterNot { it.id == inviteId }
+                    )
+                    if (response.status == "joined" || response.status == "already_member") {
+                        loadMyGroups(refresh = true)
+                        showMessageShortcutPromptForGroup(response.groupId, invitedGroup)
+                    }
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        respondingInviteIds = _uiState.value.respondingInviteIds - inviteId,
+                        error = e.message
+                    )
+                }
+            )
+        }
+    }
+
+    fun loadGroupJoinRequests(groupId: String) {
+        viewModelScope.launch {
+            GroupsApiService.getGroupJoinRequests(context, groupId).fold(
+                onSuccess = { response ->
+                    _uiState.value = _uiState.value.copy(groupJoinRequests = response.requests)
+                },
+                onFailure = { /* Member/admin-only surface; ignore in non-admin contexts. */ }
+            )
+        }
+    }
+
+    fun respondToGroupJoinRequest(groupId: String, requestId: String, action: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                respondingJoinRequestIds = _uiState.value.respondingJoinRequestIds + requestId,
+                groupSettingsError = null
+            )
+            GroupsApiService.respondToGroupJoinRequest(context, groupId, requestId, action).fold(
+                onSuccess = { response ->
+                    _uiState.value = _uiState.value.copy(
+                        respondingJoinRequestIds = _uiState.value.respondingJoinRequestIds - requestId,
+                        groupJoinRequests = _uiState.value.groupJoinRequests.filterNot { it.id == requestId }
+                    )
+                    if (response.status == "joined" || response.status == "already_member") {
+                        loadGroupMembers(groupId)
+                        loadGroupDetail(groupId)
+                    }
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        respondingJoinRequestIds = _uiState.value.respondingJoinRequestIds - requestId,
+                        groupSettingsError = e.message ?: "Failed to update join request"
+                    )
+                }
+            )
+        }
+    }
+
+    fun updateGroupSettings(
+        groupId: String,
+        name: String,
+        description: String?,
+        privacy: String,
+        category: String?,
+        rules: List<String>
+    ) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isSavingGroupSettings = true,
+                groupSettingsError = null
+            )
+
+            GroupsApiService.updateGroup(
+                context = context,
+                groupId = groupId,
+                name = name,
+                description = description,
+                privacy = privacy,
+                category = category,
+                rules = rules
+            ).fold(
+                onSuccess = { updatedGroup ->
+                    val currentState = _uiState.value
+                    _uiState.value = currentState.copy(
+                        isSavingGroupSettings = false,
+                        groupSettingsError = null,
+                        selectedGroup = updatedGroup,
+                        myGroups = currentState.myGroups.map { group ->
+                            if (group.id == groupId) updatedGroup else group
+                        },
+                        discoverGroups = currentState.discoverGroups.map { group ->
+                            if (group.id == groupId) updatedGroup else group
+                        }
+                    )
+                    if (_chatState.value.group?.id == groupId) {
+                        _chatState.value = _chatState.value.copy(group = updatedGroup)
+                    }
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isSavingGroupSettings = false,
+                        groupSettingsError = e.message ?: "Failed to update group"
+                    )
+                }
+            )
+        }
+    }
+
+    fun updateMemberRole(groupId: String, userId: String, role: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                updatingMemberIds = _uiState.value.updatingMemberIds + userId,
+                groupSettingsError = null
+            )
+
+            GroupsApiService.updateMemberRole(context, groupId, userId, role).fold(
+                onSuccess = {
+                    _uiState.value = _uiState.value.copy(
+                        updatingMemberIds = _uiState.value.updatingMemberIds - userId,
+                        groupMembers = _uiState.value.groupMembers.map { member ->
+                            if (member.userId == userId) member.copy(role = role.lowercase()) else member
+                        }
+                    )
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        updatingMemberIds = _uiState.value.updatingMemberIds - userId,
+                        groupSettingsError = e.message ?: "Failed to update member role"
+                    )
+                }
+            )
+        }
+    }
+
+    fun removeMember(groupId: String, userId: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                removingMemberIds = _uiState.value.removingMemberIds + userId,
+                groupSettingsError = null
+            )
+
+            GroupsApiService.removeMember(context, groupId, userId).fold(
+                onSuccess = {
+                    val currentState = _uiState.value
+                    val updatedSelectedGroup = currentState.selectedGroup
+                        ?.takeIf { it.id == groupId }
+                        ?.let { group -> group.copy(memberCount = (group.memberCount - 1).coerceAtLeast(0)) }
+
+                    _uiState.value = currentState.copy(
+                        removingMemberIds = currentState.removingMemberIds - userId,
+                        groupMembers = currentState.groupMembers.filterNot { it.userId == userId },
+                        selectedGroup = updatedSelectedGroup ?: currentState.selectedGroup,
+                        myGroups = currentState.myGroups.map { group ->
+                            if (group.id == groupId) {
+                                group.copy(memberCount = (group.memberCount - 1).coerceAtLeast(0))
+                            } else {
+                                group
+                            }
+                        },
+                        discoverGroups = currentState.discoverGroups.map { group ->
+                            if (group.id == groupId) {
+                                group.copy(memberCount = (group.memberCount - 1).coerceAtLeast(0))
+                            } else {
+                                group
+                            }
+                        }
+                    )
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        removingMemberIds = _uiState.value.removingMemberIds - userId,
+                        groupSettingsError = e.message ?: "Failed to remove member"
+                    )
+                }
+            )
+        }
+    }
+
+    fun deleteGroup(groupId: String, onDeleted: () -> Unit = {}) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                deletingGroupIds = _uiState.value.deletingGroupIds + groupId,
+                groupSettingsError = null
+            )
+
+            GroupsApiService.deleteGroup(context, groupId).fold(
+                onSuccess = {
+                    val currentState = _uiState.value
+                    _uiState.value = currentState.copy(
+                        deletingGroupIds = currentState.deletingGroupIds - groupId,
+                        selectedGroup = null,
+                        groupPosts = emptyList(),
+                        groupMembers = emptyList(),
+                        myGroups = currentState.myGroups.filterNot { it.id == groupId },
+                        discoverGroups = currentState.discoverGroups.filterNot { it.id == groupId }
+                    )
+                    onDeleted()
+                    loadMyGroups(refresh = true)
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        deletingGroupIds = _uiState.value.deletingGroupIds - groupId,
+                        groupSettingsError = e.message ?: "Failed to delete group"
+                    )
+                }
+            )
+        }
+    }
+
+    fun uploadGroupIcon(
+        groupId: String,
+        uri: Uri,
+        fileName: String,
+        mimeType: String
+    ) {
+        uploadGroupAppearance(
+            groupId = groupId,
+            uri = uri,
+            fileName = fileName.ifBlank { "group-icon.jpg" },
+            mimeType = mimeType,
+            upload = { bytes, safeName, safeMimeType ->
+                GroupsApiService.uploadGroupIcon(
+                    context = context,
+                    groupId = groupId,
+                    imageBytes = bytes,
+                    filename = safeName,
+                    mimeType = safeMimeType
+                )
+            },
+            applyUrl = { group, url -> group.copy(iconImage = url) },
+            extractUrl = { response -> response.iconUrl },
+            defaultError = "Failed to upload group icon"
+        )
+    }
+
+    fun uploadGroupCover(
+        groupId: String,
+        uri: Uri,
+        fileName: String,
+        mimeType: String
+    ) {
+        uploadGroupAppearance(
+            groupId = groupId,
+            uri = uri,
+            fileName = fileName.ifBlank { "group-cover.jpg" },
+            mimeType = mimeType,
+            upload = { bytes, safeName, safeMimeType ->
+                GroupsApiService.uploadGroupCover(
+                    context = context,
+                    groupId = groupId,
+                    imageBytes = bytes,
+                    filename = safeName,
+                    mimeType = safeMimeType
+                )
+            },
+            applyUrl = { group, url -> group.copy(coverImage = url) },
+            extractUrl = { response -> response.coverUrl },
+            defaultError = "Failed to upload group cover"
+        )
+    }
+
+    private fun <T> uploadGroupAppearance(
+        groupId: String,
+        uri: Uri,
+        fileName: String,
+        mimeType: String,
+        upload: suspend (ByteArray, String, String) -> Result<T>,
+        applyUrl: (Group, String) -> Group,
+        extractUrl: (T) -> String,
+        defaultError: String
+    ) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isUpdatingGroupAppearance = true,
+                groupAppearanceError = null
+            )
+
+            val imageBytes = withContext(Dispatchers.IO) {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    input.readBytes()
+                }
+            }
+
+            if (imageBytes == null || imageBytes.isEmpty()) {
+                _uiState.value = _uiState.value.copy(
+                    isUpdatingGroupAppearance = false,
+                    groupAppearanceError = "Could not read the selected image"
+                )
+                return@launch
+            }
+
+            upload(imageBytes, fileName, mimeType).fold(
+                onSuccess = { response ->
+                    val updatedUrl = extractUrl(response)
+                    val currentState = _uiState.value
+                    val updatedSelectedGroup = currentState.selectedGroup
+                        ?.takeIf { it.id == groupId }
+                        ?.let { applyUrl(it, updatedUrl) }
+
+                    _uiState.value = currentState.copy(
+                        isUpdatingGroupAppearance = false,
+                        groupAppearanceError = null,
+                        selectedGroup = updatedSelectedGroup ?: currentState.selectedGroup,
+                        myGroups = currentState.myGroups
+                            .map { group -> if (group.id == groupId) applyUrl(group, updatedUrl) else group },
+                        discoverGroups = currentState.discoverGroups
+                            .map { group -> if (group.id == groupId) applyUrl(group, updatedUrl) else group }
+                    )
+
+                    val chatGroup = _chatState.value.group
+                    if (chatGroup?.id == groupId) {
+                        _chatState.value = _chatState.value.copy(group = applyUrl(chatGroup, updatedUrl))
+                    }
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isUpdatingGroupAppearance = false,
+                        groupAppearanceError = e.message ?: defaultError
+                    )
+                }
+            )
+        }
+    }
     
     fun clearSelectedGroup() {
         _uiState.value = _uiState.value.copy(
             selectedGroup = null,
             groupPosts = emptyList(),
-            groupMembers = emptyList()
+            groupMembers = emptyList(),
+            currentInviteLink = null,
+            groupJoinRequests = emptyList(),
+            inviteUserResults = emptyList()
         )
     }
     
@@ -421,6 +1082,10 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
     fun loadGroupChat(groupId: String) {
         viewModelScope.launch {
             _chatState.value = GroupChatUiState(isLoading = true)
+            MessageNotificationManager.clearConversationNotification(
+                context,
+                MessageNotificationManager.groupNotificationKey(groupId)
+            )
             
             // Connect socket and join room
             val token = ApiClient.getToken(context)
@@ -489,6 +1154,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
         if (content.isBlank() && mediaUrl == null) return
         
         val tempId = UUID.randomUUID().toString()
+        val replyToMessageId = _chatState.value.replyingTo?.id
         val contentType = when {
             mediaUrl != null && mediaType?.startsWith("image") == true -> "image"
             mediaUrl != null && mediaType?.startsWith("video") == true -> "video"
@@ -509,7 +1175,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
             contentType = contentType,
             mediaUrl = mediaUrl,
             mediaType = mediaType,
-            replyToId = _chatState.value.replyingTo?.id,
+            replyToId = replyToMessageId,
             createdAt = java.time.Instant.now().toString()
         )
         
@@ -519,18 +1185,7 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
             replyingTo = null
         )
         
-        // Send via socket
-        GroupSocketManager.sendMessage(
-            groupId = groupId,
-            content = content,
-            tempId = tempId,
-            contentType = contentType,
-            mediaUrl = mediaUrl,
-            mediaType = mediaType,
-            replyToId = _chatState.value.replyingTo?.id
-        )
-        
-        // Also send via REST as fallback
+        // Send via REST so persistence, real-time fanout, and push notifications share one path.
         viewModelScope.launch {
             GroupsApiService.sendGroupMessage(
                 context = context,
@@ -539,15 +1194,14 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                 contentType = contentType,
                 mediaUrl = mediaUrl,
                 mediaType = mediaType,
-                replyToId = _chatState.value.replyingTo?.id
+                replyToId = replyToMessageId
             ).fold(
                 onSuccess = { message ->
                     // Replace temp message with real one
                     _chatState.value = _chatState.value.copy(
                         isSending = false,
-                        messages = _chatState.value.messages.map {
-                            if (it.id == tempId) message else it
-                        }
+                        messages = _chatState.value.messages
+                            .filterNot { it.id == tempId || it.id == message.id } + message
                     )
                 },
                 onFailure = { e ->
@@ -640,6 +1294,20 @@ class GroupsViewModel(private val context: Context) : ViewModel() {
                         messages = _chatState.value.messages.filter { it.id != messageId }
                     )
                 }
+            }
+        }
+
+        viewModelScope.launch {
+            GroupSocketManager.allGroupChatsClearedFlow.collect {
+                _chatState.value = _chatState.value.copy(
+                    messages = emptyList(),
+                    typingUsers = emptyList(),
+                    hasMoreMessages = false,
+                    isSending = false,
+                    replyingTo = null,
+                    error = null
+                )
+                MessageNotificationManager.clearAll(context)
             }
         }
     }

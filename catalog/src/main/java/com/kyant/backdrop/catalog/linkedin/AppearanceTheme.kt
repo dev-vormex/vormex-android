@@ -7,7 +7,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.composed
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -20,25 +19,63 @@ import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.shapes.RoundedRectangle
 
-const val DefaultThemeModeKey = "glass"
+const val DefaultThemeModeKey = "light"
+const val DefaultProfileThemeKey = "default"
+const val GameRetroProfileThemeKey = "game_retro"
+
+data class VormexProfileThemeOption(
+    val key: String,
+    val label: String,
+    val description: String
+)
+
+val VormexProfileThemeOptions = listOf(
+    VormexProfileThemeOption(
+        key = DefaultProfileThemeKey,
+        label = "Default",
+        description = "Use the standard Vormex profile layout"
+    ),
+    VormexProfileThemeOption(
+        key = GameRetroProfileThemeKey,
+        label = "Game Retro",
+        description = "A bold arcade-card profile with XP, stats, and hard shadows"
+    )
+)
+
+fun normalizeProfileThemeKey(value: String?): String =
+    when (value) {
+        GameRetroProfileThemeKey -> GameRetroProfileThemeKey
+        else -> DefaultProfileThemeKey
+    }
 
 enum class VormexThemeMode(val key: String) {
     Glass("glass"),
+    WarmPaper("warm_paper"),
+    BlackGreen("black_green"),
     Light("light"),
-    Dark("dark");
+    Dark("dark"),
+    MidnightNeon("midnight_neon"),
+    SoftGraphite("soft_graphite"),
+    EmeraldFocus("emerald_focus");
 
     companion object {
         fun fromKey(key: String): VormexThemeMode =
-            entries.firstOrNull { it.key == key } ?: Glass
+            entries.firstOrNull { it.key == key } ?: Light
     }
 }
+
+fun normalizeThemeModeKey(value: String?): String =
+    VormexThemeMode.entries.firstOrNull { it.key == value }?.key ?: DefaultThemeModeKey
 
 enum class VormexSurfaceTone {
     Card,
     Subtle,
     Sheet,
     Input,
-    Overlay
+    Overlay,
+    Control,
+    Navigation,
+    Selected
 }
 
 data class VormexAppearance(
@@ -55,16 +92,24 @@ data class VormexAppearance(
     val inputBorderColor: Color,
     val overlayColor: Color,
     val overlayBorderColor: Color,
+    val controlColor: Color,
+    val controlBorderColor: Color,
+    val navigationColor: Color,
+    val navigationBorderColor: Color,
+    val selectedColor: Color,
+    val selectedBorderColor: Color,
     val dividerColor: Color
 ) {
     val isGlassTheme: Boolean
         get() = mode == VormexThemeMode.Glass
 
     val isLightTheme: Boolean
-        get() = mode != VormexThemeMode.Dark
+        get() = !isDarkTheme
 
     val isDarkTheme: Boolean
-        get() = mode == VormexThemeMode.Dark
+        get() = mode == VormexThemeMode.Dark ||
+            mode == VormexThemeMode.MidnightNeon ||
+            mode == VormexThemeMode.BlackGreen
 
     fun surfaceColor(tone: VormexSurfaceTone): Color = when (tone) {
         VormexSurfaceTone.Card -> cardColor
@@ -72,6 +117,9 @@ data class VormexAppearance(
         VormexSurfaceTone.Sheet -> sheetColor
         VormexSurfaceTone.Input -> inputColor
         VormexSurfaceTone.Overlay -> overlayColor
+        VormexSurfaceTone.Control -> controlColor
+        VormexSurfaceTone.Navigation -> navigationColor
+        VormexSurfaceTone.Selected -> selectedColor
     }
 
     fun borderColor(tone: VormexSurfaceTone): Color = when (tone) {
@@ -80,7 +128,22 @@ data class VormexAppearance(
         VormexSurfaceTone.Sheet -> sheetBorderColor
         VormexSurfaceTone.Input -> inputBorderColor
         VormexSurfaceTone.Overlay -> overlayBorderColor
+        VormexSurfaceTone.Control -> controlBorderColor
+        VormexSurfaceTone.Navigation -> navigationBorderColor
+        VormexSurfaceTone.Selected -> selectedBorderColor
     }
+
+    val mutedContentColor: Color
+        get() = contentColor.copy(alpha = if (isDarkTheme) 0.68f else 0.62f)
+
+    val disabledContentColor: Color
+        get() = contentColor.copy(alpha = if (isDarkTheme) 0.38f else 0.34f)
+
+    val mediaSurfaceColor: Color
+        get() = if (isDarkTheme) Color.White.copy(alpha = 0.06f) else Color.Black.copy(alpha = 0.05f)
+
+    val scrimColor: Color
+        get() = Color.Black.copy(alpha = if (isGlassTheme) 0.42f else 0.50f)
 }
 
 val LocalVormexAppearance = compositionLocalOf<VormexAppearance?> { null }
@@ -106,6 +169,13 @@ fun ProvideVormexAppearance(
     }
 }
 
+fun vormexAccentColor(themeMode: String, accentPaletteKey: String): Color =
+    when (VormexThemeMode.fromKey(themeMode)) {
+        VormexThemeMode.WarmPaper -> Color(0xFFC96442)
+        VormexThemeMode.BlackGreen -> Color(0xFF36D072)
+        else -> glassAccentPalette(accentPaletteKey).color
+    }
+
 private fun appearanceForTheme(themeMode: String): VormexAppearance =
     when (VormexThemeMode.fromKey(themeMode)) {
         VormexThemeMode.Glass -> VormexAppearance(
@@ -122,13 +192,63 @@ private fun appearanceForTheme(themeMode: String): VormexAppearance =
             inputBorderColor = Color.White.copy(alpha = 0.16f),
             overlayColor = Color.White.copy(alpha = 0.18f),
             overlayBorderColor = Color.White.copy(alpha = 0.22f),
+            controlColor = Color.White.copy(alpha = 0.22f),
+            controlBorderColor = Color.White.copy(alpha = 0.22f),
+            navigationColor = Color.White.copy(alpha = 0.40f),
+            navigationBorderColor = Color.White.copy(alpha = 0.30f),
+            selectedColor = Color.Black.copy(alpha = 0.10f),
+            selectedBorderColor = Color.White.copy(alpha = 0.22f),
             dividerColor = Color.Black.copy(alpha = 0.08f)
+        )
+        VormexThemeMode.WarmPaper -> VormexAppearance(
+            mode = VormexThemeMode.WarmPaper,
+            backgroundColor = Color(0xFFF7F2EA),
+            contentColor = Color(0xFF2F2A24),
+            cardColor = Color(0xFFFFFCF7),
+            cardBorderColor = Color(0xFFE7D8C8),
+            subtleColor = Color(0xFFF0E7DA),
+            subtleBorderColor = Color(0xFFE2D1BE),
+            sheetColor = Color(0xFFFBF6EF),
+            sheetBorderColor = Color(0xFFE4D3C0),
+            inputColor = Color(0xFFFFFDF8),
+            inputBorderColor = Color(0xFFE1D0BC),
+            overlayColor = Color(0xFFF8EFE4),
+            overlayBorderColor = Color(0xFFE5D4C1),
+            controlColor = Color(0xFFFFF8EF),
+            controlBorderColor = Color(0xFFE1CEB8),
+            navigationColor = Color(0xFFFFFCF5),
+            navigationBorderColor = Color(0xFFE5D6C5),
+            selectedColor = Color(0xFFF3DECC),
+            selectedBorderColor = Color(0xFFD6B79D),
+            dividerColor = Color(0xFFE3D6C7)
+        )
+        VormexThemeMode.BlackGreen -> VormexAppearance(
+            mode = VormexThemeMode.BlackGreen,
+            backgroundColor = Color(0xFF020604),
+            contentColor = Color(0xFFEAFBF0),
+            cardColor = Color(0xFF07110B),
+            cardBorderColor = Color(0xFF2A7A47).copy(alpha = 0.38f),
+            subtleColor = Color(0xFF0B1B11),
+            subtleBorderColor = Color(0xFF1E6B3D).copy(alpha = 0.32f),
+            sheetColor = Color(0xFF050C08),
+            sheetBorderColor = Color(0xFF2A7A47).copy(alpha = 0.32f),
+            inputColor = Color(0xFF08130C),
+            inputBorderColor = Color(0xFF259B55).copy(alpha = 0.30f),
+            overlayColor = Color(0xFF0B1A11),
+            overlayBorderColor = Color(0xFF36D072).copy(alpha = 0.24f),
+            controlColor = Color(0xFF0C1D12),
+            controlBorderColor = Color(0xFF36D072).copy(alpha = 0.28f),
+            navigationColor = Color(0xFF050B08),
+            navigationBorderColor = Color(0xFF36D072).copy(alpha = 0.24f),
+            selectedColor = Color(0xFF0E3A21),
+            selectedBorderColor = Color(0xFF36D072).copy(alpha = 0.42f),
+            dividerColor = Color(0xFF8EF7B2).copy(alpha = 0.08f)
         )
         VormexThemeMode.Light -> VormexAppearance(
             mode = VormexThemeMode.Light,
-            backgroundColor = Color(0xFFF5F7FB),
+            backgroundColor = Color.White,
             contentColor = Color(0xFF0F1720),
-            cardColor = Color.White.copy(alpha = 0.98f),
+            cardColor = Color.White,
             cardBorderColor = Color(0xFFDCE4EF),
             subtleColor = Color(0xFFF0F4F9),
             subtleBorderColor = Color(0xFFE2E9F2),
@@ -136,8 +256,14 @@ private fun appearanceForTheme(themeMode: String): VormexAppearance =
             sheetBorderColor = Color(0xFFDAE3EE),
             inputColor = Color.White,
             inputBorderColor = Color(0xFFD6E0EB),
-            overlayColor = Color.White.copy(alpha = 0.96f),
+            overlayColor = Color.White,
             overlayBorderColor = Color(0xFFDCE4EF),
+            controlColor = Color.White,
+            controlBorderColor = Color(0xFFD6E0EB),
+            navigationColor = Color.White,
+            navigationBorderColor = Color(0xFFDCE4EF),
+            selectedColor = Color(0xFFEAF2FF),
+            selectedBorderColor = Color(0xFFCFE0F7),
             dividerColor = Color(0xFFE7EDF5)
         )
         VormexThemeMode.Dark -> VormexAppearance(
@@ -154,10 +280,83 @@ private fun appearanceForTheme(themeMode: String): VormexAppearance =
             inputBorderColor = Color.White.copy(alpha = 0.08f),
             overlayColor = Color(0xFF141C28),
             overlayBorderColor = Color.White.copy(alpha = 0.08f),
+            controlColor = Color(0xFF151E2A),
+            controlBorderColor = Color.White.copy(alpha = 0.08f),
+            navigationColor = Color(0xFF0F1724),
+            navigationBorderColor = Color.White.copy(alpha = 0.10f),
+            selectedColor = Color(0xFF173353),
+            selectedBorderColor = Color.White.copy(alpha = 0.10f),
             dividerColor = Color.White.copy(alpha = 0.06f)
+        )
+        VormexThemeMode.MidnightNeon -> VormexAppearance(
+            mode = VormexThemeMode.MidnightNeon,
+            backgroundColor = Color(0xFF050A12),
+            contentColor = Color(0xFFF4FBFF),
+            cardColor = Color(0xFF0D1724),
+            cardBorderColor = Color(0xFF2A9FDB).copy(alpha = 0.26f),
+            subtleColor = Color(0xFF102237),
+            subtleBorderColor = Color(0xFF2EE6FF).copy(alpha = 0.16f),
+            sheetColor = Color(0xFF091320),
+            sheetBorderColor = Color(0xFF65D8FF).copy(alpha = 0.18f),
+            inputColor = Color(0xFF0B1625),
+            inputBorderColor = Color(0xFF65D8FF).copy(alpha = 0.16f),
+            overlayColor = Color(0xFF0F1B2B),
+            overlayBorderColor = Color(0xFF66E4FF).copy(alpha = 0.18f),
+            controlColor = Color(0xFF101E31),
+            controlBorderColor = Color(0xFF4CCBFF).copy(alpha = 0.16f),
+            navigationColor = Color(0xFF081321),
+            navigationBorderColor = Color(0xFF66D9FF).copy(alpha = 0.20f),
+            selectedColor = Color(0xFF083B5C),
+            selectedBorderColor = Color(0xFF38D5FF).copy(alpha = 0.24f),
+            dividerColor = Color.White.copy(alpha = 0.07f)
+        )
+        VormexThemeMode.SoftGraphite -> VormexAppearance(
+            mode = VormexThemeMode.SoftGraphite,
+            backgroundColor = Color(0xFFF2F4F6),
+            contentColor = Color(0xFF171A1F),
+            cardColor = Color(0xFFFFFFFF),
+            cardBorderColor = Color(0xFFCCD3DC),
+            subtleColor = Color(0xFFE7EAEE),
+            subtleBorderColor = Color(0xFFD7DDE5),
+            sheetColor = Color(0xFFF8F9FB),
+            sheetBorderColor = Color(0xFFD6DDE6),
+            inputColor = Color(0xFFFFFFFF),
+            inputBorderColor = Color(0xFFD1D8E1),
+            overlayColor = Color(0xFFF5F7FA),
+            overlayBorderColor = Color(0xFFD6DDE6),
+            controlColor = Color(0xFFFFFFFF),
+            controlBorderColor = Color(0xFFD0D7E0),
+            navigationColor = Color(0xFFFAFBFC),
+            navigationBorderColor = Color(0xFFD2D9E2),
+            selectedColor = Color(0xFFE4EBF4),
+            selectedBorderColor = Color(0xFFC7D2DE),
+            dividerColor = Color(0xFFDDE3EA)
+        )
+        VormexThemeMode.EmeraldFocus -> VormexAppearance(
+            mode = VormexThemeMode.EmeraldFocus,
+            backgroundColor = Color(0xFFF2FBF7),
+            contentColor = Color(0xFF10201A),
+            cardColor = Color(0xFFFFFFFF),
+            cardBorderColor = Color(0xFFCFE8DA),
+            subtleColor = Color(0xFFE5F5EE),
+            subtleBorderColor = Color(0xFFC9E6D7),
+            sheetColor = Color(0xFFF7FCFA),
+            sheetBorderColor = Color(0xFFCBE7D8),
+            inputColor = Color(0xFFFFFFFF),
+            inputBorderColor = Color(0xFFC4E2D2),
+            overlayColor = Color(0xFFF3FBF7),
+            overlayBorderColor = Color(0xFFCBE7D8),
+            controlColor = Color(0xFFFFFFFF),
+            controlBorderColor = Color(0xFFC4E2D2),
+            navigationColor = Color(0xFFF8FFFB),
+            navigationBorderColor = Color(0xFFC8E6D7),
+            selectedColor = Color(0xFFDDF8EA),
+            selectedBorderColor = Color(0xFFAFE1C6),
+            dividerColor = Color(0xFFD6EDE1)
         )
     }
 
+@Composable
 fun Modifier.vormexSurface(
     backdrop: LayerBackdrop? = null,
     tone: VormexSurfaceTone = VormexSurfaceTone.Card,
@@ -168,13 +367,13 @@ fun Modifier.vormexSurface(
     useBackdropEffects: Boolean = true,
     surfaceColor: Color? = null,
     borderColor: Color? = null
-): Modifier = composed {
+): Modifier {
     val appearance = currentVormexAppearance()
     val shape = RoundedCornerShape(cornerRadius)
     val resolvedSurface = surfaceColor ?: appearance.surfaceColor(tone)
     val resolvedBorder = borderColor ?: appearance.borderColor(tone)
 
-    if (appearance.isGlassTheme && backdrop != null && useBackdropEffects) {
+    return if (appearance.isGlassTheme && backdrop != null && useBackdropEffects) {
         var modifier = this.drawBackdrop(
             backdrop = backdrop,
             shape = { RoundedRectangle(cornerRadius) },

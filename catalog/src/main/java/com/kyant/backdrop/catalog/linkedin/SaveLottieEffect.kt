@@ -1,0 +1,68 @@
+package com.kyant.backdrop.catalog.linkedin
+
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
+import com.airbnb.lottie.compose.LottieAnimation
+import com.airbnb.lottie.compose.LottieCompositionSpec
+import com.airbnb.lottie.compose.rememberLottieDynamicProperties
+import com.airbnb.lottie.compose.rememberLottieDynamicProperty
+import com.airbnb.lottie.compose.animateLottieCompositionAsState
+import com.airbnb.lottie.compose.rememberLottieComposition
+import com.airbnb.lottie.LottieProperty
+import com.airbnb.lottie.SimpleColorFilter
+import com.kyant.backdrop.catalog.R
+import kotlinx.coroutines.delay
+
+@Composable
+fun SaveLottieEffect(
+    trigger: Int,
+    tintColor: Color = Color(0xFFA855F7),
+    modifier: Modifier = Modifier
+) {
+    val composition by rememberLottieComposition(LottieCompositionSpec.RawRes(R.raw.save))
+    var visible by remember { mutableStateOf(false) }
+    val dynamicProperties = rememberLottieDynamicProperties(
+        rememberLottieDynamicProperty(
+            property = LottieProperty.COLOR_FILTER,
+            value = SimpleColorFilter(tintColor.toArgb()),
+            keyPath = arrayOf("**")
+        )
+    )
+
+    LaunchedEffect(trigger) {
+        if (trigger > 0) {
+            visible = true
+            delay(900)
+            visible = false
+        }
+    }
+
+    if (visible && composition != null) {
+        key(trigger) {
+            val progress by animateLottieCompositionAsState(
+                composition = composition,
+                iterations = 1,
+                isPlaying = true
+            )
+            LottieAnimation(
+                composition = composition,
+                progress = { progress },
+                modifier = modifier,
+                alignment = Alignment.Center,
+                contentScale = ContentScale.Fit,
+                clipToCompositionBounds = false,
+                dynamicProperties = dynamicProperties
+            )
+        }
+    }
+}

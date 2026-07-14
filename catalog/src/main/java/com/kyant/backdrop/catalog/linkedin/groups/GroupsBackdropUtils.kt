@@ -1,5 +1,6 @@
 package com.kyant.backdrop.catalog.linkedin.groups
 
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.backdrops.LayerBackdrop
@@ -10,6 +11,7 @@ import com.kyant.backdrop.catalog.linkedin.vormexSurface
  * Simplified drawBackdrop extension for Groups/Circles screens with standard glass effect.
  * Uses a rounded rectangle shape and applies blur + vibrancy effects.
  */
+@Composable
 fun Modifier.glassBackground(
     backdrop: LayerBackdrop,
     blurRadius: Float = 20f,
@@ -29,6 +31,7 @@ fun Modifier.glassBackground(
 /**
  * Glass background with no rounded corners (for full-screen headers etc)
  */
+@Composable
 fun Modifier.glassBackgroundFlat(
     backdrop: LayerBackdrop,
     blurRadius: Float = 20f,

@@ -21,11 +21,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -57,6 +59,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -151,8 +154,9 @@ fun AddEditCertificateScreen(
 
     // Theme preference: "glass", "light", "dark"
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
-    val isGlassTheme = themeMode == "glass"
-    val isDarkTheme = themeMode == "dark"
+    val appearance = currentVormexAppearance(themeMode)
+    val isGlassTheme = false
+    val isDarkTheme = false
     
     // Validation
     val isNameValid = name.trim().length in 2..100
@@ -288,7 +292,7 @@ fun AddEditCertificateScreen(
                         }
                     )
                     isDarkTheme -> Modifier.background(Color(0xFF0E0E12))
-                    else -> Modifier.background(Color(0xFFF7F7FA))
+                    else -> Modifier.background(Color.White)
                 }
             )
     ) {
@@ -372,7 +376,7 @@ fun AddEditCertificateScreen(
                                         doesNotExpire = doesNotExpire,
                                         credentialId = credentialId.takeIf { it.isNotBlank() }?.trim(),
                                         credentialUrl = credentialUrl.takeIf { it.isNotBlank() }?.trim(),
-                                        color = selectedColor
+                                        color = null
                                     )
                                     
                                     val result = if (isEditMode && certificateId != null) {
@@ -585,7 +589,7 @@ fun AddEditCertificateScreen(
                 }
                 
                 // Card Color (Optional - client-side only)
-                Column {
+                if (false) Column {
                     BasicText(
                         "Card Color (optional)",
                         style = TextStyle(contentColor, 13.sp, FontWeight.Medium)
@@ -836,248 +840,193 @@ fun CertificateDetailModal(
     backdrop: LayerBackdrop,
     contentColor: Color,
     accentColor: Color,
+    certificates: List<Certificate> = listOf(certificate),
+    onDismiss: () -> Unit
+) {
+    val items = certificates.ifEmpty { listOf(certificate) }
+    val initialPage = items.indexOfFirst { it.id == certificate.id }.coerceAtLeast(0)
+    val pagerState = rememberPagerState(
+        initialPage = initialPage,
+        pageCount = { items.size }
+    )
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.72f))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center
+    ) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize()
+        ) { page ->
+            CertificateDetailPage(
+                certificate = items[page],
+                contentColor = contentColor,
+                accentColor = accentColor,
+                pageLabel = if (items.size > 1) "${page + 1}/${items.size}" else null,
+                onDismiss = onDismiss
+            )
+        }
+    }
+}
+
+@Composable
+private fun CertificateDetailPage(
+    certificate: Certificate,
+    contentColor: Color,
+    accentColor: Color,
+    pageLabel: String?,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val isImage = isImageUrl(certificate.credentialUrl)
-    val cardColor = getCertificateColor(certificate.color)
-    val isExpired = !certificate.doesNotExpire && 
-        certificate.expiryDate != null && 
-        isExpiredDate(certificate.expiryDate)
-    
+    val expiryLabel = when {
+        certificate.doesNotExpire -> "No expiration"
+        certificate.expiryDate != null && isExpiredDate(certificate.expiryDate) -> "Expired ${formatFullDate(certificate.expiryDate)}"
+        certificate.expiryDate != null -> formatFullDate(certificate.expiryDate)
+        else -> "Not specified"
+    }
+
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.85f))
-            .clickable(onClick = onDismiss),
-        contentAlignment = Alignment.Center
+            .padding(18.dp)
+            .clickable(enabled = false) {}
     ) {
-        // Single card containing everything
-        Box(
+        Column(
             Modifier
-                .fillMaxWidth(0.92f)
-                .clickable(enabled = false) {} // Prevent click propagation
-                .drawBackdrop(
-                    backdrop = backdrop,
-                    shape = { RoundedRectangle(20f.dp) },
-                    effects = {
-                        vibrancy()
-                        blur(20f.dp.toPx())
-                    },
-                    onDrawSurface = {
-                        drawRect(Color.White.copy(alpha = 0.12f))
-                    }
-                )
-                .clip(RoundedCornerShape(20.dp))
+                .fillMaxWidth()
+                .align(Alignment.Center)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color.White)
+                .border(1.dp, contentColor.copy(alpha = 0.12f), RoundedCornerShape(18.dp))
+                .clickable(onClick = {})
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                // Header with close button
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    BasicText(
-                        "Certificate Details",
-                        style = TextStyle(Color.White, 16.sp, FontWeight.SemiBold)
-                    )
-                    Box(
-                        Modifier
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.15f))
-                            .clickable(onClick = onDismiss)
-                            .padding(8.dp)
-                    ) {
-                        BasicText("✕", style = TextStyle(Color.White, 14.sp, FontWeight.Bold))
-                    }
-                }
-                
-                // Certificate image thumbnail (if image URL) - smaller size
-                if (isImage && certificate.credentialUrl != null) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(180.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.White.copy(alpha = 0.05f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(certificate.credentialUrl)
-                                .crossfade(true)
-                                .build(),
-                            contentDescription = certificate.name,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                }
-                
-                // Certificate name with color accent
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    // Color bar accent
-                    Box(
-                        Modifier
-                            .width(4.dp)
-                            .height(40.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(cardColor)
-                    )
-                    Column {
-                        BasicText(
-                            certificate.name,
-                            style = TextStyle(Color.White, 18.sp, FontWeight.Bold)
-                        )
-                        BasicText(
-                            certificate.issuingOrg,
-                            style = TextStyle(Color.White.copy(alpha = 0.7f), 14.sp)
-                        )
-                    }
-                }
-                
-                // Info rows in a subtle box
-                Box(
-                    Modifier
+                BasicText(
+                    pageLabel ?: "Certification",
+                    style = TextStyle(contentColor.copy(alpha = 0.58f), 12.sp, FontWeight.Medium)
+                )
+                BasicText(
+                    "Close",
+                    style = TextStyle(contentColor.copy(alpha = 0.84f), 12.sp, FontWeight.SemiBold),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onDismiss)
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+
+            if (isImage && certificate.credentialUrl != null) {
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(certificate.credentialUrl)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = certificate.name,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.White.copy(alpha = 0.05f))
-                        .padding(16.dp)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        // Issue date
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            BasicText(
-                                "Issued",
-                                style = TextStyle(Color.White.copy(alpha = 0.5f), 13.sp)
-                            )
-                            BasicText(
-                                formatFullDate(certificate.issueDate),
-                                style = TextStyle(Color.White.copy(alpha = 0.9f), 13.sp, FontWeight.Medium)
-                            )
-                        }
-                        
-                        // Expiry status
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            BasicText(
-                                "Expires",
-                                style = TextStyle(Color.White.copy(alpha = 0.5f), 13.sp)
-                            )
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                when {
-                                    certificate.doesNotExpire -> {
-                                        Box(
-                                            Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .background(Color(0xFF22C55E).copy(alpha = 0.2f))
-                                                .padding(horizontal = 8.dp, vertical = 3.dp)
-                                        ) {
-                                            BasicText(
-                                                "Never",
-                                                style = TextStyle(Color(0xFF22C55E), 12.sp, FontWeight.Medium)
-                                            )
-                                        }
-                                    }
-                                    isExpired -> {
-                                        Box(
-                                            Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .background(Color(0xFFEF4444).copy(alpha = 0.2f))
-                                                .padding(horizontal = 8.dp, vertical = 3.dp)
-                                        ) {
-                                            BasicText(
-                                                "Expired",
-                                                style = TextStyle(Color(0xFFEF4444), 12.sp, FontWeight.Medium)
-                                            )
-                                        }
-                                    }
-                                    certificate.expiryDate != null -> {
-                                        BasicText(
-                                            formatFullDate(certificate.expiryDate),
-                                            style = TextStyle(Color.White.copy(alpha = 0.9f), 13.sp, FontWeight.Medium)
-                                        )
-                                    }
-                                    else -> {
-                                        BasicText(
-                                            "Not specified",
-                                            style = TextStyle(Color.White.copy(alpha = 0.5f), 13.sp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Credential ID (if present)
-                        certificate.credentialId?.takeIf { it.isNotBlank() }?.let { credId ->
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                BasicText(
-                                    "Credential ID",
-                                    style = TextStyle(Color.White.copy(alpha = 0.5f), 13.sp)
-                                )
-                                BasicText(
-                                    credId,
-                                    style = TextStyle(Color.White.copy(alpha = 0.9f), 13.sp, FontWeight.Medium)
-                                )
-                            }
-                        }
-                    }
-                }
-                
-                // Action button (Open link for non-image URL)
-                if (!isImage && certificate.credentialUrl != null) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(accentColor)
-                            .clickable {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse(certificate.credentialUrl))
-                                )
-                            }
-                            .padding(14.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Image(
-                                painter = painterResource(R.drawable.ic_open_in_browser),
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                colorFilter = ColorFilter.tint(Color.White)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            BasicText(
-                                "Open Certificate Link",
-                                style = TextStyle(Color.White, 14.sp, FontWeight.Medium)
-                            )
-                        }
-                    }
+                        .height(180.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFFF3F4F6))
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                BasicText(
+                    certificate.name,
+                    style = TextStyle(contentColor, 24.sp, FontWeight.Bold, lineHeight = 29.sp),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                BasicText(
+                    certificate.issuingOrg,
+                    style = TextStyle(contentColor.copy(alpha = 0.66f), 14.sp, FontWeight.Medium),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Column {
+                PlainDetailRow("Issued", formatFullDate(certificate.issueDate))
+                PlainDetailDivider()
+                PlainDetailRow("Expires", expiryLabel)
+                certificate.credentialId?.takeIf { it.isNotBlank() }?.let { credId ->
+                    PlainDetailDivider()
+                    PlainDetailRow("Credential ID", credId)
                 }
             }
+
+            certificate.credentialUrl?.takeIf { !isImage }?.let { url ->
+                PlainDetailAction(
+                    label = "Open certificate",
+                    accentColor = accentColor,
+                    onClick = {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun PlainDetailRow(
+    label: String,
+    value: String
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 11.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        BasicText(label, style = TextStyle(Color(0xFF111827).copy(alpha = 0.5f), 12.sp))
+        BasicText(
+            value,
+            style = TextStyle(Color(0xFF111827).copy(alpha = 0.9f), 13.sp, FontWeight.SemiBold),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun PlainDetailDivider() {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(Color(0xFF111827).copy(alpha = 0.08f))
+    )
+}
+
+@Composable
+private fun PlainDetailAction(
+    label: String,
+    accentColor: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.dp))
+            .background(accentColor.copy(alpha = 0.9f))
+            .clickable(onClick = onClick)
+            .padding(13.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(label, style = TextStyle(Color.White, 13.sp, FontWeight.SemiBold))
     }
 }
 

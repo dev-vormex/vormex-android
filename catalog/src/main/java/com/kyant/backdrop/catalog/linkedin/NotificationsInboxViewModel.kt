@@ -17,6 +17,7 @@ data class NotificationsInboxUiState(
     val isMarkingAllRead: Boolean = false,
     val unreadOnly: Boolean = false,
     val notifications: List<Notification> = emptyList(),
+    val respondingCollabInviteIds: Set<String> = emptySet(),
     val unreadCount: Int = 0,
     val error: String? = null
 )
@@ -24,6 +25,10 @@ data class NotificationsInboxUiState(
 class NotificationsInboxViewModel(
     private val context: Context
 ) : ViewModel() {
+    companion object {
+        private const val NOTIFICATION_FETCH_LIMIT = 80
+    }
+
     private val _uiState = MutableStateFlow(NotificationsInboxUiState())
     val uiState: StateFlow<NotificationsInboxUiState> = _uiState.asStateFlow()
 
@@ -42,7 +47,7 @@ class NotificationsInboxViewModel(
 
             val notificationsResult = ApiClient.getNotifications(
                 context = context,
-                limit = 40,
+                limit = NOTIFICATION_FETCH_LIMIT,
                 unreadOnly = unreadOnly
             )
             val unreadCountResult = ApiClient.getNotificationUnreadCount(context)
@@ -100,23 +105,67 @@ class NotificationsInboxViewModel(
         }
     }
 
-    fun markAsRead(notificationId: String) {
-        val current = _uiState.value.notifications.find { it.id == notificationId } ?: return
-        if (current.isRead) return
+    fun markAsRead(notificationIds: List<String>) {
+        val notificationIdSet = notificationIds.toSet()
+        if (notificationIdSet.isEmpty()) return
 
+        val unreadIds = _uiState.value.notifications
+            .filter { it.id in notificationIdSet && !it.isRead }
+            .map { it.id }
+
+        if (unreadIds.isEmpty()) return
+
+        val unreadIdSet = unreadIds.toSet()
         val previous = _uiState.value
         _uiState.value = previous.copy(
-            notifications = previous.notifications.map {
-                if (it.id == notificationId) it.copy(isRead = true) else it
-            },
-            unreadCount = (previous.unreadCount - 1).coerceAtLeast(0)
+            notifications = previous.notifications
+                .map { notification ->
+                    if (notification.id in unreadIdSet) {
+                        notification.copy(isRead = true)
+                    } else {
+                        notification
+                    }
+                }
+                .let { notifications ->
+                    if (previous.unreadOnly) {
+                        notifications.filter { !it.isRead }
+                    } else {
+                        notifications
+                    }
+                },
+            unreadCount = (previous.unreadCount - unreadIds.size).coerceAtLeast(0)
         )
 
         viewModelScope.launch {
-            ApiClient.markNotificationsAsRead(context, listOf(notificationId))
+            ApiClient.markNotificationsAsRead(context, unreadIds)
                 .onFailure {
                     _uiState.value = previous.copy(error = it.message ?: "Failed to mark notification as read")
                 }
+        }
+    }
+
+    fun respondToCollabInvite(notificationId: String, postId: String, accept: Boolean) {
+        if (notificationId in _uiState.value.respondingCollabInviteIds) return
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                respondingCollabInviteIds = _uiState.value.respondingCollabInviteIds + notificationId,
+                error = null
+            )
+
+            ApiClient.respondToPostCollabInvite(context, postId, accept)
+                .onSuccess {
+                    refresh()
+                }
+                .onFailure {
+                    _uiState.value = _uiState.value.copy(
+                        error = it.message ?: "Failed to respond to collaboration invite"
+                    )
+                }
+
+            _uiState.value = _uiState.value.copy(
+                respondingCollabInviteIds = _uiState.value.respondingCollabInviteIds - notificationId
+            )
         }
     }
 

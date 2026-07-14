@@ -23,8 +23,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -99,8 +99,9 @@ fun AddEditExperienceScreen(
 
     // Theme preference: "glass", "light", "dark"
     val themeMode by SettingsPreferences.themeMode(context).collectAsState(initial = DefaultThemeModeKey)
-    val isGlassTheme = themeMode == "glass"
-    val isDarkTheme = themeMode == "dark"
+    val appearance = currentVormexAppearance(themeMode)
+    val isGlassTheme = appearance.isGlassTheme
+    val isDarkTheme = appearance.isDarkTheme
     
     // Form state
     var title by remember { mutableStateOf(experience?.title ?: "") }
@@ -137,9 +138,7 @@ fun AddEditExperienceScreen(
                 isUploadingLogo = true
                 context.contentResolver.openInputStream(it)?.use { stream ->
                     val bytes = stream.readBytes()
-                    // Note: Using project image upload endpoint for now
-                    // In production, would use a dedicated logo upload endpoint
-                    ApiClient.uploadProjectImage(context, bytes)
+                    ApiClient.uploadLogoImage(context, bytes)
                         .onSuccess { imageUrl ->
                             if (imageUrl.isNotEmpty()) {
                                 logo = imageUrl

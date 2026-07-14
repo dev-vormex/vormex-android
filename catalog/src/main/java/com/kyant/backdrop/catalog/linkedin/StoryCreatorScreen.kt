@@ -1,6 +1,9 @@
 package com.kyant.backdrop.catalog.linkedin
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.widget.Toast
@@ -14,8 +17,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
+import com.kyant.backdrop.catalog.ui.BasicText
+import com.kyant.backdrop.catalog.ui.BasicTextField
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,11 +35,14 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.kyant.backdrop.catalog.media.MediaReadSafety
 import com.kyant.backdrop.catalog.network.models.StoryCategory
 import com.kyant.backdrop.catalog.network.models.StoryVisibility
-import java.io.ByteArrayOutputStream
 
 @Composable
 fun StoryCreatorDialog(
@@ -58,7 +64,8 @@ fun StoryCreatorDialog(
         properties = DialogProperties(
             dismissOnBackPress = !isCreating,
             dismissOnClickOutside = false,
-            usePlatformDefaultWidth = false
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
         )
     ) {
         StoryCreator(
@@ -85,6 +92,22 @@ private fun StoryCreator(
     isCreating: Boolean
 ) {
     val context = LocalContext.current
+    val hostActivity = remember(context) { context.findActivity() }
+
+    DisposableEffect(hostActivity) {
+        hostActivity?.let { activity ->
+            val window = activity.window
+            val controller = WindowInsetsControllerCompat(window, window.decorView)
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+
+            onDispose {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+        } ?: onDispose { }
+    }
     
     // State
     var storyType by remember { mutableStateOf("TEXT") } // TEXT, IMAGE, VIDEO
@@ -135,7 +158,9 @@ private fun StoryCreator(
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(top = 48.dp, bottom = 24.dp)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(top = 16.dp, bottom = 24.dp)
         ) {
             // Header
             Row(
@@ -170,20 +195,26 @@ private fun StoryCreator(
                             val mediaBytes: Pair<ByteArray, String>? = when (storyType) {
                                 "IMAGE" -> selectedImageUri?.let { uri ->
                                     try {
-                                        val inputStream = context.contentResolver.openInputStream(uri)
-                                        val bytes = inputStream?.readBytes()
-                                        inputStream?.close()
-                                        bytes?.let { Pair(it, "image/jpeg") }
+                                        MediaReadSafety.readMediaBytes(
+                                            context = context,
+                                            uri = uri,
+                                            fallbackFileName = "story.jpg",
+                                            maxBytes = MediaReadSafety.MaxStoryMediaBytes,
+                                            label = "Story image"
+                                        ).first to "image/jpeg"
                                     } catch (e: Exception) {
                                         null
                                     }
                                 }
                                 "VIDEO" -> selectedVideoUri?.let { uri ->
                                     try {
-                                        val inputStream = context.contentResolver.openInputStream(uri)
-                                        val bytes = inputStream?.readBytes()
-                                        inputStream?.close()
-                                        bytes?.let { Pair(it, "video/mp4") }
+                                        MediaReadSafety.readMediaBytes(
+                                            context = context,
+                                            uri = uri,
+                                            fallbackFileName = "story.mp4",
+                                            maxBytes = MediaReadSafety.MaxStoryMediaBytes,
+                                            label = "Story video"
+                                        ).first to "video/mp4"
                                     } catch (e: Exception) {
                                         null
                                     }
@@ -563,4 +594,13 @@ private fun StoryCreator(
             }
         }
     }
+}
+
+private fun Context.findActivity(): Activity? {
+    var current: Context? = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return null
 }

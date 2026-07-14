@@ -19,7 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
+import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
@@ -63,6 +63,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.catalog.linkedin.VerificationBadge
+import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
+import com.kyant.backdrop.catalog.linkedin.hasVerificationBadge
+import com.kyant.backdrop.catalog.linkedin.verificationBadgeStyle
 import com.kyant.backdrop.catalog.network.models.*
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -760,14 +764,27 @@ private fun CirclePostCard(
                 Spacer(Modifier.width(10.dp))
                 
                 Column {
-                    BasicText(
-                        post.author?.name ?: post.author?.username ?: "Unknown",
-                        style = TextStyle(
-                            color = contentColor,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        BasicText(
+                            post.author?.name ?: post.author?.username ?: "Unknown",
+                            style = TextStyle(
+                                color = contentColor,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
-                    )
+                        VerificationBadge(
+                            verified = post.author?.hasVerificationBadge() == true,
+                            badgeStyle = post.author?.verificationBadgeStyle(),
+                            size = VerificationBadgeSize.Small
+                        )
+                    }
                     BasicText(
                         formatPostTime(post.createdAt ?: ""),
                         style = TextStyle(
@@ -906,7 +923,15 @@ private fun CircleMemberCard(
                         color = contentColor,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium
-                    )
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                VerificationBadge(
+                    verified = member.hasVerificationBadge(),
+                    badgeStyle = member.verificationBadgeStyle(),
+                    size = VerificationBadgeSize.Small
                 )
                 
                 if (isCreator) {
