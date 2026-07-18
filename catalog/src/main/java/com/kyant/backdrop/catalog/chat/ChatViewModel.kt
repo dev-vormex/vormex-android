@@ -15,6 +15,8 @@ import com.kyant.backdrop.catalog.ai.VormexAiSuggestionsResult
 import com.kyant.backdrop.catalog.ai.VormexAiSurface
 import com.kyant.backdrop.catalog.chat.cache.CachedMessagesSnapshot
 import com.kyant.backdrop.catalog.chat.cache.ChatCacheRepository
+import com.kyant.backdrop.catalog.chat.cache.ChatOutboxEntity
+import com.kyant.backdrop.catalog.chat.cache.ChatOutboxWorker
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.ChatSocketManager
 import com.kyant.backdrop.catalog.network.GroupsApiService
@@ -41,6 +43,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.UUID
 
 private const val TAG = "ChatViewModel"
 private const val OUTGOING_TYPING_STOP_DELAY_MS = 1_000L
@@ -70,6 +73,9 @@ data class ChatUiState(
     val selectedConversation: Conversation? = null,
     val isResolvingConversationOpen: Boolean = false,
     val isLoadingConversations: Boolean = false,
+    val isLoadingMoreConversations: Boolean = false,
+    val hasMoreConversations: Boolean = false,
+    val conversationsNextCursor: String? = null,
     val isLoadingMessages: Boolean = false,
     val isLoadingMoreMessages: Boolean = false,
     val hasMoreMessages: Boolean = false,
@@ -106,6 +112,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private var loadConversationsJob: Job? = null
+    private var loadMoreConversationsJob: Job? = null
     private var loadGroupShortcutsJob: Job? = null
     private var loadMessagesJob: Job? = null
     private var preloadJob: Job? = null
@@ -146,6 +153,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
         collectSocketEvents()
         collectConnectionState()
+        collectDeltaSyncUpdates()
     }
 
     fun onSessionChanged(currentUserId: String?) {
@@ -175,6 +183,54 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 _uiState.update {
                     it.copy(socketConnected = state == ChatSocketManager.ConnectionState.CONNECTED)
                 }
+                if (state == ChatSocketManager.ConnectionState.CONNECTED) {
+                    viewModelScope.launch { ChatDeltaSyncManager.sync(context) }
+                }
+            }
+        }
+    }
+
+    private fun collectDeltaSyncUpdates() {
+        viewModelScope.launch {
+            ChatDeltaSyncManager.updates.collect { response ->
+                val changedMessages = response.messages + response.statusChanges
+                _uiState.update { state ->
+                    val selectedConversationId = state.selectedConversation?.id
+                    val selectedChanges = changedMessages.filter {
+                        it.conversationId == selectedConversationId
+                    }
+                    val mergedMessages = selectedChanges.fold(state.messages) { messages, message ->
+                        replaceMatchingPendingMessage(upsertMessage(messages, message), message)
+                    }
+                    val mergedConversations = mergeRefreshedConversationsWithLocalState(
+                        currentConversations = state.conversations,
+                        refreshedConversations = response.conversations
+                    )
+                    val refreshedSelectedConversation = state.selectedConversation?.let { selected ->
+                        response.conversations.firstOrNull { it.id == selected.id } ?: selected
+                    }
+                    state.copy(
+                        conversations = mergedConversations,
+                        selectedConversation = refreshedSelectedConversation,
+                        messages = mergedMessages,
+                        threadReadyState = if (selectedChanges.isNotEmpty()) {
+                            resolveThreadReadyState(mergedMessages, fromCache = false)
+                        } else {
+                            state.threadReadyState
+                        }
+                    )
+                }
+                if (changedMessages.any {
+                        it.conversationId == _uiState.value.selectedConversation?.id &&
+                            it.senderId != _uiState.value.currentUserId
+                    }
+                ) {
+                    markAsRead(immediate = true)
+                }
+                if (_uiState.value.selectedConversation != null) {
+                    persistSelectedConversationSnapshot()
+                }
+                loadUnreadAndRequestsCount()
             }
         }
     }
@@ -546,6 +602,9 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                         selectedConversation = null,
                         isResolvingConversationOpen = false,
                         isLoadingConversations = false,
+                        isLoadingMoreConversations = false,
+                        hasMoreConversations = false,
+                        conversationsNextCursor = null,
                         isLoadingMessages = false,
                         isLoadingMoreMessages = false,
                         hasMoreMessages = false,
@@ -804,72 +863,54 @@ class ChatViewModel(private val context: Context) : ViewModel() {
             mimeType.startsWith("audio/") -> "audio"
             else -> "document"
         }
-        val pendingLabel = when (contentType) {
-            "image" -> "Photo"
-            "video" -> "Video"
-            "audio" -> "Voice"
-            else -> "Document"
-        }
-        val pendingId = "pending-${System.currentTimeMillis()}"
+        val pendingId = UUID.randomUUID().toString()
         val nowIso = isoFormatter.format(Date())
         val optimisticFileSize = fileSize?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt()
-        val optimisticMessage = Message(
-            id = pendingId,
-            clientMessageId = pendingId,
-            conversationId = conversation.id,
-            senderId = currentUserId,
-            receiverId = conversation.otherParticipant.id,
-            content = caption.ifBlank { "Sending $pendingLabel..." },
-            contentType = contentType,
-            mediaUrl = localPreviewUrl,
-            mediaType = contentType,
-            fileName = fileName,
-            fileSize = optimisticFileSize,
-            status = "SENDING",
-            createdAt = nowIso,
-            updatedAt = nowIso
-        )
-
-        _uiState.update { state ->
-            state.copy(
-                messages = dedupeAndSortByCreatedAt(state.messages + optimisticMessage),
-                isUploadingAttachment = true,
-                attachmentUploadError = null,
-                threadReadyState = ChatThreadReadyState.MESSAGES_READY
-            )
+        val content = caption.ifBlank {
+            when (contentType) {
+                "image" -> "📷 Photo"
+                "video" -> "🎬 Video"
+                "audio" -> "🎤 Voice message"
+                else -> "📎 $fileName"
+            }
         }
 
         viewModelScope.launch {
-            persistSelectedConversationSnapshot()
-
-            ApiClient.uploadChatMedia(
-                context = context,
-                uri = uri,
-                fileName = fileName,
-                mimeType = mimeType,
-                fileSize = fileSize,
-                durationMs = durationMs
-            ).onSuccess { upload ->
-                val content = caption.ifBlank {
-                    when (contentType) {
-                        "image" -> "📷 Photo"
-                        "video" -> "🎬 Video"
-                        "audio" -> "🎤 Voice message"
-                        else -> "📎 ${upload.fileName}"
-                    }
-                }
-
-                sendMessageReliable(
+            try {
+                val localFileUri = chatCacheRepository.persistOutboxAttachment(pendingId, uri, fileName)
+                val entry = ChatOutboxEntity(
+                    cacheOwnerId = currentUserId,
+                    clientMessageId = pendingId,
                     conversationId = conversation.id,
+                    senderId = currentUserId,
+                    receiverId = conversation.otherParticipant.id,
                     content = content,
                     contentType = contentType,
-                    mediaUrl = upload.mediaUrl,
-                    mediaType = upload.mediaType,
-                    fileName = upload.fileName,
-                    fileSize = upload.fileSize,
+                    mediaType = contentType,
+                    fileName = fileName,
+                    fileSize = optimisticFileSize,
                     replyToId = replyToId,
-                    clientMessageId = pendingId
-                ).onSuccess { message ->
+                    localFileUri = localFileUri,
+                    localPreviewUri = localPreviewUrl ?: localFileUri,
+                    mimeType = mimeType,
+                    durationMs = durationMs,
+                    createdAt = nowIso,
+                    createdAtEpochMillis = System.currentTimeMillis()
+                )
+                chatCacheRepository.upsertOutboxEntry(entry)
+                ChatOutboxWorker.enqueue(context)
+                val optimisticMessage = chatCacheRepository.outboxEntryToMessage(entry)
+                _uiState.update { state ->
+                    state.copy(
+                        messages = dedupeAndSortByCreatedAt(state.messages + optimisticMessage),
+                        isUploadingAttachment = true,
+                        attachmentUploadError = null,
+                        threadReadyState = ChatThreadReadyState.MESSAGES_READY
+                    )
+                }
+                persistSelectedConversationSnapshot()
+
+                attemptOutboxEntry(entry).onSuccess { message ->
                     reconcileCurrentUserIdFromSentMessage(conversation, message)
                     _uiState.update { state ->
                         val withoutPending = state.messages.filterNot { it.id == pendingId }
@@ -893,10 +934,6 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                                 if (current.id == pendingId) {
                                     current.copy(
                                         content = content,
-                                        mediaUrl = upload.mediaUrl,
-                                        mediaType = upload.mediaType,
-                                        fileName = upload.fileName,
-                                        fileSize = upload.fileSize,
                                         status = "FAILED",
                                         updatedAt = isoFormatter.format(Date())
                                     )
@@ -910,15 +947,13 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     }
                     persistSelectedConversationSnapshot()
                 }
-            }.onFailure { error ->
+            } catch (error: Exception) {
                 _uiState.update { state ->
                     state.copy(
-                        messages = state.messages.filterNot { it.id == pendingId },
                         isUploadingAttachment = false,
                         attachmentUploadError = error.message
                     )
                 }
-                persistSelectedConversationSnapshot()
             }
         }
     }
@@ -939,65 +974,52 @@ class ChatViewModel(private val context: Context) : ViewModel() {
             mimeType.startsWith("audio/") -> "audio"
             else -> "document"
         }
-        val pendingLabel = when (contentType) {
-            "image" -> "Photo"
-            "video" -> "Video"
-            "audio" -> "Voice"
-            else -> "Document"
-        }
-        val pendingId = "pending-${System.currentTimeMillis()}"
+        val pendingId = UUID.randomUUID().toString()
         val nowIso = isoFormatter.format(Date())
-        val optimisticMessage = Message(
-            id = pendingId,
-            clientMessageId = pendingId,
-            conversationId = conversation.id,
-            senderId = currentUserId,
-            receiverId = conversation.otherParticipant.id,
-            content = caption.ifBlank { "Sending $pendingLabel..." },
-            contentType = contentType,
-            mediaUrl = localPreviewUrl,
-            mediaType = contentType,
-            fileName = fileName,
-            fileSize = fileBytes.size,
-            status = "SENDING",
-            createdAt = nowIso,
-            updatedAt = nowIso
-        )
-
-        _uiState.update { state ->
-            state.copy(
-                messages = dedupeAndSortByCreatedAt(state.messages + optimisticMessage),
-                isUploadingAttachment = true,
-                attachmentUploadError = null,
-                threadReadyState = ChatThreadReadyState.MESSAGES_READY
-            )
+        val content = caption.ifBlank {
+            when (contentType) {
+                "image" -> "📷 Photo"
+                "video" -> "🎬 Video"
+                "audio" -> "🎤 Voice message"
+                else -> "📎 $fileName"
+            }
         }
 
         viewModelScope.launch {
-            persistSelectedConversationSnapshot()
+            try {
+                val localFileUri = chatCacheRepository.persistOutboxAttachment(pendingId, fileBytes, fileName)
+                val entry = ChatOutboxEntity(
+                    cacheOwnerId = currentUserId,
+                    clientMessageId = pendingId,
+                    conversationId = conversation.id,
+                    senderId = currentUserId,
+                    receiverId = conversation.otherParticipant.id,
+                    content = content,
+                    contentType = contentType,
+                    mediaType = contentType,
+                    fileName = fileName,
+                    fileSize = fileBytes.size,
+                    replyToId = replyToId,
+                    localFileUri = localFileUri,
+                    localPreviewUri = localPreviewUrl ?: localFileUri,
+                    mimeType = mimeType,
+                    createdAt = nowIso,
+                    createdAtEpochMillis = System.currentTimeMillis()
+                )
+                chatCacheRepository.upsertOutboxEntry(entry)
+                ChatOutboxWorker.enqueue(context)
+                val optimisticMessage = chatCacheRepository.outboxEntryToMessage(entry)
+                _uiState.update { state ->
+                    state.copy(
+                        messages = dedupeAndSortByCreatedAt(state.messages + optimisticMessage),
+                        isUploadingAttachment = true,
+                        attachmentUploadError = null,
+                        threadReadyState = ChatThreadReadyState.MESSAGES_READY
+                    )
+                }
+                persistSelectedConversationSnapshot()
 
-            ApiClient.uploadChatMedia(context, fileBytes, fileName, mimeType)
-                .onSuccess { upload ->
-                    val content = caption.ifBlank {
-                        when (contentType) {
-                            "image" -> "📷 Photo"
-                            "video" -> "🎬 Video"
-                            "audio" -> "🎤 Voice message"
-                            else -> "📎 ${upload.fileName}"
-                        }
-                    }
-
-                    sendMessageReliable(
-                        conversationId = conversation.id,
-                        content = content,
-                        contentType = contentType,
-                        mediaUrl = upload.mediaUrl,
-                        mediaType = upload.mediaType,
-                        fileName = upload.fileName,
-                        fileSize = upload.fileSize,
-                        replyToId = replyToId,
-                        clientMessageId = pendingId
-                    ).onSuccess { message ->
+                attemptOutboxEntry(entry).onSuccess { message ->
                         reconcileCurrentUserIdFromSentMessage(conversation, message)
                         _uiState.update { state ->
                             val withoutPending = state.messages.filterNot { it.id == pendingId }
@@ -1014,17 +1036,13 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                         } else {
                             refreshConversations()
                         }
-                    }.onFailure { error ->
+                }.onFailure { error ->
                         _uiState.update { state ->
                             state.copy(
                                 messages = state.messages.map { current ->
                                     if (current.id == pendingId) {
                                         current.copy(
                                             content = content,
-                                            mediaUrl = upload.mediaUrl,
-                                            mediaType = upload.mediaType,
-                                            fileName = upload.fileName,
-                                            fileSize = upload.fileSize,
                                             status = "FAILED",
                                             updatedAt = isoFormatter.format(Date())
                                         )
@@ -1037,18 +1055,15 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                             )
                         }
                         persistSelectedConversationSnapshot()
-                    }
                 }
-                .onFailure { error ->
-                    _uiState.update { state ->
-                        state.copy(
-                            messages = state.messages.filterNot { it.id == pendingId },
-                            isUploadingAttachment = false,
-                            attachmentUploadError = error.message
-                        )
-                    }
-                    persistSelectedConversationSnapshot()
+            } catch (error: Exception) {
+                _uiState.update { state ->
+                    state.copy(
+                        isUploadingAttachment = false,
+                        attachmentUploadError = error.message
+                    )
                 }
+            }
         }
     }
 
@@ -1149,6 +1164,71 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
     }
 
+    private suspend fun attemptOutboxEntry(originalEntry: ChatOutboxEntity): Result<Message> {
+        var entry = originalEntry.copy(
+            status = "sending",
+            attempts = originalEntry.attempts + 1,
+            nextAttemptAtEpochMillis = 0L
+        )
+        chatCacheRepository.upsertOutboxEntry(entry)
+
+        if (entry.mediaUrl.isNullOrBlank() && !entry.localFileUri.isNullOrBlank()) {
+            val uploadResult = ApiClient.uploadChatMedia(
+                context = context,
+                uri = Uri.parse(entry.localFileUri),
+                fileName = entry.fileName ?: "attachment",
+                mimeType = entry.mimeType ?: "application/octet-stream",
+                fileSize = entry.fileSize?.toLong(),
+                durationMs = entry.durationMs
+            )
+            if (uploadResult.isFailure) {
+                val failed = entry.copy(
+                    status = "failed",
+                    nextAttemptAtEpochMillis = System.currentTimeMillis()
+                )
+                chatCacheRepository.upsertOutboxEntry(failed)
+                ChatOutboxWorker.enqueue(context)
+                return Result.failure(uploadResult.exceptionOrNull() ?: Exception("Upload failed"))
+            }
+            val upload = uploadResult.getOrThrow()
+            entry = entry.copy(
+                mediaUrl = upload.mediaUrl,
+                mediaType = upload.mediaType,
+                fileName = upload.fileName,
+                fileSize = upload.fileSize
+            )
+            chatCacheRepository.upsertOutboxEntry(entry)
+        }
+
+        val sendResult = sendMessageReliable(
+            conversationId = entry.conversationId,
+            content = entry.content,
+            contentType = entry.contentType,
+            mediaUrl = entry.mediaUrl,
+            mediaType = entry.mediaType,
+            fileName = entry.fileName,
+            fileSize = entry.fileSize,
+            replyToId = entry.replyToId,
+            clientMessageId = entry.clientMessageId
+        )
+        sendResult.onSuccess { message ->
+            chatCacheRepository.completeOutboxMessage(
+                cacheOwnerId = entry.cacheOwnerId,
+                clientMessageId = entry.clientMessageId,
+                message = message
+            )
+        }.onFailure {
+            chatCacheRepository.upsertOutboxEntry(
+                entry.copy(
+                    status = "failed",
+                    nextAttemptAtEpochMillis = System.currentTimeMillis()
+                )
+            )
+            ChatOutboxWorker.enqueue(context)
+        }
+        return sendResult
+    }
+
     private suspend fun sendMessageReliable(
         conversationId: String,
         content: String,
@@ -1160,6 +1240,21 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         replyToId: String?,
         clientMessageId: String
     ): Result<Message> {
+        if (!ChatSocketManager.isConnected()) {
+            return ApiClient.sendMessage(
+                context = context,
+                conversationId = conversationId,
+                content = content,
+                contentType = contentType,
+                mediaUrl = mediaUrl,
+                mediaType = mediaType,
+                fileName = fileName,
+                fileSize = fileSize,
+                replyToId = replyToId,
+                clientMessageId = clientMessageId
+            )
+        }
+
         val realtimeResult = sendMessageViaRealtime(
             conversationId = conversationId,
             content = content,
@@ -1204,13 +1299,9 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         replyToId: String?,
         clientMessageId: String
     ): Result<Message> {
-        val token = ApiClient.getRealtimeAccessToken(context)
-            ?: return Result.failure(Exception("Not logged in"))
         ChatSocketManager.currentUserId = ensureCurrentUserId()
         if (!ChatSocketManager.isConnected()) {
-            ChatSocketManager.connect(token)
-        } else {
-            ChatSocketManager.reconnectIfNeeded()
+            return Result.failure(Exception("Realtime connection unavailable"))
         }
         ChatSocketManager.joinChat(conversationId)
 
@@ -1242,39 +1333,36 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         if (content.isBlank()) return
 
         val nowIso = isoFormatter.format(Date())
-        val tempMessageId = "local-${System.currentTimeMillis()}"
-        val optimisticMessage = Message(
-            id = tempMessageId,
-            clientMessageId = tempMessageId,
-            conversationId = conversation.id,
-            senderId = conversation.currentParticipantId(_uiState.value.currentUserId).orEmpty(),
-            receiverId = conversation.otherParticipant.id,
-            content = content,
-            contentType = "text",
-            status = "SENDING",
-            createdAt = nowIso,
-            updatedAt = nowIso
-        )
-
-        _uiState.update { state ->
-            state.copy(
-                messages = dedupeAndSortByCreatedAt(state.messages + optimisticMessage),
-                isSending = true,
-                error = null,
-                threadReadyState = ChatThreadReadyState.MESSAGES_READY
-            )
-        }
+        val tempMessageId = UUID.randomUUID().toString()
 
         viewModelScope.launch {
-            persistSelectedConversationSnapshot()
-
-            sendMessageReliable(
+            val ownerId = conversation.currentParticipantId(_uiState.value.currentUserId).orEmpty()
+            val entry = ChatOutboxEntity(
+                cacheOwnerId = ownerId,
+                clientMessageId = tempMessageId,
                 conversationId = conversation.id,
+                senderId = ownerId,
+                receiverId = conversation.otherParticipant.id,
                 content = content,
                 contentType = "text",
                 replyToId = replyToId,
-                clientMessageId = tempMessageId
+                createdAt = nowIso,
+                createdAtEpochMillis = System.currentTimeMillis()
             )
+            chatCacheRepository.upsertOutboxEntry(entry)
+            ChatOutboxWorker.enqueue(context)
+            val optimisticMessage = chatCacheRepository.outboxEntryToMessage(entry)
+            _uiState.update { state ->
+                state.copy(
+                    messages = dedupeAndSortByCreatedAt(state.messages + optimisticMessage),
+                    isSending = true,
+                    error = null,
+                    threadReadyState = ChatThreadReadyState.MESSAGES_READY
+                )
+            }
+            persistSelectedConversationSnapshot()
+
+            attemptOutboxEntry(entry)
                 .onSuccess { message ->
                     reconcileCurrentUserIdFromSentMessage(conversation, message)
                     _uiState.update { state ->
@@ -1314,44 +1402,60 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     fun retryMessage(message: Message) {
         val conversation = _uiState.value.selectedConversation ?: return
         if (!message.status.equals("FAILED", ignoreCase = true)) return
-        if (message.contentType.lowercase(Locale.US) != "text" || !message.mediaUrl.isNullOrBlank()) {
-            _uiState.update { it.copy(error = "Please resend this attachment.") }
-            return
-        }
 
         val retryClientMessageId = message.clientMessageId
             ?.takeIf { it.isNotBlank() }
-            ?: "retry-${System.currentTimeMillis()}"
+            ?: message.id.takeIf { it.isNotBlank() }
+            ?: UUID.randomUUID().toString()
         val nowIso = isoFormatter.format(Date())
 
-        _uiState.update { state ->
-            state.copy(
-                messages = state.messages.map { current ->
-                    if (current.id == message.id) {
-                        current.copy(
-                            clientMessageId = retryClientMessageId,
-                            status = "SENDING",
-                            updatedAt = nowIso
-                        )
-                    } else {
-                        current
-                    }
-                },
-                isSending = true,
-                error = null
-            )
-        }
-
         viewModelScope.launch {
+            val ownerId = conversation.currentParticipantId(_uiState.value.currentUserId).orEmpty()
+            val persistedEntry = chatCacheRepository.getOutboxEntry(ownerId, retryClientMessageId)
+            if (persistedEntry == null &&
+                !message.contentType.equals("text", ignoreCase = true) &&
+                message.mediaUrl?.startsWith("http") != true
+            ) {
+                _uiState.update { it.copy(error = "This attachment is no longer available to retry.") }
+                return@launch
+            }
+            val entry = (persistedEntry ?: ChatOutboxEntity(
+                cacheOwnerId = ownerId,
+                clientMessageId = retryClientMessageId,
+                conversationId = conversation.id,
+                senderId = ownerId,
+                receiverId = conversation.otherParticipant.id,
+                content = message.content,
+                contentType = message.contentType,
+                mediaUrl = message.mediaUrl,
+                mediaType = message.mediaType,
+                fileName = message.fileName,
+                fileSize = message.fileSize,
+                replyToId = message.replyToId,
+                createdAt = message.createdAt,
+                createdAtEpochMillis = System.currentTimeMillis()
+            )).copy(status = "pending", attempts = 0, nextAttemptAtEpochMillis = 0L)
+            chatCacheRepository.upsertOutboxEntry(entry)
+            _uiState.update { state ->
+                state.copy(
+                    messages = state.messages.map { current ->
+                        if (current.id == message.id) {
+                            current.copy(
+                                clientMessageId = retryClientMessageId,
+                                status = "SENDING",
+                                updatedAt = nowIso
+                            )
+                        } else {
+                            current
+                        }
+                    },
+                    isSending = true,
+                    error = null
+                )
+            }
             persistSelectedConversationSnapshot()
 
-            sendMessageReliable(
-                conversationId = conversation.id,
-                content = message.content,
-                contentType = "text",
-                replyToId = message.replyToId,
-                clientMessageId = retryClientMessageId
-            )
+            attemptOutboxEntry(entry)
                 .onSuccess { sentMessage ->
                     reconcileCurrentUserIdFromSentMessage(conversation, sentMessage)
                     _uiState.update { state ->
@@ -1496,7 +1600,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                                     }
                                 } else {
                                     message.reactions + MessageReaction(
-                                        id = "local-${System.currentTimeMillis()}",
+                                        id = UUID.randomUUID().toString(),
                                         userId = state.currentUserId.orEmpty(),
                                         emoji = emoji
                                     )
@@ -1987,6 +2091,8 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                             ),
                             selectedConversation = refreshedSelectedConversation,
                             isLoadingConversations = false,
+                            hasMoreConversations = response.hasMore,
+                            conversationsNextCursor = response.nextCursor,
                             error = null
                         )
                     }
@@ -2037,12 +2143,54 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                                 currentConversations = state.conversations,
                                 refreshedConversations = response.conversations
                             ),
-                            selectedConversation = refreshedSelectedConversation
+                            selectedConversation = refreshedSelectedConversation,
+                            hasMoreConversations = response.hasMore,
+                            conversationsNextCursor = response.nextCursor
                         )
                     }
                 }
             loadUnreadAndRequestsCount()
             refreshGroupShortcuts()
+        }
+    }
+
+    fun loadMoreConversations() {
+        val state = _uiState.value
+        val cursor = state.conversationsNextCursor ?: return
+        if (
+            state.isLoadingConversations ||
+            state.isLoadingMoreConversations ||
+            !state.hasMoreConversations ||
+            loadMoreConversationsJob?.isActive == true
+        ) return
+
+        loadMoreConversationsJob = viewModelScope.launch {
+            val currentUserId = ensureCurrentUserId() ?: return@launch
+            _uiState.update { it.copy(isLoadingMoreConversations = true) }
+            chatCacheRepository.refreshConversations(
+                cacheOwnerId = currentUserId,
+                limit = 30,
+                cursor = cursor
+            ).onSuccess { response ->
+                _uiState.update { current ->
+                    current.copy(
+                        conversations = mergeRefreshedConversationsWithLocalState(
+                            currentConversations = current.conversations,
+                            refreshedConversations = response.conversations
+                        ),
+                        isLoadingMoreConversations = false,
+                        hasMoreConversations = response.hasMore,
+                        conversationsNextCursor = response.nextCursor
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update { current ->
+                    current.copy(
+                        isLoadingMoreConversations = false,
+                        error = if (current.conversations.isEmpty()) error.message else current.error
+                    )
+                }
+            }
         }
     }
 
@@ -2078,19 +2226,29 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }.getOrElse { error ->
             Log.w(TAG, "Failed to hydrate cached messages", error)
             null
-        } ?: return null
+        }
+        val outboxMessages = runCatching {
+            chatCacheRepository.getOutboxEntries(cacheOwnerId)
+                .filter { it.conversationId == conversationId }
+                .map(chatCacheRepository::outboxEntryToMessage)
+        }.getOrElse { error ->
+            Log.w(TAG, "Failed to hydrate chat outbox", error)
+            emptyList()
+        }
+        if (snapshot == null && outboxMessages.isEmpty()) return null
+        val hydratedMessages = dedupeAndSortByCreatedAt(snapshot?.messages.orEmpty() + outboxMessages)
 
         _uiState.update { state ->
             if (state.selectedConversation?.id != conversationId) {
                 state
             } else {
                 state.copy(
-                    messages = dedupeAndSortByCreatedAt(snapshot.messages),
+                    messages = hydratedMessages,
                     isLoadingMessages = false,
-                    hasMoreMessages = snapshot.hasMore,
-                    messagesNextCursor = snapshot.nextCursor,
+                    hasMoreMessages = snapshot?.hasMore ?: false,
+                    messagesNextCursor = snapshot?.nextCursor,
                     threadReadyState = resolveThreadReadyState(
-                        messages = snapshot.messages,
+                        messages = hydratedMessages,
                         fromCache = true
                     )
                 )
@@ -2430,6 +2588,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
             val isLocalMessage =
                 message.id.startsWith("local-") ||
                     message.id.startsWith("pending-") ||
+                    (!clientMessageId.isNullOrBlank() && message.id == clientMessageId) ||
                     clientMessageId?.startsWith("local-") == true ||
                     clientMessageId?.startsWith("pending-") == true
             val isPendingOrFailed =
@@ -2462,10 +2621,40 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     }
 
     private fun dedupeAndSortByCreatedAt(messages: List<Message>): List<Message> {
-        return messages
-            .groupBy { it.id }
-            .map { (_, grouped) -> grouped.last() }
-            .sortedBy { it.createdAt }
+        val result = ArrayList<Message>(messages.size)
+        val indexById = HashMap<String, Int>(messages.size)
+
+        fun refreshIndexesFrom(startIndex: Int) {
+            for (index in startIndex until result.size) {
+                indexById[result[index].id] = index
+            }
+        }
+
+        messages.forEach { message ->
+            val duplicateIndex = indexById.remove(message.id)
+            if (duplicateIndex != null) {
+                result.removeAt(duplicateIndex)
+                refreshIndexesFrom(duplicateIndex)
+            }
+
+            var low = 0
+            var high = result.size
+            while (low < high) {
+                val middle = (low + high) ushr 1
+                val middleMessage = result[middle]
+                val comparison = compareValues(middleMessage.createdAt, message.createdAt)
+                    .takeIf { it != 0 }
+                    ?: compareValues(middleMessage.id, message.id)
+                if (comparison <= 0) {
+                    low = middle + 1
+                } else {
+                    high = middle
+                }
+            }
+            result.add(low, message)
+            refreshIndexesFrom(low)
+        }
+        return result
     }
 
     override fun onCleared() {

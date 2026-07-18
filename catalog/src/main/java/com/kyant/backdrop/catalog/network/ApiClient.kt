@@ -2983,6 +2983,26 @@ object ApiClient {
         }
     }
 
+    suspend fun syncChat(context: Context, since: String? = null): Result<ChatSyncResponse> {
+        return authorizedRequestWithRefresh<ChatSyncResponse>(context) { token ->
+            client.get("$BASE_URL/chat/sync") {
+                header("Authorization", "Bearer $token")
+                header("Cache-Control", "no-cache, no-store, must-revalidate")
+                since?.takeIf { it.isNotBlank() }?.let { parameter("since", it) }
+            }
+        }
+    }
+
+    suspend fun getChatSyncCursor(context: Context, userId: String): String? {
+        return context.dataStore.data.first()[stringPreferencesKey("chat_sync_cursor_$userId")]
+    }
+
+    suspend fun saveChatSyncCursor(context: Context, userId: String, cursor: String) {
+        context.dataStore.edit { preferences ->
+            preferences[stringPreferencesKey("chat_sync_cursor_$userId")] = cursor
+        }
+    }
+
     suspend fun sendMessage(
         context: Context,
         conversationId: String,

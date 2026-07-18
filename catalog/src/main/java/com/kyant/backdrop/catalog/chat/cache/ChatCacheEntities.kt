@@ -46,6 +46,7 @@ data class CachedMessageEntity(
     val cacheOwnerId: String,
     val conversationId: String,
     val messageId: String,
+    val clientMessageId: String? = null,
     val senderId: String,
     val receiverId: String,
     val content: String,
@@ -66,6 +67,38 @@ data class CachedMessageEntity(
     val createdAtEpochMillis: Long = 0L,
     val updatedAt: String,
     val updatedAtEpochMillis: Long = 0L
+)
+
+@Entity(
+    tableName = "chat_outbox",
+    primaryKeys = ["cacheOwnerId", "clientMessageId"],
+    indices = [
+        Index(value = ["cacheOwnerId", "status", "nextAttemptAtEpochMillis"]),
+        Index(value = ["cacheOwnerId", "conversationId", "createdAtEpochMillis"])
+    ]
+)
+data class ChatOutboxEntity(
+    val cacheOwnerId: String,
+    val clientMessageId: String,
+    val conversationId: String,
+    val senderId: String,
+    val receiverId: String,
+    val content: String,
+    val contentType: String,
+    val mediaUrl: String? = null,
+    val mediaType: String? = null,
+    val fileName: String? = null,
+    val fileSize: Int? = null,
+    val replyToId: String? = null,
+    val localFileUri: String? = null,
+    val localPreviewUri: String? = null,
+    val mimeType: String? = null,
+    val durationMs: Long? = null,
+    val createdAt: String,
+    val createdAtEpochMillis: Long,
+    val attempts: Int = 0,
+    val status: String = "pending",
+    val nextAttemptAtEpochMillis: Long = 0L
 )
 
 data class CachedMessagesSnapshot(

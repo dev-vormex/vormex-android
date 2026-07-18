@@ -50,8 +50,7 @@ object ChatSocketManager {
     private var isAuthenticated = false
     var currentUserId: String? = null
     private var currentTransportName: String? = null
-    private const val SEND_ACK_TIMEOUT_MS = 8_000L
-    private const val CONNECT_GRACE_MS = 10_000L
+    private const val SEND_ACK_TIMEOUT_MS = 3_000L
     
     // Track joined rooms to re-join on reconnect
     private val joinedRooms = mutableSetOf<String>()
@@ -747,7 +746,7 @@ object ChatSocketManager {
         clientMessageId: String? = null
     ): Result<String> {
         val activeSocket = socket ?: return Result.failure(Exception("Realtime connection unavailable"))
-        if (!awaitSocketReady(activeSocket)) {
+        if (!activeSocket.connected() || !isAuthenticated) {
             return Result.failure(Exception("Realtime connection unavailable"))
         }
 
@@ -785,56 +784,6 @@ object ChatSocketManager {
             Result.failure(Exception("Realtime send acknowledgement timed out", e))
         } catch (e: Exception) {
             Result.failure(e)
-        }
-    }
-
-    private suspend fun awaitSocketReady(activeSocket: Socket): Boolean {
-        if (activeSocket.connected() && isAuthenticated) return true
-
-        return try {
-            withTimeout(CONNECT_GRACE_MS) {
-                suspendCancellableCoroutine<Boolean> { continuation ->
-                    lateinit var authenticatedListener: Emitter.Listener
-                    lateinit var unauthenticatedListener: Emitter.Listener
-                    lateinit var connectErrorListener: Emitter.Listener
-                    lateinit var disconnectListener: Emitter.Listener
-
-                    fun cleanup() {
-                        activeSocket.off("socket:authenticated", authenticatedListener)
-                        activeSocket.off("socket:unauthenticated", unauthenticatedListener)
-                        activeSocket.off(Socket.EVENT_CONNECT_ERROR, connectErrorListener)
-                        activeSocket.off(Socket.EVENT_DISCONNECT, disconnectListener)
-                    }
-
-                    fun complete(value: Boolean) {
-                        if (!continuation.isActive) return
-                        cleanup()
-                        continuation.resume(value)
-                    }
-
-                    authenticatedListener = Emitter.Listener { complete(true) }
-                    unauthenticatedListener = Emitter.Listener { complete(false) }
-                    connectErrorListener = Emitter.Listener { complete(false) }
-                    disconnectListener = Emitter.Listener { complete(false) }
-
-                    activeSocket.once("socket:authenticated", authenticatedListener)
-                    activeSocket.once("socket:unauthenticated", unauthenticatedListener)
-                    activeSocket.once(Socket.EVENT_CONNECT_ERROR, connectErrorListener)
-                    activeSocket.once(Socket.EVENT_DISCONNECT, disconnectListener)
-                    continuation.invokeOnCancellation { cleanup() }
-
-                    if (activeSocket.connected() && isAuthenticated) {
-                        complete(true)
-                    } else if (!activeSocket.connected()) {
-                        activeSocket.connect()
-                    }
-                }
-            }
-        } catch (_: TimeoutCancellationException) {
-            false
-        } catch (e: Exception) {
-            Log.w(TAG, "Socket readiness check failed", e)
-            false
         }
     }
 

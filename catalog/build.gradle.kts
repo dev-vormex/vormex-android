@@ -35,15 +35,12 @@ val googleWebClientId = googleServerClientId
 val googleAndroidClientId = secret("VORMEX_GOOGLE_ANDROID_CLIENT_ID")
     ?: secret("GOOGLE_CLIENT_ID_ANDROID")
     ?: "562328294412-sfil52dp4f7mapttri74hs9t445ierpd.apps.googleusercontent.com"
-// Debug builds now use Render by default.
-val renderDebugApiBaseUrl = "https://vormex-backend.onrender.com/api"
-val renderDebugSocketBaseUrl = "https://vormex-backend.onrender.com"
-// Previous local defaults are preserved for optional VORMEX_DEBUG_* overrides.
-// For physical devices, adb reverse tcp:5000 tcp:5000 maps 127.0.0.1 to the development machine.
-val localDebugApiBaseUrl = "http://127.0.0.1:5000/api"
-val localDebugSocketBaseUrl = "http://127.0.0.1:5000"
-val debugApiBaseUrl = secret("VORMEX_DEBUG_API_BASE_URL") ?: renderDebugApiBaseUrl
-val debugSocketBaseUrl = secret("VORMEX_DEBUG_SOCKET_BASE_URL") ?: renderDebugSocketBaseUrl
+// Debug builds use the local backend by default. Run
+// `adb reverse tcp:5000 tcp:5000` before launching on a device/emulator.
+val localDebugApiBaseUrl = "http://localhost:5000/api"
+val localDebugSocketBaseUrl = "http://localhost:5000"
+val debugApiBaseUrl = secret("VORMEX_DEBUG_API_BASE_URL") ?: localDebugApiBaseUrl
+val debugSocketBaseUrl = secret("VORMEX_DEBUG_SOCKET_BASE_URL") ?: localDebugSocketBaseUrl
 val adMobApplicationId = secret("VORMEX_ADMOB_APPLICATION_ID")
     ?: "ca-app-pub-3940256099942544~3347511713"
 val adMobNativeFeedAdUnitId = secret("VORMEX_ADMOB_NATIVE_FEED_AD_UNIT_ID")
@@ -262,6 +259,7 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    implementation(libs.androidx.work.runtime)
     
     // Media3 (ExoPlayer) for video playback
     implementation(libs.media3.exoplayer)

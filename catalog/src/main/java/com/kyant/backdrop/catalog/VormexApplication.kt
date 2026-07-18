@@ -4,6 +4,8 @@ import android.app.Activity
 import android.app.Application
 import android.os.Bundle
 import com.kyant.backdrop.catalog.ai.VormexAiBootstrap
+import com.kyant.backdrop.catalog.chat.cache.ChatOutboxWorker
+import com.kyant.backdrop.catalog.chat.ChatDeltaSyncManager
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.ChatSocketManager
 import kotlinx.coroutines.CoroutineScope
@@ -19,6 +21,7 @@ class VormexApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         VormexAiBootstrap.initialize(this)
+        ChatOutboxWorker.enqueue(this)
         registerChatSocketWarmup()
     }
 
@@ -26,6 +29,7 @@ class VormexApplication : Application() {
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: Activity) {
                 crossedPathsPresence.onForeground()
+                appScope.launch { ChatDeltaSyncManager.sync(this@VormexApplication) }
                 appScope.launch {
                     if (ChatSocketManager.getConnectionState() == ChatSocketManager.ConnectionState.CONNECTED) {
                         return@launch

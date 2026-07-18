@@ -114,4 +114,36 @@ interface ChatCacheDao {
 
     @Query("DELETE FROM cached_messages WHERE cacheOwnerId = :cacheOwnerId")
     suspend fun deleteAllMessages(cacheOwnerId: String)
+
+    @Query(
+        """
+        SELECT * FROM chat_outbox
+        WHERE cacheOwnerId = :cacheOwnerId
+        ORDER BY createdAtEpochMillis ASC
+        """
+    )
+    suspend fun getOutboxEntries(cacheOwnerId: String): List<ChatOutboxEntity>
+
+    @Query(
+        """
+        SELECT * FROM chat_outbox
+        WHERE cacheOwnerId = :cacheOwnerId AND clientMessageId = :clientMessageId
+        LIMIT 1
+        """
+    )
+    suspend fun getOutboxEntry(cacheOwnerId: String, clientMessageId: String): ChatOutboxEntity?
+
+    @Upsert
+    suspend fun upsertOutboxEntry(entry: ChatOutboxEntity)
+
+    @Query(
+        """
+        DELETE FROM chat_outbox
+        WHERE cacheOwnerId = :cacheOwnerId AND clientMessageId = :clientMessageId
+        """
+    )
+    suspend fun deleteOutboxEntry(cacheOwnerId: String, clientMessageId: String)
+
+    @Query("DELETE FROM chat_outbox WHERE cacheOwnerId = :cacheOwnerId")
+    suspend fun deleteAllOutboxEntries(cacheOwnerId: String)
 }

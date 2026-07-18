@@ -1998,6 +1998,15 @@ data class MessagesResponse(
 )
 
 @Serializable
+data class ChatSyncResponse(
+    val messages: List<Message> = emptyList(),
+    val statusChanges: List<Message> = emptyList(),
+    val conversations: List<Conversation> = emptyList(),
+    val cursor: String,
+    val hasMore: Boolean = false
+)
+
+@Serializable
 data class MessageLimitStatus(
     val canSend: Boolean,
     val isConnected: Boolean,

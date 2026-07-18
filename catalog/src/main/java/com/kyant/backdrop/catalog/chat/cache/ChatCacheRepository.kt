@@ -1,9 +1,11 @@
 package com.kyant.backdrop.catalog.chat.cache
 
 import android.content.Context
+import android.net.Uri
 import androidx.room.withTransaction
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.models.ChatUser
+import com.kyant.backdrop.catalog.network.models.ChatSyncResponse
 import com.kyant.backdrop.catalog.network.models.Conversation
 import com.kyant.backdrop.catalog.network.models.ConversationLastMessage
 import com.kyant.backdrop.catalog.network.models.ConversationsResponse
@@ -15,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -72,6 +75,122 @@ class ChatCacheRepository(
             hasMore = conversation.hasMoreMessages,
             cachedAt = conversation.messagesCachedAt
         )
+    }
+
+    suspend fun getOutboxEntries(cacheOwnerId: String): List<ChatOutboxEntity> = withContext(Dispatchers.IO) {
+        dao.getOutboxEntries(cacheOwnerId)
+    }
+
+    suspend fun getOutboxEntry(
+        cacheOwnerId: String,
+        clientMessageId: String
+    ): ChatOutboxEntity? = withContext(Dispatchers.IO) {
+        dao.getOutboxEntry(cacheOwnerId, clientMessageId)
+    }
+
+    suspend fun upsertOutboxEntry(entry: ChatOutboxEntity) = withContext(Dispatchers.IO) {
+        dao.upsertOutboxEntry(entry)
+    }
+
+    suspend fun deleteOutboxEntry(
+        cacheOwnerId: String,
+        clientMessageId: String
+    ) = withContext(Dispatchers.IO) {
+        val entry = dao.getOutboxEntry(cacheOwnerId, clientMessageId)
+        dao.deleteOutboxEntry(cacheOwnerId, clientMessageId)
+        entry?.localFileUri?.let(::deletePrivateOutboxFile)
+    }
+
+    suspend fun persistOutboxAttachment(
+        clientMessageId: String,
+        sourceUri: Uri,
+        fileName: String
+    ): String = withContext(Dispatchers.IO) {
+        val target = outboxAttachmentFile(clientMessageId, fileName)
+        appContext.contentResolver.openInputStream(sourceUri)?.use { input ->
+            target.outputStream().use(input::copyTo)
+        } ?: throw IllegalArgumentException("Could not preserve this attachment for retry")
+        Uri.fromFile(target).toString()
+    }
+
+    suspend fun persistOutboxAttachment(
+        clientMessageId: String,
+        bytes: ByteArray,
+        fileName: String
+    ): String = withContext(Dispatchers.IO) {
+        val target = outboxAttachmentFile(clientMessageId, fileName)
+        target.writeBytes(bytes)
+        Uri.fromFile(target).toString()
+    }
+
+    suspend fun completeOutboxMessage(
+        cacheOwnerId: String,
+        clientMessageId: String,
+        message: Message
+    ) = withContext(Dispatchers.IO) {
+        val outboxEntry = dao.getOutboxEntry(cacheOwnerId, clientMessageId)
+        database.withTransaction {
+            dao.deleteMessage(cacheOwnerId, message.conversationId, clientMessageId)
+            dao.upsertMessages(listOf(messageToEntity(cacheOwnerId, message)))
+            dao.deleteOutboxEntry(cacheOwnerId, clientMessageId)
+            dao.trimMessages(cacheOwnerId, message.conversationId, MAX_CACHED_MESSAGES_PER_CONVERSATION)
+        }
+        outboxEntry?.localFileUri?.let(::deletePrivateOutboxFile)
+    }
+
+    fun outboxEntryToMessage(entry: ChatOutboxEntity): Message {
+        return Message(
+            id = entry.clientMessageId,
+            clientMessageId = entry.clientMessageId,
+            conversationId = entry.conversationId,
+            senderId = entry.senderId,
+            receiverId = entry.receiverId,
+            content = entry.content,
+            contentType = entry.contentType,
+            mediaUrl = entry.mediaUrl ?: entry.localPreviewUri,
+            mediaType = entry.mediaType,
+            fileName = entry.fileName,
+            fileSize = entry.fileSize,
+            status = if (entry.status.equals("failed", ignoreCase = true)) "FAILED" else "SENDING",
+            replyToId = entry.replyToId,
+            createdAt = entry.createdAt,
+            updatedAt = entry.createdAt
+        )
+    }
+
+    suspend fun applyChatSync(
+        cacheOwnerId: String,
+        response: ChatSyncResponse
+    ) = withContext(Dispatchers.IO) {
+        val existingConversations = dao.getConversations(cacheOwnerId).associateBy { it.conversationId }
+        val conversationEntities = response.conversations.map { conversation ->
+            conversationToEntity(
+                cacheOwnerId = cacheOwnerId,
+                conversation = conversation,
+                existing = existingConversations[conversation.id]
+            )
+        }
+        val changedMessages = response.messages + response.statusChanges
+        val privateFilesToDelete = mutableListOf<String>()
+        database.withTransaction {
+            if (conversationEntities.isNotEmpty()) {
+                dao.upsertConversations(conversationEntities)
+            }
+            changedMessages.forEach { message ->
+                message.clientMessageId?.takeIf { it.isNotBlank() }?.let { clientMessageId ->
+                    dao.getOutboxEntry(cacheOwnerId, clientMessageId)?.localFileUri?.let(privateFilesToDelete::add)
+                    dao.deleteMessage(cacheOwnerId, message.conversationId, clientMessageId)
+                    dao.deleteOutboxEntry(cacheOwnerId, clientMessageId)
+                }
+            }
+            if (changedMessages.isNotEmpty()) {
+                dao.upsertMessages(changedMessages.map { message -> messageToEntity(cacheOwnerId, message) })
+                changedMessages.map { it.conversationId }.distinct().forEach { conversationId ->
+                    dao.trimMessages(cacheOwnerId, conversationId, MAX_CACHED_MESSAGES_PER_CONVERSATION)
+                }
+            }
+        }
+        privateFilesToDelete.forEach(::deletePrivateOutboxFile)
     }
 
     suspend fun upsertConversation(
@@ -376,6 +495,7 @@ class ChatCacheRepository(
             database.withTransaction {
                 dao.deleteAllMessages(cacheOwnerId)
                 dao.deleteAllConversations(cacheOwnerId)
+                dao.deleteAllOutboxEntries(cacheOwnerId)
             }
         }
     }
@@ -487,6 +607,7 @@ class ChatCacheRepository(
             cacheOwnerId = cacheOwnerId,
             conversationId = message.conversationId,
             messageId = message.id,
+            clientMessageId = message.clientMessageId,
             senderId = message.senderId,
             receiverId = message.receiverId,
             content = message.content,
@@ -558,6 +679,7 @@ class ChatCacheRepository(
     private fun entityToMessage(entity: CachedMessageEntity): Message {
         return Message(
             id = entity.messageId,
+            clientMessageId = entity.clientMessageId,
             conversationId = entity.conversationId,
             senderId = entity.senderId,
             receiverId = entity.receiverId,
@@ -613,6 +735,25 @@ class ChatCacheRepository(
         return SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("UTC")
         }.format(Date())
+    }
+
+    private fun outboxAttachmentFile(clientMessageId: String, fileName: String): File {
+        val directory = File(appContext.filesDir, "chat_outbox").apply { mkdirs() }
+        val extension = fileName.substringAfterLast('.', "")
+            .takeIf { it.length in 1..12 && it.all(Char::isLetterOrDigit) }
+            ?.let { ".$it" }
+            .orEmpty()
+        return File(directory, "$clientMessageId$extension")
+    }
+
+    private fun deletePrivateOutboxFile(uriString: String) {
+        val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return
+        if (uri.scheme != "file") return
+        val file = uri.path?.let(::File) ?: return
+        val outboxDirectory = File(appContext.filesDir, "chat_outbox")
+        if (runCatching { file.canonicalFile.parentFile == outboxDirectory.canonicalFile }.getOrDefault(false)) {
+            runCatching { file.delete() }
+        }
     }
 
     private fun Message.toConversationLastMessage(): ConversationLastMessage {

@@ -350,11 +350,38 @@ private fun ChatListScreen(
     val cardBorder = contentColor.copy(alpha = if (isGlassTheme) 0.055f else 0.04f)
     val quickEntries = mixedEntries.take(10)
     val showQuickEntries = quickEntries.isNotEmpty() && !showSearchBar
+    val conversationListState = rememberLazyListState()
 
     LaunchedEffect(showSearchBar) {
         if (showSearchBar) {
             searchFocusRequester.requestFocus()
         }
+    }
+
+    LaunchedEffect(
+        conversationListState,
+        searchQuery,
+        requestConversations.size,
+        mixedEntries.size,
+        uiState.hasMoreConversations,
+        uiState.isLoadingMoreConversations
+    ) {
+        snapshotFlow {
+            conversationListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        }
+            .distinctUntilChanged()
+            .collect { lastVisibleIndex ->
+                val itemCount = requestConversations.size + mixedEntries.size
+                if (
+                    searchQuery.isBlank() &&
+                    uiState.hasMoreConversations &&
+                    !uiState.isLoadingMoreConversations &&
+                    itemCount > 0 &&
+                    lastVisibleIndex >= itemCount - 3
+                ) {
+                    viewModel.loadMoreConversations()
+                }
+            }
     }
 
     Column(
@@ -533,6 +560,7 @@ private fun ChatListScreen(
             }
         } else {
             LazyColumn(
+                state = conversationListState,
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 112.dp, top = 2.dp)
@@ -581,6 +609,20 @@ private fun ChatListScreen(
                                 borderColor = cardBorder,
                                 currentUserId = uiState.currentUserId,
                                 onClick = { onOpenGroupShortcut(entry.shortcut.groupId) }
+                            )
+                        }
+                    }
+                }
+                if (uiState.isLoadingMoreConversations) {
+                    item(key = "conversation_load_more") {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = accentColor,
+                                strokeWidth = 2.dp
                             )
                         }
                     }
