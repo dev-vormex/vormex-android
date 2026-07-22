@@ -2,6 +2,7 @@ package com.kyant.backdrop.catalog.linkedin
 
 import androidx.compose.runtime.Immutable
 import com.kyant.backdrop.catalog.network.models.ManagedAdPlacement
+import com.kyant.backdrop.catalog.network.models.HomeModulePlacement
 import com.kyant.backdrop.catalog.network.models.Post
 
 internal const val HomeFeedPageSize = 40
@@ -122,6 +123,13 @@ sealed class FeedListRow {
         override val itemKey: String = "managed_ad_${ad.slotKey}_${ad.campaignId}"
         override val contentType: Any = "managed_ad"
     }
+
+    data class ServerModuleItem(
+        val placement: HomeModulePlacement
+    ) : FeedListRow() {
+        override val itemKey: String = "recommendation_module_${placement.type}_${placement.position}"
+        override val contentType: Any = "recommendation_module_${placement.type}"
+    }
 }
 
 /**
@@ -132,6 +140,7 @@ internal fun buildHomeFeedRows(
     posts: List<Post>,
     retentionState: RetentionUiState?,
     widgetPositions: Map<Int, String>,
+    modulePlacements: List<HomeModulePlacement> = emptyList(),
     managedAdPlacements: List<ManagedAdPlacement> = emptyList(),
     includeNativeAds: Boolean = false
 ): List<FeedListRow> {
@@ -140,8 +149,16 @@ internal fun buildHomeFeedRows(
     val managedAdsBySequence = managedAdPlacements
         .filter { it.placement.equals("feed", ignoreCase = true) }
         .associateBy { it.sequence }
+    val serverModulesByPosition = modulePlacements
+        .filter { it.position in 1..40 }
+        .distinctBy { it.position }
+        .associateBy { it.position }
     var nativeAdSequence = 0
+    var weeklyGoalsAdded = false
     posts.forEachIndexed { index, post ->
+        serverModulesByPosition[index + 1]?.let { placement ->
+            out.add(FeedListRow.ServerModuleItem(placement))
+        }
         retentionState?.let { state ->
             when (widgetPositions[index]) {
                 "people_like_you" -> {
@@ -156,12 +173,19 @@ internal fun buildHomeFeedRows(
                 }
                 "weekly_goals" -> {
                     out.add(FeedListRow.WidgetWeeklyGoals)
+                    weeklyGoalsAdded = true
                 }
             }
         }
         val occurrence = postIdOccurrences.getOrDefault(post.id, 0)
         postIdOccurrences[post.id] = occurrence + 1
         out.add(FeedListRow.PostItem(post, occurrence))
+
+        // Weekly Goals is a fixed retention widget, not a randomized recommendation.
+        if (!weeklyGoalsAdded && retentionState != null && index + 1 == minOf(20, posts.size)) {
+            out.add(FeedListRow.WidgetWeeklyGoals)
+            weeklyGoalsAdded = true
+        }
 
         if (HomeFeedNativeAdPolicy.isReservedAdSlotAfterPostCount(index + 1)) {
             val managedAd = managedAdsBySequence[nativeAdSequence]
@@ -181,7 +205,7 @@ internal fun buildHomeFeedRows(
             if (state.todaysMatches.isNotEmpty() && posts.size < 12) {
                 out.add(FeedListRow.WidgetTodaysMatchesFallback)
             }
-            if (posts.size < 20) {
+            if (!weeklyGoalsAdded && posts.size < 20) {
                 out.add(FeedListRow.WidgetWeeklyGoalsFallback)
             }
         }

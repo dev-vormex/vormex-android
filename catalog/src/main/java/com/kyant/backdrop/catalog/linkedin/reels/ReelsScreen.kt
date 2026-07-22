@@ -1222,6 +1222,16 @@ private fun ReelCard(
             }
             
             Spacer(Modifier.height(12.dp))
+
+            reel.reasonText?.let { reason ->
+                BasicText(
+                    "Why this?  $reason",
+                    style = TextStyle(Color.White.copy(alpha = 0.72f), 11.sp, FontWeight.Medium),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(6.dp))
+            }
             
             // Caption
             reel.caption?.let { caption ->

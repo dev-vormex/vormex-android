@@ -24,9 +24,13 @@ import androidx.compose.foundation.shape.CircleShape
 import com.kyant.backdrop.catalog.ui.BasicText
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,6 +49,8 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.components.LiquidButton
 import com.kyant.backdrop.catalog.data.OnboardingPreferences
+import com.kyant.backdrop.catalog.network.RecommendationApiService
+import com.kyant.backdrop.catalog.network.models.RecommendationPreferencesPatch
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -84,6 +90,21 @@ fun OnboardingScreen(
     val coroutineScope = rememberCoroutineScope()
     val isLightTheme = !isSystemInDarkTheme()
     val backdrop = rememberLayerBackdrop()
+    var personalizedRecommendationsEnabled by rememberSaveable { mutableStateOf(true) }
+    var activityRecommendationsEnabled by rememberSaveable { mutableStateOf(true) }
+
+    fun completeWithPreferences() {
+        coroutineScope.launch {
+            RecommendationApiService.updatePreferences(
+                context,
+                RecommendationPreferencesPatch(
+                    personalizedRecommendationsEnabled = personalizedRecommendationsEnabled,
+                    activityRecommendationsEnabled = activityRecommendationsEnabled
+                )
+            )
+            onComplete()
+        }
+    }
     
     val pagerState = rememberPagerState(
         initialPage = 0,
@@ -130,7 +151,7 @@ fun OnboardingScreen(
                                 role = Role.Button,
                                 onClick = {
                                     coroutineScope.launch {
-                                        onComplete()
+                                        completeWithPreferences()
                                     }
                                 }
                             )
@@ -163,6 +184,30 @@ fun OnboardingScreen(
                     textColor = textColor,
                     secondaryTextColor = secondaryTextColor
                 )
+            }
+
+            if (pagerState.currentPage == onboardingPages.lastIndex) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    RecommendationOnboardingToggle(
+                        title = "Personalize my recommendations",
+                        description = "Use my public profile and Vormex activity to rank posts, people and opportunities.",
+                        checked = personalizedRecommendationsEnabled,
+                        onCheckedChange = { personalizedRecommendationsEnabled = it },
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor
+                    )
+                    RecommendationOnboardingToggle(
+                        title = "Show my public activity in recommendations",
+                        description = "Eligible public reactions or comments may be named. Private saves, views and messages are never named.",
+                        checked = activityRecommendationsEnabled,
+                        onCheckedChange = { activityRecommendationsEnabled = it },
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor
+                    )
+                }
             }
             
             Spacer(modifier = Modifier.height(32.dp))
@@ -207,7 +252,7 @@ fun OnboardingScreen(
                     onClick = {
                         coroutineScope.launch {
                             if (isLastPage) {
-                                onComplete()
+                                completeWithPreferences()
                             } else {
                                 pagerState.animateScrollToPage(pagerState.currentPage + 1)
                             }
@@ -234,6 +279,27 @@ fun OnboardingScreen(
             
             Spacer(modifier = Modifier.height(16.dp))
         }
+    }
+}
+
+@Composable
+private fun RecommendationOnboardingToggle(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    textColor: Color,
+    secondaryTextColor: Color
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            BasicText(title, style = TextStyle(textColor, 14.sp, fontWeight = FontWeight.SemiBold))
+            BasicText(description, style = TextStyle(secondaryTextColor, 11.sp, lineHeight = 15.sp))
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

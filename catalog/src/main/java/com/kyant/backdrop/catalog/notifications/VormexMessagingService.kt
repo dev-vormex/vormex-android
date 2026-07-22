@@ -574,6 +574,8 @@ class VormexMessagingService : FirebaseMessagingService() {
             ?: title
         val senderId = data["user_id"] ?: data["senderId"].orEmpty()
         val senderImage = data["senderImage"]?.takeIf { it.isNotBlank() }
+        val isActivelyViewingConversation =
+            MainActivity.isInForeground && ChatSocketManager.activeConversationId == conversationId
 
         val cachedMessage = cacheDirectPushMessage(
             data = data,
@@ -582,7 +584,7 @@ class VormexMessagingService : FirebaseMessagingService() {
             senderName = senderName,
             senderId = senderId,
             senderImage = senderImage,
-            incrementUnread = ChatSocketManager.activeConversationId != conversationId
+            incrementUnread = !isActivelyViewingConversation
         )
 
         if (MainActivity.isInForeground) {
@@ -592,6 +594,9 @@ class VormexMessagingService : FirebaseMessagingService() {
                     messageJson = json.encodeToString(Message.serializer(), message),
                     source = "foreground-push"
                 )
+            }
+            if (isActivelyViewingConversation) {
+                MessageNotificationManager.clearConversationNotification(this, conversationId)
             }
             Log.d(TAG, "Skipping FCM chat notification because app is in foreground")
             return

@@ -337,9 +337,6 @@ private fun StoryGroupViewer(
     // Story progress animation
     LaunchedEffect(currentStory?.id, isCurrentGroup, isPaused, storyDurationMs, isReplyExpanded) {
         if (isCurrentGroup && currentStory != null && !isPaused && !isReplyExpanded) {
-            // Mark story as viewed
-            onStoryViewed(currentStory.id)
-            
             // Continue from current progress
             val remainingDuration = ((1f - progress.value) * storyDurationMs).toLong()
             if (remainingDuration > 0 && progress.value < 1f) {
@@ -362,6 +359,14 @@ private fun StoryGroupViewer(
                 }
             }
         }
+    }
+
+    // A Story view becomes authoritative only after two seconds of continuous display.
+    LaunchedEffect(currentStory?.id, isCurrentGroup) {
+        val story = currentStory ?: return@LaunchedEffect
+        if (!isCurrentGroup) return@LaunchedEffect
+        kotlinx.coroutines.delay(2_000)
+        onStoryViewed(story.id)
     }
 
     LaunchedEffect(currentStory?.id) {
@@ -576,6 +581,13 @@ private fun StoryGroupViewer(
                     BasicText(
                         formatTimeAgo(story.createdAt),
                         style = TextStyle(Color.White.copy(alpha = 0.7f), 12.sp)
+                    )
+                }
+                storyGroup.reasonText?.let { reason ->
+                    BasicText(
+                        "Why this?  $reason",
+                        style = TextStyle(Color.White.copy(alpha = 0.68f), 11.sp),
+                        maxLines = 1
                     )
                 }
             }

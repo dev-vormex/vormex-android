@@ -1,5 +1,6 @@
 package com.kyant.backdrop.catalog.linkedin
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -7,6 +8,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -55,6 +59,7 @@ import com.airbnb.lottie.compose.rememberLottieComposition
 import com.kyant.backdrop.catalog.R
 import com.kyant.backdrop.catalog.ui.BasicText
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private val OtpInk = Color(0xFF101828)
 private val OtpSurface = Color(0xFFFFFFFF)
@@ -73,6 +78,7 @@ internal fun LiquidGlassEmailVerificationSheet(
     onVerify: (String) -> Unit,
     onResend: () -> Unit,
     onLoginClick: () -> Unit,
+    onDismiss: () -> Unit,
     onClearError: () -> Unit,
     onSuccessAnimationFinished: () -> Unit
 ) {
@@ -80,8 +86,12 @@ internal fun LiquidGlassEmailVerificationSheet(
     var showFieldError by rememberSaveable(email) { mutableStateOf(false) }
     var successExitStarted by remember(email) { mutableStateOf(false) }
     var successExpanded by remember(email) { mutableStateOf(false) }
+    var dismissStarted by remember(email) { mutableStateOf(false) }
     val sheetOffset = remember(email) { Animatable(1.16f) }
     val successProgress = remember(email) { Animatable(0f) }
+    val coroutineScope = rememberCoroutineScope()
+    val scrimInteractionSource = remember { MutableInteractionSource() }
+    val sheetInteractionSource = remember { MutableInteractionSource() }
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -146,8 +156,25 @@ internal fun LiquidGlassEmailVerificationSheet(
         isPlaying = playSuccessAnimation
     )
     val successAnimationProgress = successAnimationState.progress
+    val canDismiss = !isLoading && !isSuccess && !dismissStarted
+    val dismissSheet = {
+        if (canDismiss) {
+            dismissStarted = true
+            keyboardController?.hide()
+            coroutineScope.launch {
+                sheetOffset.animateTo(
+                    targetValue = 1.16f,
+                    animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)
+                )
+                onDismiss()
+            }
+        }
+    }
+
+    BackHandler(enabled = canDismiss, onBack = dismissSheet)
 
     LaunchedEffect(email) {
+        dismissStarted = false
         successExitStarted = false
         successExpanded = false
         showFieldError = false
@@ -196,8 +223,14 @@ internal fun LiquidGlassEmailVerificationSheet(
                             0.20f *
                                 (1f - sheetOffset.value.coerceIn(0f, 1f)) *
                                 (1f - successProgress.value * 0.65f)
-                            ).coerceIn(0f, 0.20f)
+                        ).coerceIn(0f, 0.20f)
                     )
+                )
+                .clickable(
+                    enabled = canDismiss,
+                    interactionSource = scrimInteractionSource,
+                    indication = null,
+                    onClick = dismissSheet
                 )
         )
 
@@ -224,6 +257,11 @@ internal fun LiquidGlassEmailVerificationSheet(
                         borderColor
                     },
                     shape = sheetShape
+                )
+                .clickable(
+                    interactionSource = sheetInteractionSource,
+                    indication = null,
+                    onClick = {}
                 )
         ) {
             if (!isSuccess) {

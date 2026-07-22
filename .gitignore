@@ -16,6 +16,7 @@ local.properties
 
 # Keystore
 keystore/
+*.keystore
 
 # Generated Android artifacts
 *.apk

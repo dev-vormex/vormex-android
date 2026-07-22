@@ -69,6 +69,8 @@ import com.kyant.backdrop.catalog.linkedin.crossedpaths.CrossedPathsScreen
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.kyant.backdrop.catalog.ui.BasicText
 import com.kyant.backdrop.catalog.ui.BasicTextField
@@ -173,6 +175,9 @@ import com.kyant.backdrop.catalog.linkedin.posts.SharePostModal
 import com.kyant.backdrop.catalog.linkedin.posts.FormattedContent
 import com.kyant.backdrop.catalog.linkedin.posts.MentionProfilePreviewPopup
 import com.kyant.backdrop.catalog.network.PostsApiService
+import com.kyant.backdrop.catalog.network.RecommendationApiService
+import com.kyant.backdrop.catalog.network.models.PostBoostCampaign
+import com.kyant.backdrop.catalog.network.models.PostBoostCredits
 import com.kyant.backdrop.catalog.linkedin.groups.GroupsScreen
 import com.kyant.backdrop.catalog.linkedin.groups.CreateGroupModal
 import com.kyant.backdrop.catalog.linkedin.groups.GroupDetailScreen
@@ -203,6 +208,11 @@ import com.kyant.shapes.RoundedRectangle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonPrimitive
 import com.kyant.backdrop.catalog.chat.ChatViewModel
 import kotlin.math.PI
 import kotlin.math.cos
@@ -814,13 +824,73 @@ fun LinkedInContent(
         when (action) {
             "save" -> viewModel.toggleSave(postId)
             "copy_link" -> viewModel.copyPostLink(postId)
-            "not_interested" -> Toast.makeText(
-                context,
-                "We'll show fewer posts like this",
-                Toast.LENGTH_SHORT
-            ).show()
+            "not_interested" -> viewModel.markPostNotInterested(postId)
             "report" -> reportingPostId = postId
         }
+    }
+
+    var postIdForBoost by rememberSaveable { mutableStateOf<String?>(null) }
+    var postBoostCredits by remember { mutableStateOf<PostBoostCredits?>(null) }
+    var postBoostCampaign by remember { mutableStateOf<PostBoostCampaign?>(null) }
+    var isUpdatingPostBoost by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(postIdForBoost) {
+        val postId = postIdForBoost ?: return@LaunchedEffect
+        postBoostCredits = RecommendationApiService.getPostBoostCredits(context).getOrNull()
+        postBoostCampaign = RecommendationApiService.listPostBoosts(context).getOrNull()
+            ?.campaigns
+            ?.firstOrNull { it.postId == postId && it.status.equals("active", ignoreCase = true) }
+    }
+
+    postIdForBoost?.let { postId ->
+        val activeCampaign = postBoostCampaign
+        AlertDialog(
+            onDismissRequest = { if (!isUpdatingPostBoost) postIdForBoost = null },
+            title = { BasicText(if (activeCampaign == null) "Boost this post?" else "Post boost status") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (activeCampaign == null) {
+                        BasicText("Use one 24-hour Premium credit. Targeting is automatic and every placement is labeled Boosted.")
+                        BasicText("Credits remaining: ${postBoostCredits?.creditsRemaining ?: "—"}")
+                    } else {
+                        BasicText("Status: ${activeCampaign.status}")
+                        BasicText("${activeCampaign.impressions} impressions • ${activeCampaign.clicks} clicks • ${activeCampaign.meaningfulActions} meaningful actions")
+                        activeCampaign.pauseReason?.let { BasicText("Pause reason: $it") }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !isUpdatingPostBoost && (activeCampaign != null || (postBoostCredits?.creditsRemaining ?: 0) > 0),
+                    onClick = {
+                        appScope.launch {
+                            isUpdatingPostBoost = true
+                            val result = if (activeCampaign == null) {
+                                RecommendationApiService.createPostBoost(context, postId)
+                            } else {
+                                RecommendationApiService.cancelPostBoost(context, activeCampaign.id)
+                            }
+                            result.onSuccess {
+                                Toast.makeText(
+                                    context,
+                                    if (activeCampaign == null) "Post boost started" else "Post boost cancelled",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                postIdForBoost = null
+                            }.onFailure { error ->
+                                Toast.makeText(context, error.message ?: "Could not update post boost", Toast.LENGTH_SHORT).show()
+                            }
+                            isUpdatingPostBoost = false
+                        }
+                    }
+                ) { BasicText(if (activeCampaign == null) "Confirm boost" else "Cancel campaign") }
+            },
+            dismissButton = {
+                TextButton(onClick = { postIdForBoost = null }, enabled = !isUpdatingPostBoost) {
+                    BasicText("Close")
+                }
+            }
+        )
     }
 
     fun submitPostReport(reason: String, details: String, blockAuthor: Boolean) {
@@ -1625,6 +1695,9 @@ fun LinkedInContent(
                                     glassBackgroundKey = glassBackgroundKey,
                                     posts = uiState.posts,
                                     managedAdPlacements = uiState.feedAdPlacements,
+                                    modulePlacements = uiState.modulePlacements,
+                                    recommendationSessionId = uiState.recommendationSessionId,
+                                    recommendationRequestId = uiState.recommendationRequestId,
                                     storyGroups = uiState.storyGroups,
                                     // Reels data
                                     showReelsOnHome = showReelsOnHome,
@@ -1643,6 +1716,8 @@ fun LinkedInContent(
                                 currentUserInitials = uiState.currentUser?.name?.split(" ")?.mapNotNull { it.firstOrNull()?.uppercase() }?.take(2)?.joinToString("") ?: "U",
                                 currentUserProfileImage = uiState.currentUser?.profileImage,
                                 currentUserName = uiState.currentUser?.name ?: "You",
+                                currentUserId = uiState.currentUserId,
+                                isCurrentUserPremium = uiState.currentUser?.isPremium == true,
                                 isLightTheme = isLightTheme,
                                 // Streak data (Duolingo Effect)
                                 connectionStreak = uiState.connectionStreak,
@@ -1681,6 +1756,10 @@ fun LinkedInContent(
                                     viewingProfileUserId = userId
                                 },
                                 onMenuAction = handlePostMenuAction,
+                                onNotInterested = { postId -> viewModel.markPostNotInterested(postId) },
+                                onBoostPost = { postId -> postIdForBoost = postId },
+                                showFeedbackUndo = uiState.lastRecommendationFeedbackPost != null,
+                                onUndoFeedback = { viewModel.undoLastRecommendationFeedback() },
                                 onManagedAdImpression = { ad -> viewModel.trackManagedAdImpression(ad) },
                                 onManagedAdClick = { ad -> viewModel.trackManagedAdClick(ad) },
                                 onStoryClick = { groupIndex ->
@@ -3777,6 +3856,7 @@ fun LinkedInContent(
                 onVerify = { code -> viewModel.verifyEmailOtp(code) },
                 onResend = { viewModel.resendVerificationCode() },
                 onLoginClick = { viewModel.showLogin() },
+                onDismiss = { viewModel.dismissEmailVerification() },
                 onClearError = { viewModel.clearError() },
                 onSuccessAnimationFinished = { viewModel.completeEmailVerificationAnimation() }
             )
@@ -4287,6 +4367,9 @@ private fun FeedScreen(
     glassBackgroundKey: String = DefaultGlassBackgroundPresetKey,
     posts: List<Post> = emptyList(),
     managedAdPlacements: List<ManagedAdPlacement> = emptyList(),
+    modulePlacements: List<com.kyant.backdrop.catalog.network.models.HomeModulePlacement> = emptyList(),
+    recommendationSessionId: String? = null,
+    recommendationRequestId: String? = null,
     storyGroups: List<StoryGroup> = emptyList(),
     // Reels data
     showReelsOnHome: Boolean = false,
@@ -4301,6 +4384,8 @@ private fun FeedScreen(
     currentUserInitials: String = "U",
     currentUserProfileImage: String? = null,
     currentUserName: String = "You",
+    currentUserId: String? = null,
+    isCurrentUserPremium: Boolean = false,
     isLightTheme: Boolean = true,
     // Streak data (Duolingo Effect)
     connectionStreak: Int = 0,
@@ -4318,6 +4403,10 @@ private fun FeedScreen(
     onVotePoll: (String, String) -> Unit = { _, _ -> },
     onProfileClick: (String) -> Unit = {},
     onMenuAction: (String, String) -> Unit = { _, _ -> },
+    onNotInterested: (String) -> Unit = {},
+    onBoostPost: (String) -> Unit = {},
+    showFeedbackUndo: Boolean = false,
+    onUndoFeedback: () -> Unit = {},
     onManagedAdImpression: (ManagedAdPlacement) -> Unit = {},
     onManagedAdClick: (ManagedAdPlacement) -> Unit = {},
     // Story callbacks
@@ -4352,28 +4441,25 @@ private fun FeedScreen(
     val showNativeAds = BuildConfig.ADS_ENABLED && canRequestNativeAds
     val activeManagedAdPlacements = if (BuildConfig.ADS_ENABLED) managedAdPlacements else emptyList()
 
-    // Widget positions for distributing engagement widgets in feed
-    // Random positions within ranges: ensures varied feed experience on each app open
-    val widgetPositions = remember {
-        val pos1 = (3..8).random()  // PeopleLikeYou early in feed
-        val pos2 = (pos1 + 5..pos1 + 12).random()  // TodaysMatches mid-feed, spaced from first
-        val pos3 = (pos2 + 6..pos2 + 15).random()  // WeeklyGoals later, spaced from second
-        mapOf(
-            pos1 to "people_like_you",
-            pos2 to "todays_matches",
-            pos3 to "weekly_goals"
-        )
-    }
+    val widgetPositions = emptyMap<Int, String>()
 
-    val feedRows = remember(posts, retentionState, widgetPositions, activeManagedAdPlacements, showNativeAds) {
+    val feedRows = remember(posts, retentionState, modulePlacements, activeManagedAdPlacements, showNativeAds) {
         buildHomeFeedRows(
             posts = posts,
             retentionState = retentionState,
             widgetPositions = widgetPositions,
+            modulePlacements = modulePlacements,
             managedAdPlacements = activeManagedAdPlacements,
             includeNativeAds = showNativeAds
         )
     }
+
+    TrackHomeRecommendationVisibility(
+        listState = listState,
+        rows = feedRows,
+        recommendationSessionId = recommendationSessionId,
+        requestId = recommendationRequestId
+    )
 
     // System default fling matches native RecyclerView-style physics and avoids custom decay work during scroll.
     val listFlingBehavior = ScrollableDefaults.flingBehavior()
@@ -4565,6 +4651,26 @@ private fun FeedScreen(
         }
 
         // Posts + widgets: flattened list with stable keys and contentType for recycling
+        if (showFeedbackUndo) {
+            item(key = "recommendation_feedback_undo") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(contentColor.copy(alpha = 0.08f))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BasicText("Post hidden", style = TextStyle(contentColor, 14.sp))
+                    BasicText(
+                        "Undo",
+                        style = TextStyle(accentColor, 14.sp, fontWeight = FontWeight.SemiBold),
+                        modifier = Modifier.clickable(onClick = onUndoFeedback)
+                    )
+                }
+            }
+        }
+
         items(
             items = feedRows,
             key = { it.itemKey },
@@ -4572,22 +4678,64 @@ private fun FeedScreen(
         ) { row ->
             when (row) {
                 is FeedListRow.PostItem -> {
-                    ApiPostCard(
-                        post = row.post,
-                        backdrop = backdrop,
-                        contentColor = contentColor,
-                        accentColor = accentColor,
-                        glassBackgroundKey = glassBackgroundKey,
-                        onLike = onLike,
-                        onComment = onComment,
-                        onShare = onShare,
-                        onVotePoll = onVotePoll,
-                        onProfileClick = { onProfileClick(row.post.author.id) },
-                        onMentionClick = { username -> onProfileClick(username) },
-                        onMenuAction = onMenuAction,
-                        reduceAnimations = reduceFeedCardMotion,
-                        playDefaultVideos = !reduceAnimations
-                    )
+                    Column {
+                        if (
+                            row.post.isBoosted ||
+                            !row.post.reasonText.isNullOrBlank() ||
+                            (isCurrentUserPremium && row.post.authorId == currentUserId)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                BasicText(
+                                    when {
+                                        row.post.isBoosted -> "Boosted"
+                                        !row.post.reasonText.isNullOrBlank() -> "Why this?  ${row.post.reasonText}"
+                                        else -> "Your post"
+                                    },
+                                    style = TextStyle(contentColor.copy(alpha = 0.66f), 12.sp),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (isCurrentUserPremium && row.post.authorId == currentUserId) {
+                                    BasicText(
+                                        "Boost",
+                                        style = TextStyle(accentColor, 12.sp, fontWeight = FontWeight.SemiBold),
+                                        modifier = Modifier
+                                            .padding(start = 12.dp)
+                                            .clickable { onBoostPost(row.post.id) }
+                                    )
+                                } else {
+                                    BasicText(
+                                        "Not interested",
+                                        style = TextStyle(accentColor, 12.sp),
+                                        modifier = Modifier
+                                            .padding(start = 12.dp)
+                                            .clickable { onNotInterested(row.post.id) }
+                                    )
+                                }
+                            }
+                        }
+                        ApiPostCard(
+                            post = row.post,
+                            backdrop = backdrop,
+                            contentColor = contentColor,
+                            accentColor = accentColor,
+                            glassBackgroundKey = glassBackgroundKey,
+                            onLike = onLike,
+                            onComment = onComment,
+                            onShare = onShare,
+                            onVotePoll = onVotePoll,
+                            onProfileClick = { onProfileClick(row.post.author.id) },
+                            onMentionClick = { username -> onProfileClick(username) },
+                            onMenuAction = onMenuAction,
+                            reduceAnimations = reduceFeedCardMotion,
+                            playDefaultVideos = !reduceAnimations
+                        )
+                    }
                 }
                 is FeedListRow.NativeAdItem -> {
                     VormexNativeFeedAd(
@@ -4606,6 +4754,69 @@ private fun FeedScreen(
                         onImpression = onManagedAdImpression,
                         onClick = onManagedAdClick
                     )
+                }
+                is FeedListRow.ServerModuleItem -> {
+                    val placement = row.placement
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(contentColor.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                            .padding(16.dp)
+                    ) {
+                        BasicText(
+                            placement.label ?: when (placement.type.uppercase()) {
+                                "REELS" -> "Reels for you"
+                                "JOBS" -> "Jobs for you"
+                                "EVENTS" -> "Events for you"
+                                "BOOSTED_POST" -> "Boosted"
+                                else -> "Recommended for you"
+                            },
+                            style = TextStyle(contentColor, 16.sp, fontWeight = FontWeight.SemiBold)
+                        )
+                        placement.reasonText?.let { reason ->
+                            Spacer(Modifier.height(4.dp))
+                            BasicText(reason, style = TextStyle(contentColor.copy(alpha = 0.65f), 13.sp))
+                        }
+                        val boostedPost = if (placement.type.equals("BOOSTED_POST", ignoreCase = true)) {
+                            remember(placement.items) {
+                                placement.items.firstOrNull()?.let { element ->
+                                    runCatching {
+                                        Json { ignoreUnknownKeys = true; coerceInputValues = true }
+                                            .decodeFromJsonElement<Post>(element)
+                                    }.getOrNull()
+                                }
+                            }
+                        } else null
+                        if (boostedPost != null) {
+                            Spacer(Modifier.height(8.dp))
+                            ApiPostCard(
+                                post = boostedPost,
+                                backdrop = backdrop,
+                                contentColor = contentColor,
+                                accentColor = accentColor,
+                                glassBackgroundKey = glassBackgroundKey,
+                                onLike = onLike,
+                                onComment = onComment,
+                                onShare = onShare,
+                                onVotePoll = onVotePoll,
+                                onProfileClick = { onProfileClick(boostedPost.author.id) },
+                                onMentionClick = { username -> onProfileClick(username) },
+                                onMenuAction = onMenuAction,
+                                reduceAnimations = reduceFeedCardMotion,
+                                playDefaultVideos = !reduceAnimations
+                            )
+                        } else placement.items.take(4).forEach { item ->
+                            val value = item as? JsonObject
+                            val itemLabel = listOf("name", "title", "caption", "content")
+                                .firstNotNullOfOrNull { key -> value?.get(key)?.jsonPrimitive?.contentOrNull }
+                                ?.trim()
+                                ?.takeIf { it.isNotBlank() }
+                            itemLabel?.let {
+                                Spacer(Modifier.height(6.dp))
+                                BasicText("• $it", style = TextStyle(contentColor.copy(alpha = 0.82f), 13.sp), maxLines = 2)
+                            }
+                        }
+                    }
                 }
                 FeedListRow.WidgetPeopleLikeYou,
                 FeedListRow.WidgetPeopleLikeYouFallback -> {
@@ -12646,6 +12857,7 @@ private fun EmailVerificationSheet(
     onVerify: (String) -> Unit,
     onResend: () -> Unit,
     onLoginClick: () -> Unit,
+    onDismiss: () -> Unit,
     onClearError: () -> Unit,
     onSuccessAnimationFinished: () -> Unit
 ) {
@@ -12659,6 +12871,7 @@ private fun EmailVerificationSheet(
         onVerify = onVerify,
         onResend = onResend,
         onLoginClick = onLoginClick,
+        onDismiss = onDismiss,
         onClearError = onClearError,
         onSuccessAnimationFinished = onSuccessAnimationFinished
     )

@@ -11,7 +11,7 @@ import androidx.credentials.GetCredentialRequest
 import androidx.credentials.GetCredentialResponse
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
-import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.kyant.backdrop.catalog.BuildConfig
 import com.kyant.backdrop.catalog.R
@@ -67,10 +67,11 @@ object GoogleAuthHelper {
                     "google-services default ${redactedClientId(googleServicesWebClientId)}."
             )
             
-            val googleIdOption = GetGoogleIdOption.Builder()
-                .setServerClientId(googleClientId)
-                .setFilterByAuthorizedAccounts(false)
-                .setAutoSelectEnabled(false)
+            // This flow starts from an explicit "Continue with Google" button. Google's
+            // button-specific option is important on a fresh install: unlike the generic
+            // bottom-sheet option, it can still show the account chooser when global
+            // Credential Manager sign-in prompts have not been initialized for this app.
+            val googleIdOption = GetSignInWithGoogleOption.Builder(googleClientId)
                 .build()
             val result = getCredential(activity, credentialManager, googleIdOption)
                 ?: return@withContext GoogleSignInResult.Error(

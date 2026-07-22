@@ -31,6 +31,7 @@ import com.kyant.backdrop.catalog.notifications.VormexMessagingService
 import com.kyant.backdrop.catalog.onboarding.AppRoot
 import com.kyant.backdrop.catalog.payments.PremiumCheckoutManager
 import com.kyant.backdrop.catalog.ui.ProvideVormexFontFamily
+import com.kyant.backdrop.catalog.recommendation.telemetry.RecommendationTelemetryWorker
 import com.google.firebase.messaging.FirebaseMessaging
 
 /**
@@ -138,6 +139,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         isInForeground = false
+        RecommendationTelemetryWorker.enqueue(applicationContext, immediate = true)
         super.onStop()
     }
 
@@ -253,6 +255,12 @@ class MainActivity : ComponentActivity() {
             }
 
             val convId = data["conversationId"].orEmpty()
+            if (convId.isNotBlank() && ChatSocketManager.activeConversationId == convId) {
+                Log.d(TAG, "Skipping socket notification because this conversation is open: $convId")
+                MessageNotificationManager.clearConversationNotification(this, convId)
+                return@setNotificationCallback
+            }
+
             if (convId.isNotBlank() && ChatMutePreferences.isMuted(this, convId)) {
                 Log.d(TAG, "🔕 Skipping socket notification — conversation muted: $convId")
                 return@setNotificationCallback

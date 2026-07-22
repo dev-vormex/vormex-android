@@ -132,7 +132,13 @@ data class FullPost(
     
     // Timestamps
     val createdAt: String,
-    val updatedAt: String? = null
+    val updatedAt: String? = null,
+    val reasonCode: String? = null,
+    val reasonText: String? = null,
+    val source: String? = null,
+    val position: Int? = null,
+    val isBoosted: Boolean = false,
+    val socialActors: List<RecommendationSocialActor> = emptyList()
 )
 
 // ==================== Feed Response ====================
@@ -141,7 +147,12 @@ data class FullPost(
 data class FullFeedResponse(
     val posts: List<FullPost>,
     val nextCursor: String? = null,
-    val hasMore: Boolean = false
+    val hasMore: Boolean = false,
+    val recommendationSessionId: String? = null,
+    val requestId: String? = null,
+    val rankerVersion: String? = null,
+    val experimentVariant: String? = null,
+    val modulePlacements: List<HomeModulePlacement> = emptyList()
 )
 
 // ==================== Create Post Request ====================

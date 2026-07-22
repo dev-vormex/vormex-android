@@ -135,7 +135,13 @@ data class Post(
     val reactionSummary: List<ReactionSummary> = emptyList(),
     val visibility: String = "PUBLIC",
     val createdAt: String,
-    val updatedAt: String? = null
+    val updatedAt: String? = null,
+    val reasonCode: String? = null,
+    val reasonText: String? = null,
+    val source: String? = null,
+    val position: Int? = null,
+    val isBoosted: Boolean = false,
+    val socialActors: List<RecommendationSocialActor> = emptyList()
 )
 
 @Serializable
@@ -143,7 +149,12 @@ data class FeedResponse(
     val posts: List<Post>,
     val nextCursor: String? = null,
     val hasMore: Boolean = false,
-    val adPlacements: List<ManagedAdPlacement> = emptyList()
+    val adPlacements: List<ManagedAdPlacement> = emptyList(),
+    val recommendationSessionId: String? = null,
+    val requestId: String? = null,
+    val rankerVersion: String? = null,
+    val experimentVariant: String? = null,
+    val modulePlacements: List<HomeModulePlacement> = emptyList()
 )
 
 @Serializable
@@ -344,12 +355,23 @@ data class StoryGroup(
     val stories: List<Story>,
     val hasUnviewed: Boolean = true,
     val lastStoryAt: String? = null,
-    val isOwnStory: Boolean = false
+    val isOwnStory: Boolean = false,
+    val reasonCode: String? = null,
+    val reasonText: String? = null,
+    val source: String? = null,
+    val position: Int? = null,
+    val isBoosted: Boolean = false,
+    val socialActors: List<RecommendationSocialActor> = emptyList()
 )
 
 @Serializable
 data class StoriesFeedResponse(
-    val storyGroups: List<StoryGroup>
+    val storyGroups: List<StoryGroup>,
+    val recommendationSessionId: String? = null,
+    val requestId: String? = null,
+    val rankerVersion: String? = null,
+    val experimentVariant: String? = null,
+    val nextCursor: String? = null
 )
 
 @Serializable
@@ -468,7 +490,13 @@ data class PersonInfo(
     val profileBoostActive: Boolean = false,
     val profileBoostEndsAt: String? = null,
     val profileBoostPriority: Int = 0,
-    val discoveryPriority: Int = 0
+    val discoveryPriority: Int = 0,
+    val reasonCode: String? = null,
+    val reasonText: String? = null,
+    val source: String? = null,
+    val position: Int? = null,
+    val isBoosted: Boolean = false,
+    val socialActors: List<RecommendationSocialActor> = emptyList()
 )
 
 @Serializable
@@ -546,7 +574,12 @@ data class SuggestionsResponse(
     val total: Int = 0,
     val hasMore: Boolean = false,
     val quota: SuggestionQuota? = null,
-    val canRewind: Boolean = false
+    val canRewind: Boolean = false,
+    val recommendationSessionId: String? = null,
+    val requestId: String? = null,
+    val rankerVersion: String? = null,
+    val experimentVariant: String? = null,
+    val nextCursor: String? = null
 )
 
 @Serializable
@@ -1340,6 +1373,24 @@ data class FullProfileResponse(
     val certificates: List<Certificate> = emptyList(),
     val achievements: List<Achievement> = emptyList(),
     val viewerContext: ProfileViewerContext = ProfileViewerContext()
+)
+
+@Serializable
+data class DiscoveryVisibility(
+    val webDiscoveryEnabled: Boolean = true,
+    val aiDiscoveryEnabled: Boolean = true,
+    val discoveryVisibilityUpdatedAt: String? = null
+)
+
+@Serializable
+data class DiscoveryVisibilityResponse(
+    val visibility: DiscoveryVisibility
+)
+
+@Serializable
+data class DiscoveryVisibilityUpdateRequest(
+    val webDiscoveryEnabled: Boolean? = null,
+    val aiDiscoveryEnabled: Boolean? = null
 )
 
 @Serializable
@@ -2228,7 +2279,13 @@ data class Reel(
     val isSaved: Boolean = false,
     val publishedAt: String? = null,
     val createdAt: String = "",
-    val updatedAt: String? = null
+    val updatedAt: String? = null,
+    val reasonCode: String? = null,
+    val reasonText: String? = null,
+    val source: String? = null,
+    val position: Int? = null,
+    val isBoosted: Boolean = false,
+    val socialActors: List<RecommendationSocialActor> = emptyList()
 )
 
 @Serializable
@@ -2236,7 +2293,12 @@ data class ReelsFeedResponse(
     val reels: List<Reel>,
     val nextCursor: String? = null,
     val hasMore: Boolean = false,
-    val adPlacements: List<ManagedAdPlacement> = emptyList()
+    val adPlacements: List<ManagedAdPlacement> = emptyList(),
+    val recommendationSessionId: String? = null,
+    val requestId: String? = null,
+    val rankerVersion: String? = null,
+    val experimentVariant: String? = null,
+    val recommendationNextCursor: String? = null
 )
 
 @Serializable
@@ -2535,8 +2597,10 @@ data class NotificationReel(
 @Serializable
 data class NotificationsResponse(
     val notifications: List<Notification> = emptyList(),
+    val latestCursor: String? = null,
     val nextCursor: String? = null,
-    val hasMore: Boolean = false
+    val hasMore: Boolean = false,
+    val hasMoreNewer: Boolean = false
 )
 
 @Serializable

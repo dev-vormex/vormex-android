@@ -81,7 +81,9 @@ import com.kyant.backdrop.catalog.components.LiquidToggle
 import com.kyant.backdrop.catalog.data.SettingsPreferences
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.GrowthApiService
+import com.kyant.backdrop.catalog.network.RecommendationApiService
 import com.kyant.backdrop.catalog.network.models.ProfileUpdateRequest
+import com.kyant.backdrop.catalog.network.models.RecommendationPreferencesPatch
 import com.kyant.backdrop.catalog.notifications.PushTokenRegistrar
 import com.kyant.backdrop.catalog.ui.VormexFontOptions
 import kotlinx.coroutines.launch
@@ -819,6 +821,14 @@ fun PrivacySettingsScreen(
     val privacyOptionsRequired by VormexAdsManager.privacyOptionsRequired.collectAsState()
     var useLocationForDiscovery by rememberSaveable { mutableStateOf(true) }
     var isSavingLocationPrivacy by rememberSaveable { mutableStateOf(false) }
+    var webDiscoveryEnabled by rememberSaveable { mutableStateOf(true) }
+    var aiDiscoveryEnabled by rememberSaveable { mutableStateOf(true) }
+    var discoveryVisibilityLoaded by rememberSaveable { mutableStateOf(false) }
+    var isSavingDiscoveryVisibility by rememberSaveable { mutableStateOf(false) }
+    var personalizedRecommendationsEnabled by rememberSaveable { mutableStateOf(true) }
+    var activityRecommendationsEnabled by rememberSaveable { mutableStateOf(true) }
+    var recommendationPreferencesLoaded by rememberSaveable { mutableStateOf(false) }
+    var isSavingRecommendationPreferences by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         ApiClient.getCurrentLocation(context)
@@ -826,6 +836,21 @@ fun PrivacySettingsScreen(
                 SettingsPreferences.setShowProfileLocation(context, location.shareLocationPublic)
                 useLocationForDiscovery = location.locationPermission
             }
+        ApiClient.getDiscoveryVisibility(context)
+            .onSuccess { visibility ->
+                webDiscoveryEnabled = visibility.webDiscoveryEnabled
+                aiDiscoveryEnabled = visibility.aiDiscoveryEnabled
+            }
+            .onFailure {
+                Toast.makeText(context, "Couldn't load public discovery settings.", Toast.LENGTH_SHORT).show()
+            }
+        discoveryVisibilityLoaded = true
+        RecommendationApiService.getPreferences(context)
+            .onSuccess { preferences ->
+                personalizedRecommendationsEnabled = preferences.personalizedRecommendationsEnabled
+                activityRecommendationsEnabled = preferences.activityRecommendationsEnabled
+            }
+        recommendationPreferencesLoaded = true
     }
 
     SettingsScreenContainer(backdrop = backdrop, contentColor = contentColor, accentColor = accentColor) {
@@ -921,6 +946,62 @@ fun PrivacySettingsScreen(
 
             item {
                 SettingsSectionHeader("Activity", contentColor)
+            }
+
+            item {
+                NotificationLiquidToggleItem(
+                    title = "Personalized recommendations",
+                    subtitle = "Rank posts, people and opportunities using your public profile and Vormex activity",
+                    icon = Icons.Outlined.AutoAwesome,
+                    checked = personalizedRecommendationsEnabled,
+                    enabled = recommendationPreferencesLoaded && !isSavingRecommendationPreferences,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onCheckedChange = { enabled ->
+                        val previous = personalizedRecommendationsEnabled
+                        personalizedRecommendationsEnabled = enabled
+                        coroutineScope.launch {
+                            isSavingRecommendationPreferences = true
+                            RecommendationApiService.updatePreferences(
+                                context,
+                                RecommendationPreferencesPatch(personalizedRecommendationsEnabled = enabled)
+                            ).onFailure {
+                                personalizedRecommendationsEnabled = previous
+                                Toast.makeText(context, "Couldn't update recommendation preference.", Toast.LENGTH_SHORT).show()
+                            }
+                            isSavingRecommendationPreferences = false
+                        }
+                    }
+                )
+            }
+
+            item {
+                NotificationLiquidToggleItem(
+                    title = "Public activity in recommendations",
+                    subtitle = "Allow eligible public reactions or comments to be named; private activity is never named",
+                    icon = Icons.Outlined.Groups,
+                    checked = activityRecommendationsEnabled,
+                    enabled = recommendationPreferencesLoaded && !isSavingRecommendationPreferences,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onCheckedChange = { enabled ->
+                        val previous = activityRecommendationsEnabled
+                        activityRecommendationsEnabled = enabled
+                        coroutineScope.launch {
+                            isSavingRecommendationPreferences = true
+                            RecommendationApiService.updatePreferences(
+                                context,
+                                RecommendationPreferencesPatch(activityRecommendationsEnabled = enabled)
+                            ).onFailure {
+                                activityRecommendationsEnabled = previous
+                                Toast.makeText(context, "Couldn't update activity preference.", Toast.LENGTH_SHORT).show()
+                            }
+                            isSavingRecommendationPreferences = false
+                        }
+                    }
+                )
             }
 
             item {
@@ -1044,6 +1125,91 @@ fun PrivacySettingsScreen(
 
             item {
                 SettingsSectionHeader("Discoverability", contentColor)
+            }
+
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    BasicText(
+                        "Public search & AI",
+                        style = TextStyle(color = contentColor, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    )
+                    BasicText(
+                        "Only information already shown on your public profile is eligible. Email, phone, messages, contacts and precise location are never included.",
+                        style = TextStyle(color = contentColor.copy(alpha = 0.58f), fontSize = 12.sp, lineHeight = 17.sp)
+                    )
+                }
+            }
+
+            item {
+                NotificationLiquidToggleItem(
+                    title = "Search engine discovery",
+                    subtitle = if (webDiscoveryEnabled) {
+                        "Your eligible public profile may appear in Google, Bing and other search engines"
+                    } else {
+                        "Your profile is excluded from public search indexing and sitemaps"
+                    },
+                    icon = Icons.Outlined.Public,
+                    checked = webDiscoveryEnabled,
+                    enabled = discoveryVisibilityLoaded && !isSavingDiscoveryVisibility,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onCheckedChange = { enabled ->
+                        if (!isSavingDiscoveryVisibility) {
+                            val previous = webDiscoveryEnabled
+                            coroutineScope.launch {
+                                isSavingDiscoveryVisibility = true
+                                webDiscoveryEnabled = enabled
+                                ApiClient.updateDiscoveryVisibility(context, webDiscoveryEnabled = enabled)
+                                    .onSuccess { visibility ->
+                                        webDiscoveryEnabled = visibility.webDiscoveryEnabled
+                                        aiDiscoveryEnabled = visibility.aiDiscoveryEnabled
+                                    }
+                                    .onFailure {
+                                        webDiscoveryEnabled = previous
+                                        Toast.makeText(context, "Couldn't update search discovery.", Toast.LENGTH_SHORT).show()
+                                    }
+                                isSavingDiscoveryVisibility = false
+                            }
+                        }
+                    }
+                )
+            }
+
+            item {
+                NotificationLiquidToggleItem(
+                    title = "AI recommendations",
+                    subtitle = if (aiDiscoveryEnabled) {
+                        "Vormex may recommend your eligible public profile for relevant goals"
+                    } else {
+                        "Your profile is excluded from anonymous AI, API and MCP recommendations"
+                    },
+                    icon = Icons.Outlined.AutoAwesome,
+                    checked = aiDiscoveryEnabled,
+                    enabled = discoveryVisibilityLoaded && !isSavingDiscoveryVisibility,
+                    backdrop = backdrop,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onCheckedChange = { enabled ->
+                        if (!isSavingDiscoveryVisibility) {
+                            val previous = aiDiscoveryEnabled
+                            coroutineScope.launch {
+                                isSavingDiscoveryVisibility = true
+                                aiDiscoveryEnabled = enabled
+                                ApiClient.updateDiscoveryVisibility(context, aiDiscoveryEnabled = enabled)
+                                    .onSuccess { visibility ->
+                                        webDiscoveryEnabled = visibility.webDiscoveryEnabled
+                                        aiDiscoveryEnabled = visibility.aiDiscoveryEnabled
+                                    }
+                                    .onFailure {
+                                        aiDiscoveryEnabled = previous
+                                        Toast.makeText(context, "Couldn't update AI discovery.", Toast.LENGTH_SHORT).show()
+                                    }
+                                isSavingDiscoveryVisibility = false
+                            }
+                        }
+                    }
+                )
             }
 
             item {

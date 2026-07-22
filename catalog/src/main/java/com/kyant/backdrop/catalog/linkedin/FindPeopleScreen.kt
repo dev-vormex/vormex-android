@@ -364,6 +364,8 @@ fun FindPeopleScreenNew(
                 listShimmerBrush = listShimmerBrush,
                 reduceAnimations = reduceAnimations,
                 people = uiState.suggestions,
+                recommendationSessionId = uiState.suggestionRecommendationSessionId,
+                recommendationRequestId = uiState.suggestionRecommendationRequestId,
                 isLoading = uiState.isLoadingSuggestions,
                 error = uiState.suggestionsError,
                 quota = uiState.suggestionQuota,
@@ -3454,6 +3456,8 @@ private fun ForYouContent(
     listShimmerBrush: Brush,
     reduceAnimations: Boolean,
     people: List<PersonInfo>,
+    recommendationSessionId: String?,
+    recommendationRequestId: String?,
     isLoading: Boolean,
     error: String?,
     quota: SuggestionQuota?,
@@ -3512,6 +3516,8 @@ private fun ForYouContent(
             listShimmerBrush = listShimmerBrush,
             reduceAnimations = reduceAnimations,
             people = people,
+            recommendationSessionId = recommendationSessionId,
+            recommendationRequestId = recommendationRequestId,
             isLoading = isLoading,
             error = error,
             emptyIcon = R.drawable.ic_sparkles,
@@ -3939,6 +3945,8 @@ private fun PeopleGridContent(
     listShimmerBrush: Brush,
     reduceAnimations: Boolean,
     people: List<PersonInfo>,
+    recommendationSessionId: String? = null,
+    recommendationRequestId: String? = null,
     isLoading: Boolean,
     error: String?,
     emptyIcon: Int,
@@ -3954,6 +3962,13 @@ private fun PeopleGridContent(
 ) {
     var isRefreshing by remember { mutableStateOf(false) }
     val pullToRefreshState = rememberPullToRefreshState()
+    val recommendationGridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    TrackPeopleRecommendationVisibility(
+        gridState = recommendationGridState,
+        people = people,
+        recommendationSessionId = recommendationSessionId,
+        requestId = recommendationRequestId
+    )
     
     // Reset refreshing state when loading completes
     LaunchedEffect(isLoading) {
@@ -4006,6 +4021,7 @@ private fun PeopleGridContent(
                 modifier = Modifier.fillMaxSize()
             ) {
                 LazyVerticalGrid(
+                    state = recommendationGridState,
                     columns = GridCells.Fixed(2),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -4014,6 +4030,13 @@ private fun PeopleGridContent(
                 ) {
                     items(items = people, key = { it.id }) { person ->
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            person.reasonText?.let { reason ->
+                                BasicText(
+                                    "Why this?  $reason",
+                                    style = TextStyle(contentColor.copy(alpha = 0.62f), 11.sp),
+                                    maxLines = 2
+                                )
+                            }
                             PersonCard(
                                 person = person,
                                 backdrop = backdrop,

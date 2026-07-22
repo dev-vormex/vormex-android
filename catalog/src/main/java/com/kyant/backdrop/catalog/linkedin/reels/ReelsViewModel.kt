@@ -17,6 +17,9 @@ import com.kyant.backdrop.catalog.linkedin.UploadStatus
 import com.kyant.backdrop.catalog.linkedin.reels.player.PlayerPool
 import com.kyant.backdrop.catalog.network.ApiClient
 import com.kyant.backdrop.catalog.network.PostsApiService
+import com.kyant.backdrop.catalog.network.models.RecommendationClientEvent
+import com.kyant.backdrop.catalog.recommendation.RecommendationExposureRules
+import com.kyant.backdrop.catalog.recommendation.telemetry.RecommendationTelemetryRepository
 import com.kyant.backdrop.catalog.network.models.Conversation
 import com.kyant.backdrop.catalog.network.models.ManagedAdPlacement
 import com.kyant.backdrop.catalog.network.models.MentionUser
@@ -40,6 +43,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.ConcurrentHashMap
 import java.util.LinkedHashMap
+import java.time.Instant
+import java.util.UUID
 
 private const val REELS_PREVIEW_LIMIT = 10
 private const val REELS_INITIAL_FEED_LIMIT = 30
@@ -65,6 +70,10 @@ data class ReelsUiState(
     val nextCursor: String? = null,
     val hasMore: Boolean = true,
     val isLoadingMore: Boolean = false,
+    val recommendationSessionId: String? = null,
+    val recommendationRequestId: String? = null,
+    val rankerVersion: String? = null,
+    val experimentVariant: String? = null,
     val activeDraftPreviewId: String? = null,
 
     // Current reel viewer state
@@ -121,6 +130,11 @@ private data class ReelCommentsCacheEntry(
     val hasMoreComments: Boolean
 )
 
+private data class ReelRecommendationContext(
+    val sessionId: String,
+    val requestId: String?
+)
+
 /**
  * ViewModel for Reels with lightweight warm-up for thumbnails and feed data.
  */
@@ -160,6 +174,8 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
     private val savingReelIds = mutableSetOf<String>()
     private val sharingReelIds = mutableSetOf<String>()
     private val trackedManagedAdImpressionKeys = mutableSetOf<String>()
+    private val recommendationTelemetry = RecommendationTelemetryRepository(context)
+    private val recommendationContextByReelId = ConcurrentHashMap<String, ReelRecommendationContext>()
     private val submittingCommentKeys = mutableSetOf<String>()
     private var shareTargetsLoaded = false
     private var cachedShareTargets: List<PostShareTarget> = emptyList()
@@ -205,6 +221,13 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
             val result = ApiClient.getReelsFeed(context, limit = REELS_INITIAL_FEED_LIMIT, mode = mode)
             result.onSuccess { response ->
                 lastFeedLoadedAt = System.currentTimeMillis()
+                registerRecommendationContext(
+                    response.reels,
+                    response.recommendationSessionId,
+                    response.requestId,
+                    response.rankerVersion,
+                    response.experimentVariant
+                )
                 applyFreshFeed(response.reels, response.nextCursor, response.hasMore, response.adPlacements)
             }
             isFeedRequestInFlight = false
@@ -296,6 +319,13 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
 
             result.onSuccess { response ->
                 lastFeedLoadedAt = System.currentTimeMillis()
+                registerRecommendationContext(
+                    response.reels,
+                    response.recommendationSessionId,
+                    response.requestId,
+                    response.rankerVersion,
+                    response.experimentVariant
+                )
                 applyFreshFeed(response.reels, response.nextCursor, response.hasMore, response.adPlacements)
                 warmShareTargets()
             }.onFailure { error ->
@@ -337,6 +367,13 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
 
                 result.onSuccess { response ->
                     nullCursorRetryCount = 0
+                    registerRecommendationContext(
+                        response.reels,
+                        response.recommendationSessionId,
+                        response.requestId,
+                        response.rankerVersion,
+                        response.experimentVariant
+                    )
                     val updatedFeed = mergeReelsById(currentState.feedReels, response.reels, seenReelIdsThisSession)
                     val madeProgress = updatedFeed.size > currentState.feedReels.size
                     _uiState.value = _uiState.value.copy(
@@ -634,6 +671,13 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
             val recommendedFeed = recommendationsResult.getOrNull()
             if (recommendedFeed != null) {
                 lastFeedLoadedAt = System.currentTimeMillis()
+                registerRecommendationContext(
+                    recommendedFeed.reels,
+                    recommendedFeed.recommendationSessionId,
+                    recommendedFeed.requestId,
+                    recommendedFeed.rankerVersion,
+                    recommendedFeed.experimentVariant
+                )
             }
 
             val exactReel = exactReelResult.getOrNull() ?: fallbackReel
@@ -1113,7 +1157,68 @@ class ReelsViewModel(private val context: Context) : ViewModel() {
     fun trackView(reelId: String, watchTimeMs: Long, completed: Boolean) {
         viewModelScope.launch {
             ApiClient.trackReelView(context, reelId, watchTimeMs, completed)
+            val reel = _uiState.value.feedReels.firstOrNull { it.id == reelId } ?: return@launch
+            val recommendation = recommendationContextByReelId[reelId] ?: return@launch
+            val durationMs = reel.durationSeconds.coerceAtLeast(0) * 1_000L
+            if (!RecommendationExposureRules.qualifiesReel(watchTimeMs, durationMs)) return@launch
+            recommendationTelemetry.enqueue(
+                RecommendationClientEvent(
+                    eventId = UUID.randomUUID().toString(),
+                    eventType = "PLAYBACK",
+                    recommendationSessionId = recommendation.sessionId,
+                    requestId = recommendation.requestId,
+                    surface = "REELS",
+                    entityType = "REEL",
+                    entityId = reelId,
+                    reportedPosition = reel.position,
+                    maxVisibleFraction = 1.0,
+                    visibleTimeMs = watchTimeMs,
+                    playbackTimeMs = watchTimeMs,
+                    mediaDurationMs = durationMs,
+                    occurredAt = Instant.now().toString()
+                ),
+                dedupeKey = "${recommendation.sessionId}:REEL:$reelId:PLAYBACK"
+            )
+            if (watchTimeMs < maxOf(6_000L, durationMs / 2)) {
+                recommendationTelemetry.enqueue(
+                    RecommendationClientEvent(
+                        eventId = UUID.randomUUID().toString(),
+                        eventType = "SKIP",
+                        recommendationSessionId = recommendation.sessionId,
+                        requestId = recommendation.requestId,
+                        surface = "REELS",
+                        entityType = "REEL",
+                        entityId = reelId,
+                        reportedPosition = reel.position,
+                        maxVisibleFraction = 1.0,
+                        visibleTimeMs = watchTimeMs,
+                        playbackTimeMs = watchTimeMs,
+                        mediaDurationMs = durationMs,
+                        occurredAt = Instant.now().toString()
+                    ),
+                    dedupeKey = "${recommendation.sessionId}:REEL:$reelId:SKIP"
+                )
+            }
         }
+    }
+
+    private fun registerRecommendationContext(
+        reels: List<Reel>,
+        sessionId: String?,
+        requestId: String?,
+        rankerVersion: String?,
+        experimentVariant: String?
+    ) {
+        if (sessionId.isNullOrBlank()) return
+        reels.forEach { reel ->
+            recommendationContextByReelId[reel.id] = ReelRecommendationContext(sessionId, requestId)
+        }
+        _uiState.value = _uiState.value.copy(
+            recommendationSessionId = sessionId,
+            recommendationRequestId = requestId,
+            rankerVersion = rankerVersion,
+            experimentVariant = experimentVariant
+        )
     }
 
     fun loadDraftReels(forceRefresh: Boolean = false) {

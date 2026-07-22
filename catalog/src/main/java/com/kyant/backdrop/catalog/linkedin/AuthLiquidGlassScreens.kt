@@ -77,6 +77,14 @@ private val AuthSurface = Color(0xFFFFFFFF)
 private val AuthField = Color(0xFFF4F7FB)
 private val AuthLine = Color(0xFFE4EAF2)
 private val AuthBrandFontFamily = FontFamily(Font(R.font.kaushan_script))
+private const val AuthPasswordMinLength = 6
+
+private fun passwordCharacterClassCount(password: String): Int = listOf(
+    password.any { it.isLowerCase() },
+    password.any { it.isUpperCase() },
+    password.any { it.isDigit() },
+    password.any { !it.isLetterOrDigit() }
+).count { it }
 
 @Composable
 internal fun LiquidGlassLoginScreen(
@@ -386,7 +394,12 @@ internal fun LiquidGlassSignUpScreen(
                     username.isBlank() -> passwordError = "Username is required"
                     username.length < 3 -> passwordError = "Username must be at least 3 characters"
                     email.isBlank() -> passwordError = "Email is required"
-                    password.length < 8 -> passwordError = "Password must be at least 8 characters"
+                    password.length < AuthPasswordMinLength -> {
+                        passwordError = "Password must be at least $AuthPasswordMinLength characters"
+                    }
+                    passwordCharacterClassCount(password) < 3 -> {
+                        passwordError = "Use at least three of uppercase, lowercase, number, and symbol"
+                    }
                     password != confirmPassword -> passwordError = "Passwords do not match"
                     !isLoading -> onSignUp(email.trim(), password, name.trim(), username.trim())
                 }
@@ -1060,7 +1073,7 @@ private fun AuthPasswordStrength(
     if (password.isBlank()) return
 
     val score = listOf(
-        password.length >= 8,
+        password.length >= AuthPasswordMinLength,
         password.any { it.isUpperCase() },
         password.any { it.isDigit() },
         password.any { !it.isLetterOrDigit() }

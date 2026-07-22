@@ -19,6 +19,7 @@ import com.kyant.backdrop.catalog.network.ArcadeSocketManager
 import com.kyant.backdrop.catalog.network.ChatSocketManager
 import com.kyant.backdrop.catalog.network.GroupSocketManager
 import com.kyant.backdrop.catalog.network.PostsApiService
+import com.kyant.backdrop.catalog.network.RecommendationApiService
 import com.kyant.backdrop.catalog.network.GoogleAuthHelper
 import com.kyant.backdrop.catalog.network.PostSocketManager
 import com.kyant.backdrop.catalog.network.GrowthApiService
@@ -30,6 +31,10 @@ import com.kyant.backdrop.catalog.network.models.FullProfileResponse
 import com.kyant.backdrop.catalog.network.models.AuthResponse
 import com.kyant.backdrop.catalog.network.models.FeedResponse
 import com.kyant.backdrop.catalog.network.models.ManagedAdPlacement
+import com.kyant.backdrop.catalog.network.models.HomeModulePlacement
+import com.kyant.backdrop.catalog.network.models.RecommendationFeedbackRequest
+import com.kyant.backdrop.catalog.network.models.RecommendationClientEvent
+import com.kyant.backdrop.catalog.recommendation.telemetry.RecommendationTelemetryRepository
 import com.kyant.backdrop.catalog.network.models.Post
 import com.kyant.backdrop.catalog.network.models.Story
 import com.kyant.backdrop.catalog.network.models.StoryGroup
@@ -60,72 +65,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlin.random.Random
-
-/**
- * Feed Diversity Algorithm
- * Ensures users see varied content each time they open the app by:
- * 1. Time-based shuffling (changes every 30 minutes)
- * 2. Author diversity (spreads posts from same author)
- * 3. Content type mixing (alternates text/image/video)
- */
-private fun diversifyFeed(posts: List<Post>, userId: String?): List<Post> {
-    if (posts.size <= 3) return posts
-
-    // Time-based seed: changes every 30 minutes for variety
-    val timeSeed = System.currentTimeMillis() / (30 * 60 * 1000)
-    val userSeed = userId?.hashCode()?.toLong() ?: 0L
-    val random = Random(timeSeed xor userSeed)
-
-    // Group posts by author to ensure diversity
-    val postsByAuthor = posts.groupBy { it.authorId }
-
-    // If all posts are from different authors, just add some shuffle
-    if (postsByAuthor.size == posts.size) {
-        return posts.shuffled(random).take(5) + posts.drop(5).shuffled(random)
-    }
-
-    // Build diversified feed: avoid consecutive posts from same author
-    val result = mutableListOf<Post>()
-    val remaining = posts.toMutableList()
-    var lastAuthorId: String? = null
-    var lastType: String? = null
-
-    while (remaining.isNotEmpty()) {
-        // Find posts NOT from last author (prefer different content type too)
-        val candidates = remaining.filter { it.authorId != lastAuthorId }
-
-        val nextPost = when {
-            candidates.isEmpty() -> {
-                // All remaining posts are from same author, just take one
-                remaining.removeAt(0)
-            }
-            candidates.size == 1 -> {
-                val post = candidates.first()
-                remaining.remove(post)
-                post
-            }
-            else -> {
-                // Prefer different content type for variety
-                val typeVaried = candidates.filter { it.type != lastType }
-                val pool = typeVaried.ifEmpty { candidates }
-
-                // Add controlled randomness (not full random, maintain some relevance)
-                val idx = if (pool.size > 3) random.nextInt(minOf(3, pool.size)) else 0
-                val post = pool[idx]
-                remaining.remove(post)
-                post
-            }
-        }
-
-        result.add(nextPost)
-        lastAuthorId = nextPost.authorId
-        lastType = nextPost.type
-    }
-
-    return result
-}
-
+import java.time.Instant
+import java.util.UUID
 /** Poll API may send non-finite doubles; [Double.toInt] throws on NaN and breaks Compose animations. */
 private fun PollOption.withSafePercentage(): PollOption {
     val p = percentage
@@ -275,7 +216,13 @@ private fun FullPost.toPost(): Post = Post(
     reactionSummary = reactionSummary,
     visibility = visibility,
     createdAt = createdAt,
-    updatedAt = updatedAt
+    updatedAt = updatedAt,
+    reasonCode = reasonCode,
+    reasonText = reasonText,
+    source = source,
+    position = position,
+    isBoosted = isBoosted,
+    socialActors = socialActors
 )
 
 enum class AuthScreen {
@@ -324,7 +271,16 @@ data class FeedUiState(
     val pendingReferralCode: String? = null,
     val posts: ImmutableList<Post> = persistentListOf(),
     val feedAdPlacements: List<ManagedAdPlacement> = emptyList(),
+    val modulePlacements: List<HomeModulePlacement> = emptyList(),
+    val recommendationSessionId: String? = null,
+    val recommendationRequestId: String? = null,
+    val rankerVersion: String? = null,
+    val experimentVariant: String? = null,
+    val lastRecommendationFeedbackPost: Post? = null,
+    val lastRecommendationFeedbackIndex: Int? = null,
     val storyGroups: List<StoryGroup> = emptyList(),
+    val storyRecommendationSessionId: String? = null,
+    val storyRecommendationRequestId: String? = null,
     val myStories: List<Story> = emptyList(),
     val error: String? = null,
     val currentUser: User? = null,
@@ -385,6 +341,7 @@ class FeedViewModel(private val context: Context) : ViewModel() {
 
     private val _uiState = MutableStateFlow(FeedUiState(isRestoringSession = true, isLoading = true))
     val uiState: StateFlow<FeedUiState> = _uiState.asStateFlow()
+    private val recommendationTelemetry = RecommendationTelemetryRepository(context)
 
     private val feedCacheTtlMillis = VormexPerformancePolicy.FeedCacheTtlMillis
     private val supportingDataTtlMillis = VormexPerformancePolicy.SupportingDataTtlMillis
@@ -644,6 +601,14 @@ class FeedViewModel(private val context: Context) : ViewModel() {
     fun showSignUp() {
         _uiState.value = _uiState.value.copy(
             authScreen = AuthScreen.SIGNUP,
+            pendingVerificationEmail = null,
+            isEmailVerificationSuccess = false,
+            error = null
+        )
+    }
+
+    fun dismissEmailVerification() {
+        _uiState.value = _uiState.value.copy(
             pendingVerificationEmail = null,
             isEmailVerificationSuccess = false,
             error = null
@@ -1149,6 +1114,7 @@ class FeedViewModel(private val context: Context) : ViewModel() {
 
             ApiClient.switchToSavedAccount(context, targetUserId)
                 .onSuccess {
+                    recommendationTelemetry.flush()
                     val accounts = ApiClient.getSavedAccountSessions(context)
                     _uiState.value = FeedUiState(
                         isRestoringSession = true,
@@ -1304,6 +1270,11 @@ class FeedViewModel(private val context: Context) : ViewModel() {
         _uiState.value = _uiState.value.copy(
             posts = cachedPosts.toImmutableList(),
             feedAdPlacements = cachedFeed.response.adPlacements,
+            modulePlacements = cachedFeed.response.modulePlacements,
+            recommendationSessionId = cachedFeed.response.recommendationSessionId,
+            recommendationRequestId = cachedFeed.response.requestId,
+            rankerVersion = cachedFeed.response.rankerVersion,
+            experimentVariant = cachedFeed.response.experimentVariant,
             nextCursor = cachedFeed.response.nextCursor,
             hasMore = cachedFeed.response.hasMore,
             currentUserId = _uiState.value.currentUserId ?: userId,
@@ -1382,6 +1353,8 @@ class FeedViewModel(private val context: Context) : ViewModel() {
             }
         _uiState.value = _uiState.value.copy(
             storyGroups = cachedStories.response.storyGroups,
+            storyRecommendationSessionId = cachedStories.response.recommendationSessionId,
+            storyRecommendationRequestId = cachedStories.response.requestId,
             currentUserId = _uiState.value.currentUserId ?: userId
         )
     }
@@ -1445,6 +1418,11 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                     _uiState.value = _uiState.value.copy(
                         posts = recommendedPosts.toImmutableList(),
                         feedAdPlacements = response.adPlacements,
+                        modulePlacements = response.modulePlacements,
+                        recommendationSessionId = response.recommendationSessionId,
+                        recommendationRequestId = response.requestId,
+                        rankerVersion = response.rankerVersion,
+                        experimentVariant = response.experimentVariant,
                         nextCursor = response.nextCursor,
                         hasMore = response.hasMore,
                         isLoading = false,
@@ -1491,7 +1469,9 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                         response = response
                     )
                     _uiState.value = _uiState.value.copy(
-                        storyGroups = response.storyGroups
+                        storyGroups = response.storyGroups,
+                        storyRecommendationSessionId = response.recommendationSessionId,
+                        storyRecommendationRequestId = response.requestId
                     )
                 }
             isStoriesRequestInFlight = false
@@ -1563,6 +1543,28 @@ class FeedViewModel(private val context: Context) : ViewModel() {
 
     fun viewStory(storyId: String) {
         viewModelScope.launch {
+            val state = _uiState.value
+            val group = state.storyGroups.firstOrNull { candidate -> candidate.stories.any { it.id == storyId } }
+            val snapshotStoryId = group?.stories?.firstOrNull()?.id
+            val sessionId = state.storyRecommendationSessionId
+            if (snapshotStoryId != null && !sessionId.isNullOrBlank()) {
+                recommendationTelemetry.enqueue(
+                    RecommendationClientEvent(
+                        eventId = UUID.randomUUID().toString(),
+                        eventType = "STORY_VIEW",
+                        recommendationSessionId = sessionId,
+                        requestId = state.storyRecommendationRequestId,
+                        surface = "STORIES",
+                        entityType = "STORY",
+                        entityId = snapshotStoryId,
+                        reportedPosition = group.position,
+                        maxVisibleFraction = 1.0,
+                        visibleTimeMs = 2_000,
+                        occurredAt = Instant.now().toString()
+                    ),
+                    dedupeKey = "$sessionId:STORY:$snapshotStoryId:STORY_VIEW"
+                )
+            }
             ApiClient.viewStory(context, storyId)
                 .onSuccess { response ->
                     // Update views count in the story
@@ -2284,6 +2286,8 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                         posts = appendUniquePosts(_uiState.value.posts, recommendedNewPosts),
                         feedAdPlacements = (_uiState.value.feedAdPlacements + response.adPlacements)
                             .distinctBy { it.slotKey },
+                        modulePlacements = (_uiState.value.modulePlacements + response.modulePlacements)
+                            .distinctBy { "${it.type}:${it.position}" },
                         nextCursor = response.nextCursor,
                         hasMore = response.hasMore,
                         isLoadingMore = false
@@ -2293,6 +2297,68 @@ class FeedViewModel(private val context: Context) : ViewModel() {
                     _uiState.value = _uiState.value.copy(isLoadingMore = false)
                 }
         }
+    }
+
+    fun markPostNotInterested(postId: String) {
+        val state = _uiState.value
+        val index = state.posts.indexOfFirst { it.id == postId }
+        if (index < 0) return
+        val post = state.posts[index]
+        _uiState.value = state.copy(
+            posts = state.posts.filterNot { it.id == postId }.toImmutableList(),
+            lastRecommendationFeedbackPost = post,
+            lastRecommendationFeedbackIndex = index
+        )
+        viewModelScope.launch {
+            RecommendationApiService.submitFeedback(
+                context,
+                RecommendationFeedbackRequest(
+                    action = "NOT_INTERESTED",
+                    entityType = "POST",
+                    entityId = post.id,
+                    authorId = post.authorId
+                )
+            ).onFailure {
+                restoreRecommendationFeedbackPost(post, index)
+            }
+        }
+    }
+
+    fun undoLastRecommendationFeedback() {
+        val state = _uiState.value
+        val post = state.lastRecommendationFeedbackPost ?: return
+        val index = state.lastRecommendationFeedbackIndex ?: state.posts.size
+        restoreRecommendationFeedbackPost(post, index)
+        viewModelScope.launch {
+            RecommendationApiService.submitFeedback(
+                context,
+                RecommendationFeedbackRequest(
+                    action = "UNDO",
+                    entityType = "POST",
+                    entityId = post.id,
+                    authorId = post.authorId,
+                    feedbackType = "NOT_INTERESTED"
+                )
+            )
+        }
+    }
+
+    private fun restoreRecommendationFeedbackPost(post: Post, originalIndex: Int) {
+        val state = _uiState.value
+        if (state.posts.any { it.id == post.id }) {
+            _uiState.value = state.copy(
+                lastRecommendationFeedbackPost = null,
+                lastRecommendationFeedbackIndex = null
+            )
+            return
+        }
+        val restored = state.posts.toMutableList()
+        restored.add(originalIndex.coerceIn(0, restored.size), post)
+        _uiState.value = state.copy(
+            posts = restored.toImmutableList(),
+            lastRecommendationFeedbackPost = null,
+            lastRecommendationFeedbackIndex = null
+        )
     }
 
     fun trackManagedAdImpression(ad: ManagedAdPlacement) {

@@ -3,6 +3,7 @@ package com.kyant.backdrop.catalog.notifications
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.util.Log
 import com.kyant.backdrop.catalog.R
 import kotlin.math.min
@@ -10,19 +11,30 @@ import kotlin.math.roundToInt
 
 object NotificationBranding {
     private const val TAG = "NotificationBranding"
-    private const val LARGE_ICON_MAX_WIDTH_DP = 44
-    private const val LARGE_ICON_MAX_HEIGHT_DP = 34
+    private const val LARGE_ICON_CANVAS_DP = 48
+    private const val LOGO_MAX_WIDTH_DP = 24
+    private const val LOGO_MAX_HEIGHT_DP = 18
 
     fun getAppLogoBitmap(context: Context): Bitmap? {
         return try {
             val decoded = BitmapFactory.decodeResource(context.resources, R.drawable.vormex_logo)
                 ?: return null
             val cropped = cropTransparentBounds(decoded)
-            scalePreservingAspect(
+            val density = context.resources.displayMetrics.density
+            val scaledLogo = scalePreservingAspect(
                 source = cropped,
-                maxWidthPx = (context.resources.displayMetrics.density * LARGE_ICON_MAX_WIDTH_DP).roundToInt(),
-                maxHeightPx = (context.resources.displayMetrics.density * LARGE_ICON_MAX_HEIGHT_DP).roundToInt()
+                maxWidthPx = (density * LOGO_MAX_WIDTH_DP).roundToInt(),
+                maxHeightPx = (density * LOGO_MAX_HEIGHT_DP).roundToInt()
             )
+            val canvasSizePx = (density * LARGE_ICON_CANVAS_DP).roundToInt().coerceAtLeast(1)
+            Bitmap.createBitmap(canvasSizePx, canvasSizePx, Bitmap.Config.ARGB_8888).also { output ->
+                Canvas(output).drawBitmap(
+                    scaledLogo,
+                    (canvasSizePx - scaledLogo.width) / 2f,
+                    (canvasSizePx - scaledLogo.height) / 2f,
+                    null
+                )
+            }
         } catch (e: Exception) {
             Log.w(TAG, "App logo bitmap failed: ${e.message}")
             null

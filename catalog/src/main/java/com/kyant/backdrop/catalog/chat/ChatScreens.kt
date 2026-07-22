@@ -140,6 +140,7 @@ import com.kyant.backdrop.catalog.linkedin.VerificationBadge
 import com.kyant.backdrop.catalog.linkedin.VerificationBadgeSize
 import com.kyant.backdrop.catalog.linkedin.VideoPlayer
 import com.kyant.backdrop.catalog.network.ApiClient
+import com.kyant.backdrop.catalog.network.ChatSocketManager
 import com.kyant.backdrop.catalog.network.models.Conversation
 import com.kyant.backdrop.catalog.network.models.GroupMessageShortcut
 import com.kyant.backdrop.catalog.network.models.Message
@@ -1378,8 +1379,12 @@ private fun ChatThreadScreen(
     }
 
     DisposableEffect(conv.id) {
+        ChatSocketManager.activeConversationId = conv.id
         onDispose {
             viewModel.sendTyping(false)
+            if (ChatSocketManager.activeConversationId == conv.id) {
+                ChatSocketManager.activeConversationId = null
+            }
         }
     }
 

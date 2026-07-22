@@ -1321,6 +1321,50 @@ object ApiClient {
             Result.failure(e)
         }
     }
+
+    suspend fun getDiscoveryVisibility(context: Context): Result<DiscoveryVisibility> {
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.get("$BASE_URL/public/discovery/visibility/me") {
+                header("Authorization", "Bearer $token")
+                header("Cache-Control", "no-cache")
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body<DiscoveryVisibilityResponse>().visibility)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateDiscoveryVisibility(
+        context: Context,
+        webDiscoveryEnabled: Boolean? = null,
+        aiDiscoveryEnabled: Boolean? = null
+    ): Result<DiscoveryVisibility> {
+        if (webDiscoveryEnabled == null && aiDiscoveryEnabled == null) {
+            return Result.failure(IllegalArgumentException("A discovery visibility value is required"))
+        }
+        return try {
+            val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
+            val response = client.patch("$BASE_URL/public/discovery/visibility/me") {
+                header("Authorization", "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(DiscoveryVisibilityUpdateRequest(webDiscoveryEnabled, aiDiscoveryEnabled))
+            }
+            if (response.status.isSuccess()) {
+                Result.success(response.body<DiscoveryVisibilityResponse>().visibility)
+            } else {
+                val error: ApiError = response.body()
+                Result.failure(Exception(error.getErrorMessage()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
     
     suspend fun getOtherUserProfile(context: Context, userId: String): Result<FullProfileResponse> {
         return try {
@@ -5030,12 +5074,19 @@ object ApiClient {
     /**
      * Get notifications with pagination
      */
-    suspend fun getNotifications(context: Context, cursor: String? = null, limit: Int = 20, unreadOnly: Boolean = false): Result<NotificationsResponse> {
+    suspend fun getNotifications(
+        context: Context,
+        cursor: String? = null,
+        limit: Int = 20,
+        unreadOnly: Boolean = false,
+        afterCursor: String? = null
+    ): Result<NotificationsResponse> {
         return try {
             val token = getToken(context) ?: return Result.failure(Exception("Not logged in"))
             val response = client.get("$BASE_URL/notifications") {
                 header("Authorization", "Bearer $token")
                 cursor?.let { parameter("cursor", it) }
+                afterCursor?.let { parameter("afterCursor", it) }
                 parameter("limit", limit)
                 if (unreadOnly) parameter("unreadOnly", "true")
             }

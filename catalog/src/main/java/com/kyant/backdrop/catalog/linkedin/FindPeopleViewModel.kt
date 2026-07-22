@@ -120,6 +120,10 @@ data class FindPeopleUiState(
     val canRewindSuggestionPass: Boolean = false,
     val suggestionPassInProgress: Set<String> = emptySet(),
     val isRewindingSuggestionPass: Boolean = false,
+    val suggestionRecommendationSessionId: String? = null,
+    val suggestionRecommendationRequestId: String? = null,
+    val suggestionRankerVersion: String? = null,
+    val suggestionExperimentVariant: String? = null,
 
     // Saved discovery searches
     val savedDiscoverySearches: List<SavedDiscoverySearch> = emptyList(),
@@ -1368,6 +1372,10 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
                     val isPremium = response.quota?.isPremium ?: _uiState.value.isDiscoveryPremiumUnlocked
                     val nextState = _uiState.value.copy(
                         suggestions = rankPeople(response.suggestions),
+                        suggestionRecommendationSessionId = response.recommendationSessionId,
+                        suggestionRecommendationRequestId = response.requestId,
+                        suggestionRankerVersion = response.rankerVersion,
+                        suggestionExperimentVariant = response.experimentVariant,
                         isLoadingSuggestions = false,
                         suggestionQuota = response.quota,
                         canRewindSuggestionPass = response.canRewind,
@@ -2256,11 +2264,12 @@ class FindPeopleViewModel(private val context: Context) : ViewModel() {
     }
 
     private fun rankPeople(people: List<PersonInfo>): List<PersonInfo> {
-        return FindPeopleRanker.rankPeople(people, rankingProfile)
+        // Personalized endpoints are backend-owned. Keep the exact server order.
+        return people
     }
 
     private fun rankNearbyPeople(people: List<NearbyUser>): List<NearbyUser> {
-        return FindPeopleRanker.rankNearbyPeople(people, rankingProfile)
+        return people
     }
 
     private fun mergePeople(existing: List<PersonInfo>, incoming: List<PersonInfo>): List<PersonInfo> {

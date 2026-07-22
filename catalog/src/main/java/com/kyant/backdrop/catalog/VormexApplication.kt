@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import com.kyant.backdrop.catalog.location.CrossedPathsForegroundPresenceCoordinator
+import com.kyant.backdrop.catalog.recommendation.telemetry.RecommendationTelemetryWorker
 
 class VormexApplication : Application() {
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -22,6 +23,7 @@ class VormexApplication : Application() {
         super.onCreate()
         VormexAiBootstrap.initialize(this)
         ChatOutboxWorker.enqueue(this)
+        RecommendationTelemetryWorker.enqueue(this)
         registerChatSocketWarmup()
     }
 
@@ -44,7 +46,10 @@ class VormexApplication : Application() {
 
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
             override fun onActivityStarted(activity: Activity) = Unit
-            override fun onActivityPaused(activity: Activity) { crossedPathsPresence.onBackground() }
+            override fun onActivityPaused(activity: Activity) {
+                crossedPathsPresence.onBackground()
+                RecommendationTelemetryWorker.enqueue(this@VormexApplication, immediate = true)
+            }
             override fun onActivityStopped(activity: Activity) = Unit
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
             override fun onActivityDestroyed(activity: Activity) = Unit

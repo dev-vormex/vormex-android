@@ -1787,17 +1787,25 @@ private fun ProfileContent(
     }
     val isGameProfileTheme = profileThemeKey == GameRetroProfileThemeKey
     val listState = rememberLazyListState()
-    val profileSectionSeparatorColor = if (isDarkTheme) {
-        contentColor.copy(alpha = 0.08f)
-    } else {
-        Color(0xFFF3F2EF)
+    val profileSectionSeparatorColor = when {
+        // Keep the animated glass background visible between translucent profile cards.
+        // The old opaque light separator also became the LazyColumn background, which
+        // made the whole profile continue to look like the Light theme after switching.
+        isGlassTheme -> Color.Transparent
+        isDarkTheme -> contentColor.copy(alpha = 0.08f)
+        else -> Color(0xFFF3F2EF)
+    }
+    val profileBackgroundColor = when {
+        isGameProfileTheme -> RetroGameCream
+        isGlassTheme -> Color.Transparent
+        isDarkTheme -> profileAppearance.backgroundColor
+        else -> profileSectionSeparatorColor
     }
     LazyColumn(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
-            .background(if (isGameProfileTheme || isDarkTheme) profileAppearance.backgroundColor else profileSectionSeparatorColor)
-            .then(if (isGameProfileTheme) Modifier.background(RetroGameCream) else Modifier),
+            .background(profileBackgroundColor),
         contentPadding = PaddingValues(bottom = 100.dp)
     ) {
         // Header Section
